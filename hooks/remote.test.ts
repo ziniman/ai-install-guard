@@ -584,3 +584,13 @@ describe('PR review: summaries and the capped fetch', () => {
     expect(host.ran.some(argv => argv[0] === 'git' && argv.includes('fetch'))).toBe(false)
   })
 })
+
+describe('progress never fails a remote scan', () => {
+  test('a progress update that fails at the history stage is ignored', async () => {
+    const onStage = async (stage: string) => {
+      if (stage === 'reading the repository history') throw new Error('pane gone')
+    }
+    const report = await scanRemote(gitHost(fixture('clean-plugin')), 'acme/notes', { url: URL_ }, { validate: false, onStage })
+    expect(report.verdict.kind).toBe('safe')
+  })
+})

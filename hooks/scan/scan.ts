@@ -186,7 +186,8 @@ export async function scanRemote(host: Host, target: string, spec: RemoteSpec, o
     if (report.verdict.kind === 'unverified') return { ...report, source: fetched.source }
     // What GitHub says about where it came from, then the badge, judged again
     // with the source's own rows counted.
-    await options.onStage?.('reading the repository history')
+    // Progress is a courtesy here too: a failure to show it never fails the scan.
+    await Promise.resolve(options.onStage?.('reading the repository history')).catch(() => undefined)
     const history = await githubProvenance(host, fetched.source)
     const results = withBadgeClaim(sortResults([...fetched.results, ...history, ...report.results]), report.badgeClaim, { sha: fetched.source.sha, treeHash: report.inventory?.treeHash })
     return { ...report, source: fetched.source, results, verdict: decide(results) }

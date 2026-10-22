@@ -123,7 +123,8 @@ async function lookups(host: Host, path: string, source: PinnedSource, now: numb
   // single author that hardly anyone uses. A new repository from an
   // established account, with others working on it, is only noted.
   const newAccount = ownerDays !== undefined && ownerDays < NEW_DAYS
-  const loneNewRepo = repoDays !== undefined && repoDays < NEW_DAYS && (people ?? 1) <= 1 && (stars ?? 0) < 10
+  // Only facts GitHub gave count: a count it did not give is not taken as low.
+  const loneNewRepo = repoDays !== undefined && repoDays < NEW_DAYS && people !== undefined && people <= 1 && stars !== undefined && stars < 10
   const evidence: Evidence[] = []
   const note = (excerpt: string, status: Status = 'info') => evidence.push({ file: '-', excerpt, status })
   if (repoDays !== undefined) note(`created ${spoken(repoDays)}${loneNewRepo ? ', with a single contributor and few stars' : ''}`, loneNewRepo ? 'warn' : 'info')
@@ -173,6 +174,8 @@ async function lookups(host: Host, path: string, source: PinnedSource, now: numb
     if (committedDays !== undefined) commitEvidence.push({ file: '-', excerpt: `committed ${spoken(committedDays)}`, status: 'info' })
   } else if (commit.status === 404 || commit.status === 422) {
     commitEvidence.push({ file: '-', excerpt: 'GitHub does not show this commit in this repository', status: 'warn' })
+  } else {
+    commitEvidence.push({ file: '-', excerpt: `not checked: GitHub answered ${commit.status}`, status: 'info' })
   }
   // A commit named by id could come from a fork in the same network (an
   // "impostor commit"); one reached through a branch or tag cannot.
@@ -182,6 +185,7 @@ async function lookups(host: Host, path: string, source: PinnedSource, now: numb
     const status = isJson(compared.body) && typeof compared.body.status === 'string' ? compared.body.status : undefined
     if (status === 'behind' || status === 'identical') commitEvidence.push({ file: '-', excerpt: `part of the default branch ${safeLine(defaultBranch)}`, status: 'info' })
     else if (status !== undefined) commitEvidence.push({ file: '-', excerpt: `not on the default branch ${safeLine(defaultBranch)}: it may come from another branch or from a fork`, status: 'warn' })
+    else commitEvidence.push({ file: '-', excerpt: `whether it is on the default branch was not checked: GitHub answered ${compared.status}`, status: 'info' })
   }
   const commitRow = row(
     {

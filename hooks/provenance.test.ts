@@ -186,3 +186,92 @@ describe('the outsideLookups setting', () => {
     expect(answer.text).toContain('Uses a package listed as malware: x@1.0.0 (npm)')
   })
 })
+
+describe('lookups, local review fixes', () => {
+  const ctxOf = async (files: FixtureFiles) => buildContext(await takeInventory(memoryHost('/p', { ...fixture('clean-plugin'), ...files }), '/p'))
+  const mcp = (servers: Record<string, unknown>) => ({ '.mcp.json': b64(JSON.stringify({ mcpServers: servers })) })
+
+  test('runner options with values do not hide the package', async () => {
+    const ctx = await ctxOf(mcp({
+      a: { command: 'uvx', args: ['--python', '3.12', 'notes-mcp'] },
+      b: { command: 'uvx', args: ['--from', 'notes-tools==1.0.0', 'notes'] },
+      c: { command: 'npx', args: ['-y', '--package=@acme/cli@2.0.0', 'acme'] },
+      d: { command: 'pipx', args: ['run', '--spec', 'tool==3.0.0', 'tool'] },
+    }))
+    expect(packagesOf(ctx).map(pkg => `${pkg.name}@${pkg.version ?? '*'}`)).toEqual(['notes-mcp@*', 'notes-tools@1.0.0', '@acme/cli@2.0.0', 'tool@3.0.0'])
+  })
+
+  test('development packages a lockfile pins are looked up too', async () => {
+    const ctx = await ctxOf({
+      'package.json': b64(JSON.stringify({ name: 'x', devDependencies: { typescript: '^5.9.3' } })),
+      'package-lock.json': b64(JSON.stringify({ packages: { 'node_modules/typescript': { version: '5.9.3' } } })),
+    })
+    expect(packagesOf(ctx).map(pkg => `${pkg.name}@${pkg.version}:${pkg.via}`)).toEqual(['typescript@5.9.3:for development'])
+  })
+
+  test('an advisory whose details cannot be read is not cleared', async () => {
+    const ctx = await ctxOf(mcp({ a: { command: 'npx', args: ['-y', 'unpinned-tool'] } }))
+    const answers = (url: string): FetchResult | Error => {
+      if (url === OSV_BATCH) return json({ results: [{ vulns: [{ id: 'GHSA-aaaa-bbbb-cccc' }] }] })
+      if (url.startsWith(OSV_VULN)) return new Error('timed out')
+      return json({ plugins: [] })
+    }
+    const row = (await outsideLookups(netHost(answers), ctx)).find(result => result.id === 'provenance.packages')
+    expect(row?.status).toBe('warn')
+    expect(row?.evidence[0]?.excerpt).toContain('may be malware')
+  })
+
+  test('a reply that does not cover every package is not trusted', async () => {
+    const ctx = await ctxOf(mcp({ a: { command: 'npx', args: ['-y', 'one@1.0.0'] }, b: { command: 'npx', args: ['-y', 'two@1.0.0'] } }))
+    const answers = (url: string): FetchResult => (url === OSV_BATCH ? json({ results: [{}] }) : json({ plugins: [] }))
+    const row = (await outsideLookups(netHost(answers), ctx)).find(result => result.id === 'provenance.packages')
+    expect(row?.status).toBe('info')
+    expect(row?.summary?.[0]).toContain('does not cover every package')
+  })
+
+  test('a large manifest is looked up in batches, all of it', async () => {
+    const deps = Object.fromEntries(Array.from({ length: 1500 }, (_, index) => [`pkg-${index}`, '1.0.0']))
+    const ctx = await ctxOf({ 'package.json': b64(JSON.stringify({ name: 'x', dependencies: deps })) })
+    let batches = 0
+    const answers = (url: string, init?: FetchInit): FetchResult => {
+      if (url !== OSV_BATCH) return json({ plugins: [] })
+      batches += 1
+      const queries = (JSON.parse(init?.body ?? '{}') as { queries: unknown[] }).queries
+      return json({ results: queries.map((_, index) => (batches === 2 && index === 499 ? { vulns: [{ id: 'MAL-2026-1' }] } : {})) })
+    }
+    const row = (await outsideLookups(netHost(answers), ctx)).find(result => result.id === 'provenance.packages')
+    expect(batches).toBe(2)
+    expect(row?.status).toBe('fail')
+  })
+
+  test('the name summary stays short however many names are near', async () => {
+    const plugins = Array.from({ length: 40 }, (_, index) => ({ name: `code-reveiw-${index}`, source: `./p${index}` }))
+    const ctx = await ctxOf({ '.claude-plugin/marketplace.json': b64(JSON.stringify({ name: 'm', owner: { name: 'o' }, plugins })) })
+    const official = { plugins: Array.from({ length: 40 }, (_, index) => ({ name: `code-review-${index}` })) }
+    const row = (await outsideLookups(netHost(url => (url === OFFICIAL_MARKETPLACE ? json(official) : json({ results: [] }))), ctx)).find(result => result.id === 'provenance.names')
+    expect(row?.status).toBe('warn')
+    expect(row?.summary?.[0]).toContain('and 37 more')
+  })
+})
+
+describe('GitHub lookups, local review fixes', () => {
+  test('counts GitHub did not give are not taken as low', async () => {
+    const answers = (url: string): FetchResult => {
+      const path = url.replace('https://api.github.com', '')
+      if (path === '/repos/acme/notes') return json({ created_at: daysAgo(3), owner: { login: 'acme' }, default_branch: 'main' })
+      if (path === '/users/acme') return json({ created_at: daysAgo(3000) })
+      return json({ message: 'Server Error' }, 500)
+    }
+    const results = await githubProvenance(netHost(answers), SOURCE, NOW)
+    expect(status(results, 'provenance.repository')).toBe('info')
+    // A commit lookup that failed says so rather than looking complete.
+    expect(results[1]?.evidence[0]?.excerpt).toBe('not checked: GitHub answered 500')
+  })
+
+  test('a compare that does not answer is reported as not checked', async () => {
+    const base = github({ repoDays: 900, ownerDays: 3000, stars: 5, people: 2 })
+    const answers = (url: string): FetchResult => (url.includes('/compare/') ? json({ message: 'Server Error' }, 500) : base(url))
+    const results = await githubProvenance(netHost(answers), { ...SOURCE, refKind: 'commit' }, NOW)
+    expect(results[1]?.evidence.map(item => item.excerpt)).toContain('whether it is on the default branch was not checked: GitHub answered 500')
+  })
+})
