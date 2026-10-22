@@ -148,7 +148,8 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
         status: explainedHere ? 'warn' : 'fail',
       })
     } else if (capability.risk === 'medium') {
-      medium.push({ file: use.file, line: use.line > 0 ? use.line : undefined, excerpt, status: 'warn' })
+      // Still a warning when explained: network access always deserves a look.
+      medium.push({ file: use.file, line: use.line > 0 ? use.line : undefined, excerpt: isExplained(use.name) ? `${excerpt} (the README names it)` : excerpt, status: 'warn' })
     }
   }
   const allCalls = new Set(modules.flatMap(info => info.calls.map(call => call.name)))

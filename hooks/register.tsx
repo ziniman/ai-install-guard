@@ -30,7 +30,10 @@ const USAGE = [
   '  /guard forget <name>          Forget decisions about a name, so it is judged again',
 ].join('\n')
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  // Off unless you turn it on: the lookups send package and plugin names out.
+  const lookups = options.outsideLookups === true
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'guard',
@@ -43,7 +46,7 @@ export const register: Register = on => {
   on('command.run', { command: 'guard' }, async ($, e) => {
     const { sub, rest, details, ref, path, error } = splitArgs(e.args)
     if (error !== undefined) return { text: `AI Install Guard: ${error}\n\n${USAGE}` }
-    if (sub === 'scan' && rest !== '') return { text: await scan($, rest, details, { ref, path }) }
+    if (sub === 'scan' && rest !== '') return { text: await scan($, rest, details, { ref, path }, lookups) }
     if (sub === 'report') return { text: await reopen($) }
     if (sub === 'badge') return { text: await badge($) }
     if (sub === 'list') return { text: await list($) }
@@ -63,7 +66,7 @@ export const register: Register = on => {
  * findings stay in the pane. Where no pane can show (a headless run), or with
  * --details, the answer is the full text report.
  */
-async function scan($: EngineInterface, target: string, details: boolean, flags: { ref?: string; path?: string }): Promise<string> {
+async function scan($: EngineInterface, target: string, details: boolean, flags: { ref?: string; path?: string }, lookups: boolean): Promise<string> {
   const host = modHost($)
   const opened = await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => ({ isPlaced: false }))
   // Until this scan's report is stored, Copy report has nothing to copy, never
@@ -73,6 +76,7 @@ async function scan($: EngineInterface, target: string, details: boolean, flags:
   $.ui.status(`AI Install Guard: scanning ${safeLine(target)}`)
   try {
     const options = {
+      lookups,
       // Stage names can carry a candidate's own words (a plugin's name).
       onStage: (stage: string) => update($, viewAtom, current => (current === null ? current : { ...current, stage: safeLine(stage) })).then(() => undefined),
     }
