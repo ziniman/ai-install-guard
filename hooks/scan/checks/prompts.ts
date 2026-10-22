@@ -196,12 +196,17 @@ const SHELL_WIDE = new Set([
 
 /**
  * Whether the words right before `index` tell the reader not to run what
- * follows: a negation on the verb itself ("never run", "do not use",
- * "avoid piping"). "Don't hesitate to run" is an encouragement, not this.
+ * follows: the nearest negation ("never run this:", "avoid", "do not use")
+ * within three words. "Don't hesitate to run" or "never forget to run" urge
+ * the reader on, so they are not a negation.
  */
 function isNegated(text: string, index: number): boolean {
   const before = text.slice(Math.max(0, index - 40), index).split(/[.!?\n]/).pop() ?? ''
-  return /\b(?:never|don['’]t|do not|avoid)\s+(?:ever\s+)?(?:run|running|execute|executing|use|using|pipe|piping|type|paste)\b\W*$/i.test(before)
+  const last = Array.from(before.matchAll(/\b(?:never|not|don['’]t|do not|avoid|instead of)\b/gi)).at(-1)
+  if (last === undefined) return false
+  const rest = before.slice(last.index ?? 0)
+  if (/^(?:never|not|don['’]t|do not)\s+(?:ever\s+)?(?:hesitate|forget|fail|neglect|wait)\b/i.test(rest)) return false
+  return /^(?:never|not|don['’]t|do not|avoid|instead of)(?:\W+\w+){0,3}\W*$/i.test(rest)
 }
 
 /**

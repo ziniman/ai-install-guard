@@ -14,10 +14,11 @@ export const DOWNLOAD_AND_RUN =
 
 /**
  * Fetching and running a package that is not pinned to an exact version:
- * no version, a tag (@latest, @next) or a range (@^1.2) all count.
+ * no version, a tag (@latest, @next) or a range (@^1.2) all count. An exact
+ * x.y.z, with any prerelease (-rc-1) or build (+5) part, is a pin.
  */
 export const UNPINNED_RUNNER =
-  /\b(?:npx|bunx|pnpx)\s+(?:-{1,2}[\w-]+\s+){0,5}(?!-)(?:@[\w.-]+\/)?[\w.-]+(?:@(?!\d+\.\d+\.\d+(?:-[\w.]+)?(?![\w.+-]))[^\s`'"();&|]*)?(?![@\w./-])|\b(?:uvx|pipx\s+run)\s+(?!\S+(?:==|@)\d)/
+  /\b(?:npx|bunx|pnpx)\s+(?:-{1,2}[\w-]+\s+){0,5}(?!-)(?:@[\w.-]+\/)?[\w.-]+(?:@(?!\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?(?![\w.+-]))[^\s`'"();&|]*)?(?![@\w./-])|\b(?:uvx|pipx\s+run)\s+(?!\S+(?:==|@)\d)/
 
 /** Shell `eval` and piping into a shell. */
 export const SHELL_EVAL = /(?:^|[\s;&|(])eval\s|\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\s*(?:$|[;&|)])/m
