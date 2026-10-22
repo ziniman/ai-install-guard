@@ -154,6 +154,7 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('python3 - <<EOF\nimport os\nos.system("claude plugin install evil@m")\nEOF').kind).toBe('unreadable')
     expect(readShellCommand(`echo 'claude plugin install evil@m' | python3`).kind).toBe('unreadable')
     expect(readShellCommand(`python3 -Sc 'import os; os.system("claude plugin install evil@m")'`).kind).toBe('unreadable')
+    expect(readShellCommand(`ACTION=install python3 -c 'import os; os.system("claude-code plugin " + os.environ["ACTION"] + " foo@m")'`).kind).toBe('unreadable')
     expect(readShellCommand(`node -pe '1 + 1'`)).toEqual({ kind: 'pass', browse: false })
     expect(readShellCommand('python3 scripts/build.py')).toEqual({ kind: 'pass', browse: false })
   })

@@ -95,8 +95,8 @@ function readShell(command: string): Reading {
  */
 const MAY_INSTALL = /\bplugins?\b[^\w\n]{1,8}(?:install|i|update|marketplace)\b/i
 
-/** `claude` as a word of its own, not part of a path such as `~/.claude/` or a name such as `claude-code`. */
-const CLAUDE_WORD = /(?<![\w./-])claude(?![\w./-])/i
+/** The `claude` command's names as words of their own, not part of a path such as `~/.claude/`. */
+const CLAUDE_WORD = /(?<![\w./-])claude(?:-code|\.exe)?(?![\w./-])/i
 
 /** Names the `claude` command goes by. */
 const CLAUDE = new Set(['claude', 'claude.exe', 'claude-code'])

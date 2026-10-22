@@ -80,6 +80,16 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     return ours
   }
   const release = (current: GuardView) => replaceOwn({ ...current, deciding: false })
+  /**
+   * Saves this scan's outcome for /guard report; should a newer scan take
+   * the pane meanwhile, its view is saved instead, so the reopened report is
+   * always the pane's.
+   */
+  const saveOwn = async (outcome: GuardView): Promise<void> => {
+    await saveLastView($, outcome).catch(() => undefined)
+    const now = await read($, viewAtom).catch(() => null)
+    if (now !== null && now.scanId !== outcome.scanId) await saveLastView($, now).catch(() => undefined)
+  }
   const movedOn = 'the pane has moved on to another scan'
 
   const decide = (decision: 'approved' | 'rejected', overridden: boolean) => async () => {
@@ -98,12 +108,12 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
           return
         }
         await grantPass($, { origin: held.origin, args: held.args })
-        await saveLastView($, allowed).catch(() => undefined)
+        await saveOwn(allowed)
         await carryOut($, held, allowed)
         return
       }
       $.ui.toast(held !== undefined ? 'AI Install Guard: rejected; nothing was installed' : 'AI Install Guard: closed; the scan read nothing, so there is no decision to remember')
-      if (await release(current)) await $.ui.close({ id: PANE_ID })
+      if (await release(current)) await closeOwn($, current)
       return
     }
     const decidedAt = Date.now()
@@ -133,7 +143,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       return
     }
     // The reopened report shows the outcome, not the buttons again.
-    await saveLastView($, decided).catch(() => undefined)
+    await saveOwn(decided)
     // The approval is saved for this exact version, so the install, asked for
     // again, now goes through: the gate looks the version up again first.
     if (held !== undefined && decision === 'approved') {
@@ -141,7 +151,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       return
     }
     $.ui.toast(`AI Install Guard: ${decision === 'approved' ? 'approved' : 'rejected'} ${current.target}${held === undefined ? '' : '; nothing was installed'}`)
-    await $.ui.close({ id: PANE_ID })
+    await closeOwn($, decided)
   }
 
   const primary = async () => {
@@ -309,6 +319,12 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
   )
 }
 
+/** Closes the pane while it still shows this scan; a newer scan's pane stays open. */
+async function closeOwn($: EngineInterface, view: GuardView): Promise<void> {
+  const now = await read($, viewAtom).catch(() => null)
+  if (now === null || now.scanId === view.scanId) await $.ui.close({ id: PANE_ID })
+}
+
 /** What the held install is, in the person's or Claude's own words. */
 function requestLine(request: GuardRequest): string {
   return request.origin === 'tool' ? `Claude asked to run: ${safeLine(request.args)}` : `Held until you decide: /plugin ${safeLine(request.args)}`
@@ -321,7 +337,7 @@ function requestLine(request: GuardRequest): string {
  * tells it to, and its gate checks the version then.
  */
 async function carryOut($: EngineInterface, held: GuardRequest, view: GuardView): Promise<void> {
-  await $.ui.close({ id: PANE_ID })
+  await closeOwn($, view)
   if (held.origin === 'tool') {
     $.ui.toast(`AI Install Guard: approved ${held.label}. Tell Claude to run the install again; it goes through now`)
     return
