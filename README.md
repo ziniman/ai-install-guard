@@ -59,7 +59,7 @@ Run `/plugin install notes@acme` as usual. The guard looks up where Claude Code 
 - A version you already approved (the same commit of the same folder, here or with `/guard scan`) installs at once, without asking again. A new commit is always scanned.
 - When the verdict is **Do not install**, the button reads **Install anyway** and asks a second time. **Could not verify** (the guard could not tell what would be installed: a package from npm, a plugin no marketplace lists, a name two marketplaces share) works the same way, and lets that one command through once.
 
-When Claude runs `claude plugin install` itself, the guard refuses the command and tells Claude why: the install waits for your decision, and Claude should not retry it or find another way. Approve it in the pane, then tell Claude to run it again; the same command now goes through.
+When Claude runs `claude plugin install` itself, the guard refuses the command and tells Claude why: the install waits for your decision, and Claude should not retry it or find another way. Approve it in the pane, then tell Claude to run it again; the same command now goes through. Because approving it approves that whole command, the install must stand on its own (a `cd` before it or a `tail` after it is fine): a command that also runs something else, or that is only known as it runs (`$CMD plugin install …`, a script piped into a shell, code given to `python -c`), is held as Could not verify.
 
 ## What it checks
 
@@ -166,7 +166,7 @@ A lookup that fails or hits a rate limit is noted in the report and never fails 
 - **Install it first.** It judges only mods that load after it. For a company, the strongest setup is deploying it through managed settings so it loads first.
 - **No per-plugin block for classic shell hooks.** Claude Code runs them outside mods, so the guard scans before install and uninstalls on reject.
 - **The `/plugin` menu is not gated yet.** A plugin picked from the menu installs without a scan; the guard says so when the menu opens. The mod loading gate in a later stage closes this. Until then, install with `/plugin install <name>@<marketplace>`.
-- **Claude's commands are read, not run.** The guard finds an install in a shell command however it is quoted or wrapped, and holds a command it cannot read (one built while it runs, or a script piped into a shell) as Could not verify. A script file that installs something is not read; the mod loading gate is the backstop for that.
+- **Claude's commands are read, not run.** The guard finds an install in a shell command however it is quoted or wrapped (`env`, `sudo`, `sh -c`, `eval`, a here-document), and holds a command it cannot read (one built while it runs, a script piped into a shell, inline code for another language) as Could not verify. A script file that installs something is not read; the mod loading gate is the backstop for that.
 - **Between Install and the install itself** Claude Code fetches the plugin again. The guard checks the commit just before, and a commit is fixed content, but a marketplace that names a branch rather than a commit can move in that moment. The scan warns about such marketplaces.
 
 ## Roadmap
