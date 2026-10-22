@@ -25,8 +25,12 @@ export function formatReport(report: ScanReport, options: { details?: boolean } 
   if (inventory !== undefined) {
     const files = inventory.entries.filter(entry => entry.kind === 'file').length
     lines.push(`${report.kind === undefined ? '' : `A ${report.kind} · `}${files} files (${formatBytes(inventory.totalBytes)}) · tree ${inventory.treeHash}`)
-    lines.push(`Folder: ${safeLine(inventory.root)}`)
-    if (inventory.skipped.length > 0) lines.push(`Not read: ${inventory.skipped.map(safeLine).join(', ')}`)
+    const { source } = report
+    if (source === undefined) lines.push(`Folder: ${safeLine(inventory.root)}`)
+    else lines.push(`Source: ${safeLine(source.url)}${source.subdir === undefined ? '' : ` folder ${safeLine(source.subdir)}`} at commit ${source.sha}`)
+    // A fetched commit's .git folder is the guard's own, not the candidate's.
+    const skipped = source === undefined ? inventory.skipped : inventory.skipped.filter(path => path !== '.git')
+    if (skipped.length > 0) lines.push(`Not read: ${skipped.map(safeLine).join(', ')}`)
   }
   if (report.results.length === 0) return lines.join('\n')
 

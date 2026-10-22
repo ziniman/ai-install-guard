@@ -20,6 +20,7 @@ export function structureChecks(ctx: ScanContext, validator: ValidatorReport | u
     linksCheck(ctx),
     imagesCheck(ctx),
     settingsCheck(ctx),
+    filledInCheck(ctx),
   ]
 }
 
@@ -355,3 +356,47 @@ function settingsCheck(ctx: ScanContext): CheckResult {
 }
 
 export type { InventoryFile }
+
+/**
+ * Files whose real content is not in the folder: Git LFS pointers, whose file
+ * is downloaded at install, and paths a git filter rewrites on checkout. The
+ * scan reads what is stored, so the code that runs could be anything.
+ */
+function filledInCheck(ctx: ScanContext): CheckResult {
+  const evidence: Evidence[] = []
+  for (const file of ctx.files) {
+    const name = basename(file.path)
+    if (name === '.gitattributes') {
+      // Attributes cover their own folder: rewriting only tests or docs is noted.
+      const folder = dirname(file.path)
+      const coversLive = ctx.files.some(other => (folder === '' || other.path.startsWith(`${folder}/`)) && isLive(ctx.roleOf(other.path)))
+      const lines = (ctx.text(file.path) ?? '').split('\n')
+      for (let index = 0; index < lines.length && evidence.length < 20; index += 1) {
+        const line = (lines[index] as string).trim()
+        if (line.startsWith('#')) continue
+        const driver = /(?:^|\s)filter=([^\s]{1,100})/.exec(line)?.[1]
+        if (driver !== undefined) evidence.push({ file: file.path, line: index + 1, excerpt: `git rewrites these files with the "${driver}" filter on checkout: ${line.slice(0, 200)}`, status: coversLive ? 'warn' : 'info' })
+      }
+      continue
+    }
+    if (file.size > 1024) continue
+    const text = ctx.text(file.path)
+    if (text === undefined || !text.startsWith('version https://git-lfs.github.com/spec/')) continue
+    evidence.push({
+      file: file.path,
+      excerpt: 'a Git LFS pointer: the real file is downloaded when it is installed, and this scan could not read it',
+      // Images and docs often live in LFS; code that runs must not.
+      status: isLive(ctx.roleOf(file.path)) ? 'fail' : 'info',
+    })
+    if (evidence.length >= 20) break
+  }
+  return row(
+    {
+      id: 'structure.fetched',
+      group: GROUP,
+      title: 'Files filled in at install',
+      advice: 'The scan reads what the repository stores. A file that Git LFS downloads or a filter rewrites at install can hold different code, which was not checked.',
+    },
+    evidence,
+  )
+}

@@ -1,8 +1,10 @@
 import { codeChecks } from './checks/code'
 import { buildContext, isRecord, parseJson, type CandidateKind, type ScanContext } from './checks/context'
 import { hookChecks } from './checks/hooks'
+import { mcpChecks } from './checks/mcp'
 import { modChecks } from './checks/mod'
 import { promptChecks } from './checks/prompts'
+import { marketplacePinsCheck } from './checks/provenance'
 import { licenseCheck, qualityChecks } from './checks/quality'
 import { secretChecks } from './checks/secrets'
 import { structureChecks } from './checks/structure'
@@ -12,6 +14,7 @@ import { runValidator } from './checks/validator'
 import type { Host } from './host'
 import { treeHash } from './hash'
 import { ScanError, takeInventory, type Inventory, type InventoryEntry, type ScannedTree } from './inventory'
+import { fetchPinned, type PinnedSource, type RemoteSpec } from './remote'
 import { decide, type Verdict } from './verdict'
 
 export type ScanReport = {
@@ -21,6 +24,8 @@ export type ScanReport = {
   inventory?: Inventory
   results: CheckResult[]
   verdict: Verdict
+  /** For a remote scan: the one commit that was fetched and checked. */
+  source?: PinnedSource
 }
 
 export type ScanOptions = {
@@ -107,9 +112,11 @@ async function checksFor(host: Host, ctx: ScanContext, options: ScanOptions): Pr
   const validator = options.validate === false || ctx.kind === 'folder' ? undefined : await runValidator(host, ctx.tree.inventory.root)
   return [
     licenseCheck(ctx),
+    ...marketplacePinsCheck(ctx),
     ...structureChecks(ctx, validator),
     ...modChecks(ctx, validator),
     ...hookChecks(ctx),
+    ...mcpChecks(ctx),
     ...promptChecks(ctx),
     ...codeChecks(ctx),
     ...secretChecks(ctx),
@@ -125,6 +132,34 @@ type MarketplaceSource =
   | { kind: 'overflow'; count: number }
 
 /** The plugins a `.claude-plugin/marketplace.json` lists, other than the root itself. */
+/**
+ * Scans a remote source: fetches the one commit its ref names into the
+ * guard's own temporary folder, scans that folder, and removes it. A failure
+ * to fetch or verify is "Could not verify", never a pass.
+ */
+export async function scanRemote(host: Host, target: string, spec: RemoteSpec, options: ScanOptions = {}): Promise<ScanReport> {
+  let fetched
+  try {
+    fetched = await fetchPinned(host, spec, async stage => {
+      try {
+        await options.onStage?.(stage)
+      } catch {
+        // Progress is a courtesy, as in scanFolder.
+      }
+    })
+  } catch (error) {
+    return { target, results: [], verdict: decide([], reasonOf(error)) }
+  }
+  try {
+    const report = await scanFolder(host, target, fetched.root, options)
+    if (report.verdict.kind === 'unverified') return { ...report, source: fetched.source }
+    const results = sortResults([...fetched.results, ...report.results])
+    return { ...report, source: fetched.source, results, verdict: decide(results) }
+  } finally {
+    await fetched.cleanup().catch(() => undefined)
+  }
+}
+
 function marketplaceSources(ctx: ScanContext): MarketplaceSource[] {
   const raw = ctx.text('.claude-plugin/marketplace.json')
   const parsed = parseJson(raw)

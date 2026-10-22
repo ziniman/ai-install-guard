@@ -414,3 +414,45 @@ describe('pane review fixes, round four', () => {
     await pane.unmount()
   })
 })
+
+describe('a remote scan in the pane', () => {
+  const SHA = 'a'.repeat(40)
+  const WORK = '/tmp/ai-install-guard.Ef56Gh78/repo'
+  const git = (argv: readonly string[]) => {
+    const ok = (stdout = '') => ({ exitCode: 0, stdout, stderr: '' })
+    if (argv[0] === 'mktemp') return ok('/tmp/ai-install-guard.Ef56Gh78\n')
+    if (argv[0] === 'rm') return ok()
+    if (argv[0] !== 'git') return undefined
+    if (argv.includes('ls-remote')) return ok(`ref: refs/heads/main\tHEAD\n${SHA}\tHEAD\n${SHA}\trefs/heads/main\n`)
+    if (argv.includes('rev-parse')) return ok(`${SHA}\n`)
+    if (argv.includes('count-objects')) return ok('size: 0\nsize-pack: 12\n')
+    return ok()
+  }
+
+  test('shows the commit it fetched and records it with the decision', async ($, on) => {
+    const store = new Map<string, unknown>()
+    on('store.get', ($, e) => ({ value: store.get(e.key) }))
+    on('store.set', ($, e) => (store.set(e.key, e.value), { value: undefined }))
+    on('store.delete', ($, e) => (store.delete(e.key), { value: undefined }))
+    serveUi(on)
+    serveFixture(on, WORK, fixture('clean-plugin'), { run: git })
+    const answer = await $.command.run(typed('guard', 'scan github:acme/notes'))
+    expect(answer.text).toContain('Safe to install')
+    const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+
+    expect(await pane.find({ type: 'Text', text: new RegExp(`commit ${SHA.slice(0, 12)}`) })).toBeDefined()
+    await pane.press({ key: 'install' })
+    const [decision] = store.get('decisions') as { sha?: string; root?: string }[]
+    expect(decision?.sha).toBe(SHA)
+    expect(decision?.root).toBe('https://github.com/acme/notes.git')
+    await pane.unmount()
+  })
+
+  test('--ref and --path on a folder are refused', async ($, on) => {
+    mock.store(on)
+    serveUi(on)
+    serveFixture(on, ROOT, fixture('clean-plugin'))
+    const answer = await $.command.run(typed('guard', `scan --ref main ${ROOT}`))
+    expect(answer.text).toContain('apply to a repository')
+  })
+})

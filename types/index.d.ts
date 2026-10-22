@@ -42,6 +42,8 @@ export type GuardView = {
   rows: GuardRow[]
   kind?: string
   root?: string
+  /** The commit a remote scan fetched; absent for a local folder. */
+  sha?: string
   treeHash?: string
   /** Rows the person opened. */
   expanded: string[]

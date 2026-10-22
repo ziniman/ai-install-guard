@@ -7,6 +7,8 @@ import { safeLine } from '../scan/safe-text'
 export type Decision = {
   target: string
   root?: string
+  /** The commit, for a remote source. */
+  sha?: string
   treeHash: string
   verdict: string
   /** The verdict the decision was made on; an approval holds up to this one. */

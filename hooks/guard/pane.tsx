@@ -31,7 +31,11 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     )
   }
 
-  const header = [view.kind === undefined ? undefined : `A ${view.kind}`, view.treeHash === undefined ? undefined : `tree ${view.treeHash.slice(7, 19)}`]
+  const header = [
+    view.kind === undefined ? undefined : `A ${view.kind}`,
+    view.sha === undefined ? undefined : `commit ${view.sha.slice(0, 12)}`,
+    view.treeHash === undefined ? undefined : `tree ${view.treeHash.slice(7, 19)}`,
+  ]
     .filter(part => part !== undefined)
     .join(' · ')
 
@@ -57,6 +61,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       await recordDecision($, {
         target: current.target,
         root: current.root,
+        sha: current.sha,
         treeHash: current.treeHash,
         verdict: current.verdict.recommendation,
         verdictKind: current.verdict.kind,

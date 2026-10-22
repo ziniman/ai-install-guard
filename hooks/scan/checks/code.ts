@@ -403,7 +403,9 @@ function denseLine(text: string): Match | undefined {
 function credentialsCheck(ctx: ScanContext): CheckResult {
   const evidence: Evidence[] = []
   for (const file of codeFiles(ctx)) {
-    if (file.role === 'hook-script') continue
+    // Hook scripts and MCP configuration are judged where their target is
+    // known: the hooks check, and mcp.credentials with the server's host.
+    if (file.role === 'hook-script' || file.role === 'mcp-config') continue
     const sends = [NETWORK_CODE, NETWORK_COMMAND, COLLECTION_HOST].some(pattern => active(file, pattern, 1).length > 0)
     const lead = sends ? 'with network code in the same file: ' : ''
     evidence.push(...evidenceFor(file, CREDENTIAL_PATH, sends ? 'fail' : 'warn', match => `${lead}${match.excerpt}`, 3))

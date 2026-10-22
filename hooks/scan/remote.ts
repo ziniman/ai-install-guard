@@ -1,0 +1,326 @@
+// Fetching a remote candidate without running any of it: the ref is resolved
+// to one commit, only that commit is fetched into a folder the guard owns,
+// and the checkout is confirmed to have landed on it. The checks then read
+// that folder like any local one, and the folder is removed afterwards.
+
+import { row, type CheckResult, type Evidence } from './checks/types'
+import type { Host, RunResult } from './host'
+import { safeLine } from './safe-text'
+
+/** A remote candidate as asked for: an https git URL, a ref and a folder in it. */
+export type RemoteSpec = {
+  url: string
+  ref?: string
+  subdir?: string
+}
+
+/** What was actually scanned: one commit, named however it was asked for. */
+export type PinnedSource = {
+  url: string
+  /** The ref as asked for; absent for the default branch. */
+  ref?: string
+  refKind: 'commit' | 'tag' | 'branch' | 'default'
+  sha: string
+  /** The branch the repository's HEAD names, when it says. */
+  defaultBranch?: string
+  subdir?: string
+}
+
+export type FetchedSource = {
+  root: string
+  source: PinnedSource
+  /** Rows about the source itself: what was pinned and how its refs look. */
+  results: CheckResult[]
+  cleanup: () => Promise<void>
+}
+
+/** The most a fetched commit may weigh before the scan gives up. */
+export const MAX_FETCH_BYTES = 50 * 1024 * 1024
+
+/** No prompts for credentials, and no Git LFS downloads during checkout. */
+const GIT_ENV: Record<string, string> = { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_LFS_SKIP_SMUDGE: '1' }
+
+/** Names git gives its own refs; a branch or tag with one is a trap. */
+const SPECIAL_REFS = new Set(['HEAD', 'FETCH_HEAD', 'ORIG_HEAD', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'REBASE_HEAD', 'BISECT_HEAD', 'AUTO_MERGE'])
+
+const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
+const SHORT_SHA = /^[0-9a-f]{7,39}$/
+const SHORTHAND = /^(?:github:)?([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]{1,100}?)(?:\.git)?(?:@([^\s@]{1,250}))?$/
+
+/** Whether `target` is written as a remote source rather than a folder. */
+export function looksRemote(target: string): 'remote' | 'maybe' | 'local' {
+  if (/^(?:[a-z][a-z0-9+.-]*:\/\/|git@|github:)/i.test(target)) return 'remote'
+  // owner/repo could also be a folder: the caller checks the disk first.
+  return SHORTHAND.test(target) ? 'maybe' : 'local'
+}
+
+/**
+ * Reads a remote source: `https://host/path`, a GitHub tree URL
+ * (`https://github.com/o/r/tree/<ref>/<folder>`), `github:o/r` or `o/r`, each
+ * with an optional `@ref`. Only https is fetched, and never with a password
+ * in the URL. `ref` and `subdir` from options win over the text's own.
+ */
+export function parseRemote(target: string, options: { ref?: string; subdir?: string } = {}): RemoteSpec {
+  const text = target.trim()
+  let spec: RemoteSpec
+  const shorthand = SHORTHAND.exec(text)
+  if (shorthand !== null && !text.includes('://')) {
+    spec = { url: `https://github.com/${shorthand[1]}/${shorthand[2]}.git`, ref: shorthand[3] }
+  } else {
+    let url: URL
+    try {
+      url = new URL(text)
+    } catch {
+      throw new Error(`"${safeLine(text)}" is not a folder or a repository address`)
+    }
+    if (url.protocol !== 'https:') throw new Error('only https:// sources are fetched')
+    if (url.username !== '' || url.password !== '') throw new Error('a source address must not carry a user name or password')
+    const parts = url.pathname.split('/').filter(part => part !== '')
+    if (url.hostname.toLowerCase() === 'github.com' && parts.length >= 2) {
+      const repo = (parts[1] as string).replace(/\.git$/, '')
+      spec = { url: `https://github.com/${parts[0]}/${repo}.git` }
+      if (parts[2] === 'tree' && parts[3] !== undefined) {
+        spec.ref = decodeURIComponent(parts[3])
+        if (parts.length > 4) spec.subdir = parts.slice(4).map(decodeURIComponent).join('/')
+      }
+    } else {
+      spec = { url: `${url.origin}${url.pathname}` }
+    }
+  }
+  if (options.ref !== undefined) spec.ref = options.ref
+  if (options.subdir !== undefined) spec.subdir = options.subdir
+  if (spec.subdir !== undefined) spec.subdir = safeSubdir(spec.subdir)
+  return spec
+}
+
+/** A folder inside the repository: relative, with no `..`, normalised. */
+function safeSubdir(subdir: string): string | undefined {
+  const parts = subdir.split(/[\\/]+/).filter(part => part !== '' && part !== '.')
+  if (/^[\\/]|^[A-Za-z]:/.test(subdir) || parts.includes('..')) throw new Error(`the folder "${safeLine(subdir)}" is not inside the repository`)
+  return parts.length === 0 ? undefined : parts.join('/')
+}
+
+/** Why a ref name cannot be fetched safely, or undefined when it can. */
+function unsafeRef(ref: string): string | undefined {
+  if (ref.startsWith('-')) return 'starts with a dash'
+  if (SPECIAL_REFS.has(ref)) return `is git's own ${ref}`
+  if (/[\x00-\x20\x7f~^:?*[\\]|\.\.|@\{|\/\/|^\/|\/$|\.lock$|^\.|\/\./.test(ref)) return 'is not a valid ref name'
+  return undefined
+}
+
+type RemoteRefs = {
+  head?: string
+  defaultBranch?: string
+  /** Full ref name to commit: a tag's own commit when the tag is annotated. */
+  refs: Map<string, string>
+}
+
+export function parseLsRemote(stdout: string): RemoteRefs {
+  const refs = new Map<string, string>()
+  const peeled = new Map<string, string>()
+  let head: string | undefined
+  let defaultBranch: string | undefined
+  for (const line of stdout.split('\n')) {
+    const symref = /^ref: (\S+)\tHEAD$/.exec(line)
+    if (symref !== null) {
+      defaultBranch = symref[1]
+      continue
+    }
+    const entry = /^([0-9a-f]{40}|[0-9a-f]{64})\t(\S+)$/.exec(line)
+    if (entry === null) continue
+    const [, sha, name] = entry as unknown as [string, string, string]
+    if (name === 'HEAD') head = sha
+    else if (name.endsWith('^{}')) peeled.set(name.slice(0, -3), sha)
+    else refs.set(name, sha)
+  }
+  for (const [name, sha] of peeled) refs.set(name, sha)
+  return { head, defaultBranch, refs }
+}
+
+/** The commit a ref names, refusing anything a name could make ambiguous. */
+export function resolveRef(listed: RemoteRefs, ref: string | undefined): Pick<PinnedSource, 'sha' | 'refKind' | 'ref'> {
+  if (ref === undefined) {
+    if (listed.head === undefined) throw new Error('the repository has no default branch to scan')
+    return { sha: listed.head, refKind: 'default' }
+  }
+  const lower = ref.toLowerCase()
+  if (FULL_SHA.test(lower)) return { sha: lower, refKind: 'commit', ref }
+  const bad = unsafeRef(ref)
+  if (bad !== undefined) throw new Error(`the ref "${safeLine(ref)}" ${bad}`)
+  const names = ref.startsWith('refs/') ? [ref] : [`refs/tags/${ref}`, `refs/heads/${ref}`]
+  const found = names.filter(name => listed.refs.has(name))
+  if (found.length > 1) throw new Error(`both a branch and a tag are named "${safeLine(ref)}"; name the commit instead`)
+  const name = found[0]
+  if (name === undefined) {
+    if (SHORT_SHA.test(lower)) throw new Error(`"${safeLine(ref)}" looks like a short commit id; use the full 40-character id`)
+    throw new Error(`the repository has no branch or tag named "${safeLine(ref)}"`)
+  }
+  return { sha: listed.refs.get(name) as string, refKind: name.startsWith('refs/tags/') ? 'tag' : 'branch', ref }
+}
+
+/**
+ * Fetches exactly one commit into a new folder of the guard's own and checks
+ * it out, with no hooks, no submodules, no LFS downloads and no filters. The
+ * checkout is asserted to sit on the pinned commit: a branch named like the
+ * commit, or like FETCH_HEAD, cannot swap other code in.
+ */
+export async function fetchPinned(host: Host, spec: RemoteSpec, onStage?: (stage: string) => Promise<void> | void): Promise<FetchedSource> {
+  await onStage?.(`resolving ${safeLine(spec.url)}`)
+  const listing = await git(host, ['ls-remote', '--symref', spec.url, 'HEAD', 'refs/heads/*', 'refs/tags/*'], 60_000)
+  if (listing.exitCode !== 0) throw failure(listing, `could not reach ${spec.url}`)
+  const listed = parseLsRemote(listing.stdout)
+  const pinned = resolveRef(listed, spec.ref)
+  const dir = await makeTempDir(host)
+  const cleanup = () => removeTempDir(host, dir)
+  try {
+    const work = `${dir}/repo`
+    await must(git(host, ['init', '-q', work]), 'could not prepare a folder for the fetch')
+    await onStage?.(`fetching ${pinned.sha.slice(0, 12)}`)
+    await must(
+      git(host, ['-C', work, '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', 'fetch', '--depth', '1', '--no-tags', '--no-recurse-submodules', '-q', spec.url, pinned.sha], 300_000),
+      `could not fetch ${pinned.sha}`,
+    )
+    const counted = await must(git(host, ['-C', work, 'count-objects', '-v']), 'could not measure the fetch')
+    const kib = ['size', 'size-pack'].reduce((sum, key) => sum + Number(new RegExp(`^${key}:\\s*(\\d+)`, 'm').exec(counted.stdout)?.[1] ?? 0), 0)
+    if (kib * 1024 > MAX_FETCH_BYTES) throw new Error(`the commit weighs more than ${MAX_FETCH_BYTES / 1024 / 1024} MB, too much to scan`)
+    await must(
+      git(
+        host,
+        ['-C', work, '-c', 'core.autocrlf=false', '-c', 'core.symlinks=true', '-c', 'filter.lfs.smudge=', '-c', 'filter.lfs.process=', '-c', 'filter.lfs.required=false', 'checkout', '-q', '--detach', pinned.sha],
+        120_000,
+      ),
+      `could not check out ${pinned.sha}`,
+    )
+    // The assertion that closes Plugin4Shell: what HEAD is, not what was asked.
+    const head = (await must(git(host, ['-C', work, 'rev-parse', '--verify', 'HEAD']), 'could not read the checkout')).stdout.trim()
+    if (head !== pinned.sha) throw new Error(`the checkout landed on ${safeLine(head)}, not on the pinned commit ${pinned.sha}`)
+    const tree = await must(git(host, ['-C', work, 'ls-tree', '-r', '-z', '--full-tree', 'HEAD']), 'could not list the commit')
+    const source: PinnedSource = { url: spec.url, ...pinned, defaultBranch: listed.defaultBranch?.replace(/^refs\/heads\//, ''), subdir: spec.subdir }
+    let root = work
+    if (spec.subdir !== undefined) {
+      root = `${work}/${spec.subdir}`
+      const stat = await host.stat(root, { resolve: false }).catch(() => undefined)
+      if (stat === undefined || stat.kind !== 'dir' || stat.isLink) throw new Error(`the commit has no folder "${safeLine(spec.subdir)}"`)
+    }
+    return { root, source, results: [sourceRow(source), refsRow(listed), checkoutRow(tree.stdout, spec.subdir)], cleanup }
+  } catch (error) {
+    await cleanup().catch(() => undefined)
+    throw error
+  }
+}
+
+function git(host: Host, args: readonly string[], timeoutMs = 60_000): Promise<RunResult> {
+  return host.run(['git', ...args], { timeoutMs, env: GIT_ENV })
+}
+
+async function must(result: Promise<RunResult>, what: string): Promise<RunResult> {
+  const done = await result
+  if (done.exitCode !== 0) throw failure(done, what)
+  return done
+}
+
+function failure(result: RunResult, what: string): Error {
+  const line = result.stderr.split('\n').find(text => text.trim() !== '')
+  return new Error(`${what}: ${safeLine(line?.trim().slice(0, 300) ?? `git exited with ${result.exitCode}`)}`)
+}
+
+const TEMP_NAME = /[\\/]ai-install-guard\.[A-Za-z0-9._-]{6,}$/
+
+/** A new, empty folder under the system's temp folder, owned by the guard. */
+async function makeTempDir(host: Host): Promise<string> {
+  const posix = await host.run(['mktemp', '-d', '-t', 'ai-install-guard.XXXXXXXX']).catch(() => undefined)
+  const made = posix !== undefined && posix.exitCode === 0 ? posix.stdout.trim() : await windowsTempDir(host)
+  if (!TEMP_NAME.test(made)) throw new Error('could not make a temporary folder for the fetch')
+  return made.replace(/\\/g, '/')
+}
+
+const WINDOWS_MKTEMP =
+  "$p = Join-Path ([IO.Path]::GetTempPath()) ('ai-install-guard.' + [guid]::NewGuid().ToString('N').Substring(0, 12)); New-Item -ItemType Directory -Path $p | Out-Null; [Console]::Out.Write($p)"
+
+async function windowsTempDir(host: Host): Promise<string> {
+  const result = await host.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_MKTEMP]).catch(() => undefined)
+  return result !== undefined && result.exitCode === 0 ? result.stdout.trim() : ''
+}
+
+/** Removes a folder this module made, and nothing else. */
+async function removeTempDir(host: Host, dir: string): Promise<void> {
+  if (!TEMP_NAME.test(dir)) return
+  const posix = await host.run(['rm', '-rf', '--', dir]).catch(() => undefined)
+  if (posix !== undefined && posix.exitCode === 0) return
+  await host.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', 'Remove-Item -LiteralPath $env:GUARD_DIR -Recurse -Force'], { env: { GUARD_DIR: dir } }).catch(() => undefined)
+}
+
+function sourceRow(source: PinnedSource): CheckResult {
+  const what =
+    source.refKind === 'commit'
+      ? 'pinned to the commit you named'
+      : source.refKind === 'tag'
+        ? `tag ${safeLine(source.ref ?? '')} (a tag can be moved later; this scan holds the commit)`
+        : source.refKind === 'branch'
+          ? `branch ${safeLine(source.ref ?? '')} (a branch moves; this scan holds the commit)`
+          : `the default branch${source.defaultBranch === undefined ? '' : ` ${safeLine(source.defaultBranch)}`} (it moves; this scan holds the commit)`
+  return row(
+    {
+      id: 'provenance.source',
+      group: 'provenance',
+      title: 'Source and pinned commit',
+      advice: 'Everything below describes this one commit. Installing anything else needs a new scan.',
+    },
+    [{ file: '-', excerpt: `${safeLine(source.url)}${source.subdir === undefined ? '' : ` folder ${safeLine(source.subdir)}`} at ${source.sha}: ${what}`, status: 'info' }],
+    'info',
+  )
+}
+
+/**
+ * Branches and tags named like a commit id, or like git's own FETCH_HEAD, are
+ * how a pinned install is made to check out other code (Plugin4Shell). There
+ * is no honest reason for one; a short hex name is only odd.
+ */
+function refsRow(listed: RemoteRefs): CheckResult {
+  const evidence: Evidence[] = []
+  for (const name of listed.refs.keys()) {
+    const match = /^refs\/(heads|tags)\/(.+)$/.exec(name)
+    if (match === null) continue
+    const kind = match[1] === 'heads' ? 'branch' : 'tag'
+    const short = match[2] as string
+    const isDefault = name === listed.defaultBranch
+    const label = `the ${isDefault ? 'default ' : ''}${kind} "${safeLine(short)}"`
+    if (FULL_SHA.test(short.toLowerCase())) evidence.push({ file: '-', excerpt: `${label} is named like a commit id, which can make a pinned install check out other code`, status: 'fail' })
+    else if (SPECIAL_REFS.has(short)) evidence.push({ file: '-', excerpt: `${label} is named like git's own ${short}, which can make a pinned install check out other code`, status: 'fail' })
+    else if (SHORT_SHA.test(short) && /\d/.test(short) && /[a-f]/.test(short)) evidence.push({ file: '-', excerpt: `${label} is named like a short commit id`, status: 'warn' })
+    if (evidence.length >= 20) break
+  }
+  return row(
+    {
+      id: 'provenance.refs',
+      group: 'provenance',
+      title: 'Branch and tag names',
+      advice: 'A branch named like a commit id or like FETCH_HEAD lets the repository swap in other code when a client checks out a pinned commit by name. Treat the repository as hostile.',
+    },
+    evidence,
+  )
+}
+
+/** What a plain checkout would leave out or replace: submodules and filters. */
+function checkoutRow(lsTree: string, subdir: string | undefined): CheckResult {
+  const evidence: Evidence[] = []
+  const inside = (path: string) => subdir === undefined || path === subdir || path.startsWith(`${subdir}/`)
+  const shown = (path: string) => (subdir === undefined ? path : path.slice(subdir.length + 1))
+  for (const entry of lsTree.split('\0')) {
+    const match = /^(\d{6}) (\w+) ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(entry)
+    if (match === null) continue
+    const [, mode, , oid, path] = match as unknown as [string, string, string, string, string]
+    if (!inside(path)) continue
+    if (mode === '160000') evidence.push({ file: shown(path) || '.', excerpt: `a submodule at commit ${oid.slice(0, 12)}: its code is fetched separately and is not part of this scan`, status: 'warn' })
+    if (evidence.length >= 20) break
+  }
+  return row(
+    {
+      id: 'provenance.checkout',
+      group: 'provenance',
+      title: 'Code outside the commit',
+      advice: 'A submodule pulls code from another repository at install time. That code was not scanned.',
+    },
+    evidence,
+  )
+}

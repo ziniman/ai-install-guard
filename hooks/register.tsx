@@ -6,9 +6,10 @@ import { drawPane, REPORT_TEXT } from './guard/pane'
 import { PANE_ID, scanningView, viewOf } from './guard/view'
 import { modHost } from './mod-host'
 import type { Host } from './scan/host'
+import { looksRemote, parseRemote, type RemoteSpec } from './scan/remote'
 import { formatReport } from './scan/report'
 import { safeLine } from './scan/safe-text'
-import { scanFolder } from './scan/scan'
+import { scanFolder, scanRemote } from './scan/scan'
 
 // Claude Code reads every state reference from the file that uses it, so each
 // module declares its own atom for the pane's view.
@@ -17,7 +18,11 @@ const viewAtom = atom({ plugin: 'ai-install-guard', key: 'view' } as const, null
 const USAGE = [
   'Usage:',
   '  /guard scan <path>            Scan a local plugin, mod or skill folder without installing it',
-  '  /guard scan --details <path>  The same, with the full report as text',
+  '  /guard scan <repository>      Fetch one commit of a repository and scan it: https://host/owner/repo,',
+  '                                github:owner/repo or owner/repo, with an optional @ref',
+  '      --ref <branch|tag|commit>   The commit to scan (the default branch otherwise)',
+  '      --path <folder>             A folder inside the repository',
+  '      --details                   The full report as text',
   '  /guard report                 Reopen the last report',
   '  /guard list                   Your approved and rejected versions',
   '  /guard forget <name>          Forget decisions about a name, so it is judged again',
@@ -28,14 +33,15 @@ export const register: Register = on => {
     await $.command.register({
       name: 'guard',
       description: 'Scan a plugin, mod, skill or MCP server without installing it',
-      argumentHint: 'scan <path> | report | list | forget <name>',
+      argumentHint: 'scan <path | repository> | report | list | forget <name>',
     })
     return next(e)
   })
 
   on('command.run', { command: 'guard' }, async ($, e) => {
-    const { sub, rest, details } = splitArgs(e.args)
-    if (sub === 'scan' && rest !== '') return { text: await scan($, rest, details) }
+    const { sub, rest, details, ref, path, error } = splitArgs(e.args)
+    if (error !== undefined) return { text: `AI Install Guard: ${error}\n\n${USAGE}` }
+    if (sub === 'scan' && rest !== '') return { text: await scan($, rest, details, { ref, path }) }
     if (sub === 'report') return { text: await reopen($) }
     if (sub === 'list') return { text: await list($) }
     if (sub === 'forget' && rest !== '') {
@@ -54,7 +60,7 @@ export const register: Register = on => {
  * findings stay in the pane. Where no pane can show (a headless run), or with
  * --details, the answer is the full text report.
  */
-async function scan($: EngineInterface, target: string, details: boolean): Promise<string> {
+async function scan($: EngineInterface, target: string, details: boolean, flags: { ref?: string; path?: string }): Promise<string> {
   const host = modHost($)
   const opened = await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => ({ isPlaced: false }))
   // Until this scan's report is stored, Copy report has nothing to copy, never
@@ -63,10 +69,12 @@ async function scan($: EngineInterface, target: string, details: boolean): Promi
   await update($, viewAtom, () => scanningView(target, 'approve'))
   $.ui.status(`AI Install Guard: scanning ${safeLine(target)}`)
   try {
-    const report = await scanFolder(host, target, await expandHome(host, target), {
+    const options = {
       // Stage names can carry a candidate's own words (a plugin's name).
-      onStage: stage => update($, viewAtom, current => (current === null ? current : { ...current, stage: safeLine(stage) })).then(() => undefined),
-    })
+      onStage: (stage: string) => update($, viewAtom, current => (current === null ? current : { ...current, stage: safeLine(stage) })).then(() => undefined),
+    }
+    const spec = await remoteSpecFor(host, target, flags)
+    const report = spec === undefined ? await scanFolder(host, target, await expandHome(host, target), options) : await scanRemote(host, target, spec, options)
     // A tree you already decided on shows that decision, not the buttons
     // again, unless it now judges worse than when you approved it.
     const earlier = report.inventory === undefined ? undefined : await decisionFor($, report.inventory.treeHash, report.verdict.kind).catch(() => undefined)
@@ -119,18 +127,49 @@ async function list($: EngineInterface): Promise<string> {
 }
 
 /**
- * `scan --details "my folder"` → `{ sub: 'scan', details: true, rest: 'my folder' }`.
- * `--details` counts only as its own token right after the subcommand, so a
- * quoted path that contains it is left whole.
+ * `scan --details --ref v1 "my folder"` → `{ sub: 'scan', details: true, ref: 'v1', rest: 'my folder' }`.
+ * Options count only as their own tokens right after the subcommand, so a
+ * quoted path that contains one is left whole.
  */
-export function splitArgs(args: string): { sub: string; rest: string; details: boolean } {
+export function splitArgs(args: string): { sub: string; rest: string; details: boolean; ref?: string; path?: string; error?: string } {
   const trimmed = args.trim()
   const space = trimmed.search(/\s/)
   const sub = space === -1 ? trimmed : trimmed.slice(0, space)
   let rest = space === -1 ? '' : trimmed.slice(space).trim()
-  const details = /^--details(?:\s|$)/.test(rest)
-  if (details) rest = rest.slice('--details'.length).trim()
-  return { sub: sub.toLowerCase(), rest: unquote(rest), details }
+  let details = false
+  let ref: string | undefined
+  let path: string | undefined
+  for (;;) {
+    const option = /^(--details|--ref|--path)(?:\s+|$)/.exec(rest)
+    if (option === null) break
+    rest = rest.slice(option[0].length)
+    if (option[1] === '--details') {
+      details = true
+      continue
+    }
+    const value = /^("[^"]*"|'[^']*'|\S+)\s*/.exec(rest)
+    if (value === null || (value[1] as string).startsWith('--')) return { sub: sub.toLowerCase(), rest: '', details, error: `${option[1]} needs a value` }
+    rest = rest.slice(value[0].length)
+    if (option[1] === '--ref') ref = unquote(value[1] as string)
+    else path = unquote(value[1] as string)
+  }
+  return { sub: sub.toLowerCase(), rest: unquote(rest), details, ref, path }
+}
+
+/**
+ * The remote source `target` names, or undefined for a local folder. A bare
+ * owner/repo is a folder when one exists by that name and no --ref or --path
+ * says otherwise.
+ */
+async function remoteSpecFor(host: Host, target: string, flags: { ref?: string; path?: string }): Promise<RemoteSpec | undefined> {
+  const shape = looksRemote(target)
+  const asked = flags.ref !== undefined || flags.path !== undefined
+  if (shape === 'local') {
+    if (asked) throw new Error('--ref and --path apply to a repository, not to a folder')
+    return undefined
+  }
+  if (shape === 'maybe' && !asked && (await host.stat(target).catch(() => undefined)) !== undefined) return undefined
+  return parseRemote(target, { ref: flags.ref, subdir: flags.path })
 }
 
 function unquote(text: string): string {

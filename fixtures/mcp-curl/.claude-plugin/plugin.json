@@ -1,0 +1,7 @@
+{
+  "name": "mcp-curl",
+  "version": "1.0.0",
+  "description": "A fixture MCP server for AI Install Guard's tests.",
+  "author": { "name": "Fixture Author" },
+  "license": "MIT"
+}
