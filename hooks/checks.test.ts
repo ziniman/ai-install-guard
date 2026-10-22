@@ -206,7 +206,7 @@ describe('Claude Code validator', () => {
 describe('verdicts', () => {
   test('all four outcomes', async () => {
     expect((await scan('clean-plugin')).verdict.recommendation).toBe('Safe to install')
-    expect((await scan('mod-http-fetch')).verdict.recommendation).toBe('Install with caution')
+    expect((await scan('mod-http-fetch')).verdict.recommendation).toBe('Review what it can do')
     expect((await scan('curl-hook')).verdict.recommendation).toBe('Do not install')
     const missing = await scanFolder(memoryHost(ROOT, fixture('clean-plugin')), 'missing', '/nowhere', { validate: false })
     expect(missing.verdict).toMatchObject({ kind: 'unverified', recommendation: 'Could not verify', reasons: ['/nowhere does not exist'] })
@@ -1319,7 +1319,7 @@ describe('a badge in the README is checked, never trusted', () => {
 
   test('a badge the scan agrees with is only noted, and lifts nothing', async () => {
     expect(statusOf(await scanWith('clean-plugin', badge('safe_to_install_%C2%B7_aaaaaaa')))).toBe('info')
-    expect(statusOf(await scanWith('script-exec', badge('install_with_caution_%C2%B7_aaaaaaa', 'dbab09')))).toBe('info')
+    expect(statusOf(await scanWith('script-exec', badge('review_what_it_can_do_%C2%B7_aaaaaaa', 'dbab09')))).toBe('info')
     const failing = await scanWith('curl-hook', badge('safe_to_install'))
     expect(failing.verdict.kind).toBe('reject')
   })
@@ -1341,7 +1341,7 @@ describe('badge claims, review round one', () => {
   const row = (report: ScanReport) => report.results.find(result => result.id === 'provenance.badge')
 
   test('every badge counts: a later, stronger claim is still caught', async () => {
-    const report = await scanWith('script-exec', `${badge('install_with_caution')}\n\n${'filler line\n'.repeat(6000)}\n${badge('safe_to_install')}`)
+    const report = await scanWith('script-exec', `${badge('review_what_it_can_do')}\n\n${'filler line\n'.repeat(6000)}\n${badge('safe_to_install')}`)
     expect(row(report)?.status).toBe('warn')
   })
 
@@ -1381,7 +1381,7 @@ describe('badge claims, PR review round one', () => {
   })
 
   test('every badge on a line counts', async () => {
-    expect(row(await scanWith('script-exec', `${badge('install_with_caution')} ${badge('safe_to_install')}`))?.status).toBe('warn')
+    expect(row(await scanWith('script-exec', `${badge('review_what_it_can_do')} ${badge('safe_to_install')}`))?.status).toBe('warn')
   })
 
   test('a badge for another version is not agreement', async () => {
@@ -1445,5 +1445,72 @@ describe('mod capability rows in plain words', () => {
     const row = highRow(await scanFolder(memoryHost(ROOT, files), 'case', ROOT, { validate: false }))
     expect(row?.summary?.[0]).toBe('Runs programs on your machine; its README does not say why')
     expect(row?.summary?.some(line => line.startsWith('The README says'))).toBe(false)
+  })
+})
+
+describe('mod capability rows, PR review round one', () => {
+  const b64 = (text: string) => ({ base64: btoa(text) })
+  const README = '# branch\n\nShows your branch. Uninstall it with /plugin uninstall branch.\n'
+  const modWith = (code: string, extra: FixtureFiles = {}) =>
+    scanFolder(memoryHost(ROOT, { ...fixture('mod-process-run'), 'README.md': b64(README), 'hooks/register.ts': b64(code), ...extra }), 'case', ROOT, { validate: false })
+  const summary = async (code: string, extra: FixtureFiles = {}) => (await modWith(code, extra)).results.find(result => result.id === 'mod.high-risk')?.summary ?? []
+  const wrap = (body: string) => `import type { Register } from 'claude-code'\n\nexport const register: Register = on => {\n  on('session.start', async ($, e, next) => {\n${body}\n    return next(e)\n  })\n}\n`
+
+  test("a computed call names its program", async () => {
+    expect(await summary(wrap("    await $.process['run'](['git', 'status'])"))).toContain('Starts git')
+  })
+
+  test('a name built while it runs is a program chosen then', async () => {
+    expect(await summary(wrap('    await $.process.run([`${tool}`, "-v"])'))).toContain('Starts programs chosen while it runs')
+  })
+
+  test('an example in a string is not a program it starts', async () => {
+    const lines = await summary(wrap(`    const example = ".run(['curl', 'x'])"\n    await $.process.run(['git', 'status'])`))
+    expect(lines).toContain('Starts git')
+    expect(lines.join(' ')).not.toContain('curl')
+  })
+
+  test('a saved process handle still has its programs read', async () => {
+    expect(await summary(wrap("    const p = $.process\n    await p.run(['git', 'status'])"))).toContain('Starts git')
+  })
+
+  test("another file's programs are not the mod's", async () => {
+    const lines = await summary(wrap("    await $.process.run(['git', 'status'])"), { 'scripts/helper.js': b64("child.run(['curl', 'x'])\n") })
+    expect(lines.join(' ')).not.toContain('curl')
+  })
+
+  test('a denial or a bare table row does not say why', async () => {
+    const denied = await summary(wrap("    await $.process.run(['git', 'status'])"), { 'README.md': b64('# b\n\nIt does not use process.run for anything at all.\n\n| process.run | --- |\n\nUninstall it with /plugin uninstall b.\n') })
+    expect(denied[0]).toBe('Runs programs on your machine; its README does not say why')
+  })
+
+  test('words from the description are labelled as the description', async () => {
+    const manifest = b64(JSON.stringify({ name: 'branch', version: '1.0.0', license: 'MIT', description: 'Shows your branch: uses process.run to ask git for its name.' }))
+    const lines = await summary(wrap("    await $.process.run(['git', 'status'])"), { '.claude-plugin/plugin.json': manifest })
+    expect(lines.some(line => line.startsWith('Its description says about process.run'))).toBe(true)
+  })
+
+  test("the README's reason comes before a long program list", async () => {
+    const programs = ['git', 'sh', 'curl', 'ffmpeg', 'rm', 'node', 'make', 'open', 'tar', 'osascript'].map(name => `    await $.process.run(['${name}'])`).join('\n')
+    const readme = b64('# b\n\nIt calls process.run to start the tools it wraps for you.\n\nUninstall it with /plugin uninstall b.\n')
+    const lines = await summary(wrap(programs), { 'README.md': readme })
+    const quote = lines.findIndex(line => line.startsWith('The README says'))
+    expect(quote).toBeGreaterThan(-1)
+    expect(quote).toBeLessThan(lines.findIndex(line => line.startsWith('Starts ')))
+    expect(lines.length).toBeLessThanOrEqual(8)
+  })
+})
+
+describe('the renamed middle verdict', () => {
+  const b64 = (text: string) => ({ base64: btoa(text) })
+
+  test('a WARN reads Review what it can do', async () => {
+    expect((await scan('script-exec')).verdict.recommendation).toBe('Review what it can do')
+  })
+
+  test('a badge pasted with the old wording still counts as the middle verdict', async () => {
+    const files = { ...fixture('script-exec'), 'README.md': b64('# x\n\n[![AI Install Guard](https://img.shields.io/badge/AI_Install_Guard-install_with_caution-dbab09)](https://github.com/ziniman/ai-install-guard#review-badge)\n\nA plugin for the tests. Uninstall it with /plugin uninstall x.\n') }
+    const report = await scanFolder(memoryHost(ROOT, files), 'case', ROOT, { validate: false })
+    expect(report.results.find(result => result.id === 'provenance.badge')?.status).toBe('info')
   })
 })

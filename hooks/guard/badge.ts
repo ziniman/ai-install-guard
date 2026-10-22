@@ -4,7 +4,7 @@ import type { GuardView } from '../../types'
 export const BADGE_PAGE = 'https://github.com/ziniman/ai-install-guard#review-badge'
 
 const COLOR = { safe: '2ea44f', caution: 'dbab09' } as const
-const MESSAGE = { safe: 'safe to install', caution: 'install with caution' } as const
+const MESSAGE = { safe: 'safe to install', caution: 'review what it can do' } as const
 
 /** A shields.io static badge part: dashes and underscores doubled, spaces as underscores. */
 function shieldPart(text: string): string {
@@ -13,7 +13,7 @@ function shieldPart(text: string): string {
 
 /**
  * The README badge for the last scan: its verdict and the exact version it
- * covers. Offered for Safe to install and Install with caution only, and
+ * covers. Offered for Safe to install and Review what it can do only, and
  * only for a scan that read the files, so it always names what was scanned.
  */
 export function badgeFor(view: GuardView | undefined): { markdown: string; pin: string } | { refusal: string } {

@@ -107,46 +107,23 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
     ...dedupe(info.events).map(use => ({ use, kind: 'event' as const, capability: eventCapability(use) })),
     ...dedupe(info.calls).map(use => ({ use, kind: 'call' as const, capability: callCapability(use.name) })),
   ])
-  const explained = explanationsOf(ctx)
-  // The README must spell the call or event out as a name of its own; a wildcard is never explained.
-  const explainedCache = new Map<string, boolean>()
-  const isExplained = (name: string): boolean => {
-    const cached = explainedCache.get(name)
-    if (cached !== undefined) return cached
-    const answer = explains(name)
-    explainedCache.set(name, answer)
+  // A call is explained when the README (or the manifest's description)
+  // names it as a name of its own, not after a negation ("never calls
+  // process.run"), on a line or table row that says something about it: at
+  // least three words besides the name. A wildcard is never explained. The
+  // words are kept to quote beside the call, marked as the candidate's.
+  const sources: { where: Explanation['where']; text: string }[] = [
+    { where: 'README', text: (ctx.readme?.text ?? '').replace(/<!--[\s\S]{0,20000}?-->/g, ' ') },
+    { where: 'description', text: typeof ctx.manifest?.description === 'string' ? ctx.manifest.description : '' },
+  ]
+  const explanationCache = new Map<string, Explanation | undefined>()
+  const explanationFor = (name: string): Explanation | undefined => {
+    if (explanationCache.has(name)) return explanationCache.get(name)
+    const answer = findExplanation(name, sources)
+    explanationCache.set(name, answer)
     return answer
   }
-  const explains = (name: string): boolean => {
-    if (name.length < 5 || !/^[a-z]+\.[a-zA-Z.]+$/.test(name)) return false
-    const escaped = name.replace(/\./g, '\\.')
-    const mention = new RegExp(`(?<![\\w.$])${escaped}(?![\\w])`, 'gi')
-    // A mention right after a negation ("we never call process.run",
-    // "no process.run") says it does not use the call, so it explains nothing.
-    for (const found of explained.matchAll(mention)) {
-      const before = explained.slice(Math.max(0, (found.index ?? 0) - 40), found.index).split(/[.!?|\n]/).pop() ?? ''
-      if (!/\b(?:never|not|no|without|don['’]t|doesn['’]t|won['’]t|cannot|can['’]t)\b(?:\W+\w+){0,3}\W*$/i.test(before)) return true
-    }
-    return false
-  }
-
-  // The README's own words for a call, to show beside it: quoted from the
-  // candidate, so marked as its words and never trusted.
-  const source = readmeSource(ctx)
-  const quoteFor = (name: string): string | undefined => {
-    if (!isExplained(name)) return undefined
-    const escaped = name.replace(/\./g, '\\.')
-    const mention = new RegExp(`(?<![\\w.$])${escaped}(?![\\w])`, 'i')
-    for (const line of source.split('\n')) {
-      if (!mention.test(line)) continue
-      // A table row: the cells that are not the call's own name.
-      const cells = line.trim().startsWith('|') ? line.split('|').map(cell => cell.trim()).filter(cell => cell !== '' && !/^:?-+:?$/.test(cell)) : [line]
-      const words = (cells.filter(cell => !mention.test(cell)).join(' ') || line).replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim()
-      if (words === '') continue
-      return words.length > 220 ? `${words.slice(0, 219)}…` : words
-    }
-    return undefined
-  }
+  const isExplained = (name: string): boolean => explanationFor(name) !== undefined
 
   const inventory: Evidence[] = uses.map(({ use, kind, capability }) => ({
     file: use.file,
@@ -215,7 +192,7 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
         group: GROUP,
         title: 'High-risk capabilities',
         advice: 'Running programs, writing files, deciding tool permissions, judging other plugins or changing the system prompt is what a mod needs to take over a session. Install only if its purpose needs it and its README says why.',
-        summary: capabilitySummary(uses.filter(item => item.capability.risk === 'high'), isExplained, quoteFor, ctx, allCalls.has('fs.read') && allCalls.has('http.fetch')),
+        summary: capabilitySummary(uses.filter(item => item.capability.risk === 'high'), explanationFor, ctx, modules, allCalls.has('fs.read') && allCalls.has('http.fetch')),
       },
       high,
       'fail',
@@ -226,7 +203,7 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
         group: GROUP,
         title: 'Network, environment and prompt access',
         advice: 'Check every address it talks to and every variable it reads against what it says it does.',
-        summary: capabilitySummary(uses.filter(item => item.capability.risk === 'medium'), isExplained, quoteFor, ctx, false),
+        summary: capabilitySummary(uses.filter(item => item.capability.risk === 'medium'), explanationFor, ctx, modules, false),
       },
       medium,
     ),
@@ -279,11 +256,6 @@ function eventCapability(use: ModuleUse): Capability {
 }
 
 /** Lowercased names the README or description spells out, such as `process.run`. */
-function explanationsOf(ctx: ScanContext): string {
-  // Only what a reader sees: HTML comments are hidden when the README renders.
-  const visible = (ctx.readme?.text ?? '').replace(/<!--[\s\S]{0,20000}?-->/g, ' ')
-  return [visible, typeof ctx.manifest?.description === 'string' ? ctx.manifest.description : ''].join('\n\n').toLowerCase()
-}
 
 /** Adds what Claude Code's own validator saw and the source scan missed. */
 function withValidator(info: ModuleInfo, validator: ValidatorReport | undefined): ModuleInfo {
@@ -312,54 +284,85 @@ function dedupe(uses: readonly ModuleUse[]): ModuleUse[] {
 
 export type { Status }
 
-/** The README and description as written, for quoting; HTML comments left out. */
-function readmeSource(ctx: ScanContext): string {
-  const visible = (ctx.readme?.text ?? '').replace(/<!--[\s\S]{0,20000}?-->/g, ' ')
-  return [visible, typeof ctx.manifest?.description === 'string' ? ctx.manifest.description : ''].join('\n')
+/** Where a call is explained, and the words that explain it. */
+type Explanation = { where: 'README' | 'description'; quote: string }
+
+const NEGATION = /\b(?:never|not|no|without|don['’]t|doesn['’]t|won['’]t|cannot|can['’]t)\b(?:\W+\w+){0,3}\W*$/i
+
+function findExplanation(name: string, sources: readonly { where: Explanation['where']; text: string }[]): Explanation | undefined {
+  if (name.length < 5 || !/^[a-z]+\.[a-zA-Z.]+$/.test(name)) return undefined
+  const escaped = name.replace(/\./g, '\\.')
+  const mentions = new RegExp(`(?<![\\w.$])${escaped}(?![\\w])`, 'gi')
+  const mention = new RegExp(`(?<![\\w.$])${escaped}(?![\\w])`, 'i')
+  for (const { where, text } of sources) {
+    for (const line of text.split('\n')) {
+      for (const found of line.matchAll(mentions)) {
+        const index = found.index ?? 0
+        const before = line.slice(Math.max(0, index - 40), index).split(/[.!?|]/).pop() ?? ''
+        if (NEGATION.test(before)) continue
+        // A table row: the cells that are not the call's own name.
+        const cells = line.trim().startsWith('|') ? line.split('|').map(cell => cell.trim()).filter(cell => cell !== '' && !/^:?-+:?$/.test(cell)) : [line]
+        const words = cells.filter(cell => !mention.test(cell)).join(' ').replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim()
+        const said = cells.length > 1 ? words : line.replace(mention, '').replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim()
+        if ((said.match(/[A-Za-z]{3,}/g) ?? []).length < 3) continue
+        const quote = cells.length > 1 ? words : line.replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim()
+        return { where, quote: quote.length > 220 ? `${quote.slice(0, 219)}…` : quote }
+      }
+    }
+  }
+  return undefined
 }
 
 /**
- * A capability row in plain words: what the mod can do, whether its README
- * says why, the programs it starts when it runs any, and the README's own
- * words for each, marked as the candidate's.
+ * A capability row in plain words: what the mod can do and whether its
+ * README says why, the README's own words for it (marked as the
+ * candidate's), then the programs it starts when it runs any.
  */
 function capabilitySummary(
   uses: readonly { use: ModuleUse; kind: 'event' | 'call'; capability: Capability }[],
-  isExplained: (name: string) => boolean,
-  quoteFor: (name: string) => string | undefined,
+  explanationFor: (name: string) => Explanation | undefined,
   ctx: ScanContext,
+  modules: readonly ModuleInfo[],
   readsAndSends: boolean,
 ): string[] | undefined {
   const names = [...new Set(uses.map(item => item.use.name))]
   if (names.length === 0) return undefined
   const plain = [...new Set(uses.map(item => item.capability.plain))]
-  const told = names.every(isExplained)
+  const told = names.every(name => explanationFor(name) !== undefined)
   const lines = [`${plain.join('; ').replace(/^./, char => char.toUpperCase())}${told ? '; its README says why' : '; its README does not say why'}`]
   if (readsAndSends) lines.push('Reads files and sends requests, so it could send your files out')
-  if (names.some(name => /^process\.(?:run|spawn)$/.test(name))) {
-    const programs = programsOfModule(ctx)
-    const described = describePrograms(programs, { buildsCode: 0, downloads: 0 }).filter(line => !line.startsWith('In '))
-    lines.push(...(described.length > 0 ? described : ['Which programs it starts could not be read from its code']))
+  // The reasons come before the program list, so a long list cannot push them out of view.
+  for (const name of names.slice(0, 2)) {
+    const explanation = explanationFor(name)
+    if (explanation !== undefined) lines.push(`${explanation.where === 'README' ? 'The README says' : 'Its description says'} about ${name} (its words, not checked): "${explanation.quote}"`)
   }
-  for (const name of names.slice(0, 3)) {
-    const quote = quoteFor(name)
-    if (quote !== undefined) lines.push(`The README says about ${name} (its words, not checked): "${quote}"`)
+  if (names.some(name => /^process(?:\.|$)/.test(name))) {
+    // Only the modules that reach for processes, and the files they import.
+    const files = new Set(modules.filter(info => info.calls.some(call => /^process(?:\.|$)/.test(call.name))).flatMap(info => [info.entry, ...info.files]))
+    const described = describePrograms(programsOfModule(ctx, files), { buildsCode: 0, downloads: 0 }).filter(line => !line.startsWith('In '))
+    lines.push(...(described.length > 0 ? described.slice(0, 4) : ['Which programs it starts could not be read from its code']))
   }
   return lines
 }
 
-/** The programs a mod's live code starts with a literal name: `.run(['git', ...])`. */
-function programsOfModule(ctx: ScanContext): ProgramUse[] {
+/**
+ * The programs a mod's own files start with a literal name, as in
+ * `.run(['git', ...])` or `['run'](['git'])`, outside comments, patterns and
+ * strings. A name built while it runs (`${tool}`) is a program chosen then.
+ */
+function programsOfModule(ctx: ScanContext, files: ReadonlySet<string>): ProgramUse[] {
   const uses: ProgramUse[] = []
-  for (const file of ctx.files) {
-    if (!/\.(?:[cm]?[jt]sx?)$/.test(file.path) || !isLive(ctx.roleOf(file.path))) continue
-    const text = ctx.text(file.path)
+  for (const path of files) {
+    if (!/\.(?:[cm]?[jt]sx?)$/.test(path)) continue
+    const text = ctx.text(path)
     if (text === undefined) continue
     const kindAt = spanKinds(text, 'js')
-    for (const match of text.matchAll(/\.(?:run|spawn)\s*\(\s*\[\s*(["'`])([^"'`\s]{1,100})\1/g)) {
+    for (const match of text.matchAll(/(?:\.(?:run|spawn)|\[\s*(["'])(?:run|spawn)\1\s*\])\s*\(\s*\[\s*(["'`])([^"'`\s]{1,100})\2/g)) {
       const kind = kindAt(match.index ?? 0)
-      if (kind === 'comment' || kind === 'regex' || kind === 'trailing-comment') continue
-      uses.push({ name: (match[2] as string).split(/[\\/]/).pop()?.replace(/\.exe$/i, '').toLowerCase() ?? '', file: file.path, dynamic: false })
+      if (kind !== 'code') continue
+      const raw = match[3] as string
+      const dynamic = match[2] === '`' && raw.includes('${')
+      uses.push({ name: dynamic ? raw.slice(0, 60) : (raw.split(/[\\/]/).pop() ?? '').replace(/\.exe$/i, '').toLowerCase(), file: path, dynamic })
       if (uses.length >= 500) return uses
     }
   }

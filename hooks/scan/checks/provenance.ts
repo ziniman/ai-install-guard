@@ -150,7 +150,7 @@ export function badgeClaim(readme: { path: string; text: string } | undefined): 
         // Left as written.
       }
       const words = message.replace(/--/g, '\u0000').replace(/-[0-9a-f]{3,8}$|-[a-z]+$/i, '').replace(/_/g, ' ').replace(/\u0000/g, '-').toLowerCase()
-      const claimed = /do not install/.test(words) ? 'reject' : /could not verify/.test(words) ? 'unverified' : /caution/.test(words) ? 'caution' : 'safe'
+      const claimed = /do not install/.test(words) ? 'reject' : /could not verify/.test(words) ? 'unverified' : /caution|review what it can do/.test(words) ? 'caution' : 'safe'
       const pin = /·\s*((?:tree\s+)?[0-9a-f]{7,64})\b/.exec(words)?.[1]
       if (best === undefined || VERDICT_RANK[claimed] < VERDICT_RANK[best.claimed]) best = { file: readme.path, line: index + 1, claimed, pin, text: words.slice(0, 120) }
     }
@@ -159,7 +159,7 @@ export function badgeClaim(readme: { path: string; text: string } | undefined): 
 }
 
 const VERDICT_RANK = { safe: 0, caution: 1, unverified: 2, reject: 3 } as const
-const VERDICT_WORDS = { safe: 'Safe to install', caution: 'Install with caution', unverified: 'Could not verify', reject: 'Do not install' } as const
+const VERDICT_WORDS = { safe: 'Safe to install', caution: 'Review what it can do', unverified: 'Could not verify', reject: 'Do not install' } as const
 
 /**
  * The row for a README's badge, judged against this scan's own verdict. A

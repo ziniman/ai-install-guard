@@ -6,6 +6,8 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ## Unreleased
 
+**`verdict`** - The middle verdict is now **Review what it can do**, formerly Install with caution. It means the candidate has powerful access worth knowing about, which a trustworthy tool may need too, not that it is a lesser kind of safe. The badge uses the new words, and a badge with the old words still counts as that verdict
+
 **`pane`** - The mod capability rows now say in plain words what a mod can do and whether its README says why, which programs it starts (read from its code, with shells and other risky ones called out), and the README's own explanation, quoted and marked as the plugin's words
 
 **`provenance`** - For a repository on GitHub, the report now says how old it and its owner's account are, its stars, forks and contributors, whether it is archived or a fork, and whether the scanned commit is signed and on the default branch. A brand-new account, a new repository with one author and few stars, and a commit named by id that is not on the default branch (it may come from a fork) are warnings; a lookup that fails is only noted
