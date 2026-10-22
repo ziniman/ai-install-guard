@@ -3,7 +3,7 @@ import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 
 import type { GuardView } from '../types'
 import { badgeFor } from './guard/badge'
-import { PANE_ID } from './guard/view'
+import { encodeFolder, PANE_ID } from './guard/view'
 import { FIXTURES } from './test-support/fixtures.gen'
 import { paneProps, serveFixture, serveUi, typed, type FixtureFiles } from './test-support/memfs'
 
@@ -580,13 +580,19 @@ describe('the README badge, PR review round one', () => {
 })
 
 describe('the README badge, PR review round two', () => {
-  test('a folder name with a space is encoded, never dropped', () => {
-    const made = badgeFor({
-      target: 'acme/notes', action: 'approve', stage: '', rows: [], expanded: [], details: false, confirming: false,
-      verdict: { kind: 'safe', recommendation: 'Safe to install', reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
-      sha: 'a'.repeat(40), subdir: 'packages/my skill "x"', treeHash: `sha256:${'b'.repeat(64)}`,
-    })
-    expect('markdown' in made && made.markdown).toContain('in packages/my%20skill%20%22x%22](')
-    expect('markdown' in made && made.markdown).toContain('folder packages/my%20skill%20%22x%22, sha256:')
+  const view = (subdir: string): GuardView => ({
+    target: 'acme/notes', action: 'approve', stage: '', rows: [], expanded: [], details: false, confirming: false,
+    verdict: { kind: 'safe', recommendation: 'Safe to install', reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
+    sha: 'a'.repeat(40), subdir: encodeFolder(subdir), treeHash: `sha256:${'b'.repeat(64)}`,
+  })
+
+  test('a folder name with a space, quotes or an emoji is encoded whole, never dropped', () => {
+    const made = badgeFor(view('packages/my skill "x" \u{1F680}'))
+    expect('markdown' in made && made.markdown).toContain('in packages/my%20skill%20%22x%22%20%F0%9F%9A%80](')
+    expect('markdown' in made && made.markdown).toContain('folder packages/my%20skill%20%22x%22%20%F0%9F%9A%80, sha256:')
+  })
+
+  test('a folder name too long to show gets no badge rather than a cut one', () => {
+    expect(badgeFor(view(`${'a'.repeat(250)}/${'b'.repeat(250)}`))).toEqual({ refusal: 'The folder name is too long to show in a badge.' })
   })
 })

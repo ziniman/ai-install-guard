@@ -26,8 +26,9 @@ export function badgeFor(view: GuardView | undefined): { markdown: string; pin: 
   if (tree === undefined) return { refusal: 'The last scan has no tree hash to pin a badge to.' }
   const pin = sha !== undefined ? sha.slice(0, 7) : `tree ${tree.slice(7, 15)}`
   // A scan of one folder always says so: the rest of the commit was not
-  // judged. Characters Markdown could misread are percent-encoded, never dropped.
-  const folder = sha !== undefined && view.subdir !== undefined ? view.subdir.slice(0, 200).replace(/[^\w./-]/g, char => encodeURIComponent(char).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)) : undefined
+  // judged. The view holds the folder percent-encoded, whole, never cut.
+  const folder = sha !== undefined ? view.subdir : undefined
+  if (folder !== undefined && !/^[\w./%-]{1,400}$/.test(folder)) return { refusal: 'The folder name is too long to show in a badge.' }
   const image = `https://img.shields.io/badge/${shieldPart('AI Install Guard')}-${shieldPart(`${MESSAGE[kind]} · ${pin}`)}-${COLOR[kind]}`
   const scanned = sha !== undefined ? `commit ${sha}${folder === undefined ? '' : `, folder ${folder}`}, ${tree}` : tree
   return { markdown: `[![AI Install Guard: ${view.verdict.recommendation} at ${pin}${folder === undefined ? '' : ` in ${folder}`}](${image})](${BADGE_PAGE} "Scanned at ${scanned}")`, pin }
