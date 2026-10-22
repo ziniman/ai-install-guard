@@ -46,10 +46,10 @@ describe("reading Claude's shell commands", () => {
 
   test('finds the install however the command is written', () => {
     expect(readShellCommand('claude plugin install notes@acme --scope project')).toMatchObject(install('notes', 'acme'))
-    expect(readShellCommand('cd /tmp && claude plugins i notes@acme')).toMatchObject(install('notes', 'acme'))
+    expect(readShellCommand('claude plugins i notes@acme')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand('env X=1 /usr/local/bin/claude plugin install notes@acme 2>&1 | tail -5')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand('bash -lc "claude plugin install notes@acme"')).toMatchObject(install('notes', 'acme'))
-    expect(readShellCommand(`sh -c 'eval "claude plugin marketplace add acme/market"'`)).toMatchObject({ kind: 'install', request: { kind: 'marketplace', source: 'acme/market' } })
+    expect(readShellCommand(`sh -c 'eval "claude plugin marketplace add https://github.com/acme/market"'`)).toMatchObject({ kind: 'install', request: { kind: 'marketplace', source: 'https://github.com/acme/market' } })
     expect(readShellCommand('bash <<EOF\nclaude plugin install notes@acme\nEOF')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand('claude "plugin" install notes@acme # quoted words')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand('claude plugin update notes@acme')).toMatchObject({ kind: 'install', request: { kind: 'plugin', verb: 'update', plugin: 'notes' } })
@@ -91,6 +91,14 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('claude plugin install notes@acme && ./more.sh')).toMatchObject({ reason: expect.stringContaining('runs more than the install') })
   })
 
+  test("a marketplace Claude adds is named so the guard scans the same one: no cd, no relative folder", () => {
+    expect(readShellCommand('cd /tmp && claude plugin marketplace add .')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('runs more than the install') })
+    expect(readShellCommand('claude plugin marketplace add ./market')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('full path') })
+    expect(readShellCommand('claude plugin marketplace add acme/market')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('https://github.com/<owner>/<repo>') })
+    expect(readShellCommand('claude plugin marketplace add /work/market').kind).toBe('install')
+    expect(readShellCommand('claude plugin marketplace add https://github.com/acme/market').kind).toBe('install')
+  })
+
   test('substitutions, file writes and patterns are read, not trusted', () => {
     // An install inside a substitution runs before the command it sits in.
     expect(readShellCommand('true "$(claude plugin install notes@acme)"').kind).toBe('install')
@@ -112,7 +120,7 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('env -S "claude plugin install notes@acme"')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand('timeout 60 claude plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand('watch claude plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
-    expect(readShellCommand('cd /tmp && claude plugin install notes@acme 2>&1 | tail -20')).toMatchObject(install('notes', 'acme'))
+    expect(readShellCommand('claude plugin install notes@acme 2>&1 | tail -20')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand("printf '%s\\n' claude plugin install notes@acme")).toEqual({ kind: 'pass', browse: false })
     expect(readShellCommand('echo claude plugin install notes@acme')).toEqual({ kind: 'pass', browse: false })
   })

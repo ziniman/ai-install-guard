@@ -68,6 +68,15 @@ function readShell(command: string): Reading {
     // Approving the install approves the whole command, so nothing else may ride along.
     if (unseen) return { kind: 'unreadable', label: only.label, reason: `part of the command is only known as it runs, so approving it could run more than the install; run ${only.label} as a command of its own` }
     if (others > 0) return { kind: 'unreadable', label: only.label, reason: `the command runs more than the install; run ${only.label} as a command of its own, so approving it approves only the install` }
+    // The guard cannot see the shell's current folder, so a source named
+    // relative to it could be another folder than the one the guard scans.
+    if (only.request.kind === 'marketplace' && !/^(?:https:\/\/|\/|~\/)/i.test(only.request.source)) {
+      return {
+        kind: 'unreadable',
+        label: only.label,
+        reason: `"${safeLine(only.request.source)}" could be a folder in the shell's current folder or a repository; name it as a full path or as https://github.com/<owner>/<repo>, so the guard scans what is added`,
+      }
+    }
     return only
   }
   if (unseen && MAY_INSTALL.test(command)) {
@@ -107,7 +116,7 @@ const INTERPRETERS: Record<string, readonly string[]> = {
  * Programs that only print, read or wait: an install's words among their
  * arguments are text, and running one beside an install adds nothing to it.
  */
-const QUIET = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'less', 'more', 'jq', 'sort', 'uniq', 'wc', 'tr', 'cut', 'tee', 'ls', 'pwd', 'cd', 'true', 'false', 'sleep', 'test', '[', 'date', 'which', 'type', 'column', 'nl', 'fold'])
+const QUIET = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'less', 'more', 'jq', 'sort', 'uniq', 'wc', 'tr', 'cut', 'tee', 'ls', 'pwd', 'true', 'false', 'sleep', 'test', '[', 'date', 'which', 'type', 'column', 'nl', 'fold'])
 
 /**
  * Programs that run the command that follows their own options: the options
