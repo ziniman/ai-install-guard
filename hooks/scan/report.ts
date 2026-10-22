@@ -25,8 +25,12 @@ export function formatReport(report: ScanReport, options: { details?: boolean } 
   if (inventory !== undefined) {
     const files = inventory.entries.filter(entry => entry.kind === 'file').length
     lines.push(`${report.kind === undefined ? '' : `A ${report.kind} · `}${files} files (${formatBytes(inventory.totalBytes)}) · tree ${inventory.treeHash}`)
-    lines.push(`Folder: ${safeLine(inventory.root)}`)
-    if (inventory.skipped.length > 0) lines.push(`Not read: ${inventory.skipped.map(safeLine).join(', ')}`)
+    const { source } = report
+    if (source === undefined) lines.push(`Folder: ${safeLine(inventory.root)}`)
+    else lines.push(`Source: ${safeLine(source.url)}${source.subdir === undefined ? '' : ` folder ${safeLine(source.subdir)}`} at commit ${source.sha}`)
+    // A fetched commit's .git folder is the guard's own, not the candidate's.
+    const skipped = source === undefined ? inventory.skipped : inventory.skipped.filter(path => path !== '.git')
+    if (skipped.length > 0) lines.push(`Not read: ${skipped.map(safeLine).join(', ')}`)
   }
   if (report.results.length === 0) return lines.join('\n')
 
@@ -47,13 +51,18 @@ export function countsLine(report: ScanReport): string {
 function formatRow(result: CheckResult, details: boolean): string[] {
   const shown = details ? result.evidence : result.evidence.slice(0, 1)
   const head = `  ${LABEL[result.status]}  ${result.title}`
+  const summary = (result.summary ?? []).map(line => safeLine(redactSecrets(line)))
   if (!details) {
+    if (summary[0] !== undefined) return [`${head}: ${summary[0]}`]
     const first = shown[0]
     const more = result.evidence.length > 1 ? ` (+${result.evidence.length - 1} more)` : ''
     return [first === undefined ? head : `${head}: ${evidenceLine(first)}${more}`]
   }
   const out = [head]
-  for (const item of shown) out.push(`        ${item.status === undefined || item.status === result.status ? '' : `${LABEL[item.status]} `}${evidenceLine(item)}`)
+  // What it means first, then where, then what to do.
+  for (const line of summary) out.push(`        ${line}`)
+  if (summary.length > 0 && shown.length > 0) out.push('        Where:')
+  for (const item of shown) out.push(`        ${summary.length > 0 ? '  ' : ''}${item.status === undefined || item.status === result.status ? '' : `${LABEL[item.status]} `}${evidenceLine(item)}`)
   if (result.status === 'fail' || result.status === 'warn') out.push(`        Advice: ${result.advice}`)
   return out
 }

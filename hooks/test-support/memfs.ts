@@ -122,7 +122,12 @@ export function serveFixture(
   on: On,
   root: string,
   files: FixtureFiles,
-  options: { platform?: 'posix' | 'windows'; homeFails?: () => boolean } = {},
+  options: {
+    platform?: 'posix' | 'windows'
+    homeFails?: () => boolean
+    /** Answers other commands (git, mktemp); undefined passes them on. */
+    run?: (argv: readonly string[]) => RunResult | undefined
+  } = {},
 ): void {
   const isWindows = options.platform === 'windows'
   const host = memoryHost(root, files) as Host & { owns: (path: string) => boolean }
@@ -167,6 +172,8 @@ export function serveFixture(
         ),
       )
     }
+    const scripted = options.run?.(e.argv)
+    if (scripted !== undefined) return done(scripted)
     const isOurs = e.argv[0] === 'printenv' || (e.argv[0] === 'readlink' && host.owns(trimSlash(e.argv[1] ?? '')))
     if (!isOurs) {
       return next(e)

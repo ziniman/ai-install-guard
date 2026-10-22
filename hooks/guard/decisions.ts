@@ -7,6 +7,8 @@ import { safeLine } from '../scan/safe-text'
 export type Decision = {
   target: string
   root?: string
+  /** The commit, for a remote source. */
+  sha?: string
   treeHash: string
   verdict: string
   /** The verdict the decision was made on; an approval holds up to this one. */
@@ -31,8 +33,13 @@ export async function loadDecisions($: EngineInterface): Promise<Decision[]> {
   return Array.isArray(stored) ? (stored as Decision[]) : []
 }
 
+/** One decision per version: the same files at the same commit (or as a folder). */
+function sameVersion(a: { treeHash: string; sha?: string }, b: { treeHash: string; sha?: string }): boolean {
+  return a.treeHash === b.treeHash && (a.sha ?? '') === (b.sha ?? '')
+}
+
 export async function recordDecision($: EngineInterface, decision: Decision): Promise<void> {
-  const others = (await loadDecisions($)).filter(item => item.treeHash !== decision.treeHash)
+  const others = (await loadDecisions($)).filter(item => !sameVersion(item, decision))
   await $.store.set(DECISIONS, [decision, ...others].slice(0, MAX_DECISIONS))
 }
 
@@ -65,8 +72,10 @@ export async function forgetDecisions($: EngineInterface, name: string): Promise
  * one it was given on: the same files can judge worse in another place (a
  * copy whose absolute link now leaves the folder), and that needs a new look.
  */
-export async function decisionFor($: EngineInterface, treeHash: string, kind: GuardVerdict['kind']): Promise<Decision | undefined> {
-  const found = (await loadDecisions($)).find(item => item.treeHash === treeHash)
+export async function decisionFor($: EngineInterface, version: { treeHash: string; sha?: string }, kind: GuardVerdict['kind']): Promise<Decision | undefined> {
+  // A decision is about one version: another commit with the same files, or
+  // the same files as a local folder, is judged on its own.
+  const found = (await loadDecisions($)).find(item => sameVersion(item, version))
   if (found === undefined || found.decision === 'rejected') return found
   const approvedUpTo = SEVERITY[found.verdictKind] as number | undefined
   return approvedUpTo !== undefined && SEVERITY[kind] <= approvedUpTo ? found : undefined

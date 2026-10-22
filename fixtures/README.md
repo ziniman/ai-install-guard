@@ -40,5 +40,9 @@ whenever a fixture changes; CI fails if it is out of date.
 | `npmrc-registry` | `code.registries` | Install with caution |
 | `aws-key` | `secrets.keys` | Do not install |
 | `env-file` | `secrets.env-files` | Do not install |
+| `mcp-npx` | `mcp.launch` (an MCP server started with an unpinned `npx -y`) | Install with caution |
+| `mcp-curl` | `mcp.launch` (an MCP server that downloads a script and runs it), and `mcp.remote` for the address in its script | Do not install |
+| `lfs-pointer` | `structure.fetched` (a command stored as a Git LFS pointer; it has no `.gitattributes`, which would apply the filter to this repository) | Do not install |
+| `mcp-remote-secret` | `mcp.credentials` (an Anthropic key sent to another host), and `mcp.remote` | Do not install |
 
 Name nothing here `*.test.ts`: the test runner would pick it up.

@@ -50,6 +50,11 @@ export type CheckResult = {
   severity: Severity
   evidence: Evidence[]
   advice: string
+  /**
+   * What the evidence means, in plain words for a person: a headline, then a
+   * few lines. Shown before the evidence, which stays one step further in.
+   */
+  summary?: string[]
 }
 
 const RANK: Record<Status, number> = { info: 0, pass: 1, warn: 2, fail: 3 }
@@ -68,18 +73,29 @@ export function severityFor(status: Status): Severity {
 }
 
 /**
+ * At most `max` pieces of evidence, the worst first, and a line counting the
+ * rest. Every piece is judged before capping, so a late failure still counts.
+ */
+export function capEvidence(evidence: Evidence[], max: number, fallback: Status = 'warn'): Evidence[] {
+  if (evidence.length <= max) return evidence
+  const worstFirst = [...evidence].sort((a, b) => RANK[b.status ?? fallback] - RANK[a.status ?? fallback])
+  return [...worstFirst.slice(0, max), { file: '-', excerpt: `and ${evidence.length - max} more`, status: 'info' }]
+}
+
+/**
  * Builds a check's row from its evidence: the row takes the worst status any
  * piece of evidence carries (`fallback` when none does), and `pass` when
  * there is no evidence at all.
  */
 export function row(
-  base: { id: string; group: GroupId; title: string; advice: string },
+  base: { id: string; group: GroupId; title: string; advice: string; summary?: string[] },
   evidence: Evidence[],
   fallback: Status = 'warn',
   severity?: Severity,
 ): CheckResult {
   if (evidence.length === 0) {
-    return { ...base, status: 'pass', severity: 'none', evidence: [] }
+    const { summary: _unused, ...rest } = base
+    return { ...rest, status: 'pass', severity: 'none', evidence: [] }
   }
   const status = evidence.reduce<Status>((acc, item) => worse(acc, item.status ?? fallback), 'info')
   const worstFirst = [...evidence]

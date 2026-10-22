@@ -4,6 +4,22 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## Unreleased
+
+**`/guard scan <repository>`** - Scans one commit of a remote repository (`https://`, `github:owner/repo` or `owner/repo`, with `@ref`, `--ref` and `--path`). The ref is resolved with `git ls-remote`, only that commit is fetched into the guard's own temporary folder with no hooks, submodules, LFS downloads or filters, and the checkout must land on the pinned commit before anything is read; the folder is removed afterwards. Short commit ids, refs that name both a branch and a tag, and non-https sources are refused
+
+**`provenance`** - New rows for a remote scan: the source and its pinned commit, branches or tags named like a commit id or `FETCH_HEAD` (the Plugin4Shell trick, a failure), and submodules whose code was not scanned. For a marketplace, each plugin it lists from elsewhere is checked for a full commit pin or an exact package version
+
+**`mcp`** - MCP server checks: every server and what it runs or talks to, servers that download code or start unpinned packages or container images, inline shell scripts, remote and unencrypted servers, and API keys sent to a host that is not their own service
+
+**`structure`** - Flags Git LFS pointers and git filters, whose real content is filled in at install and could not be scanned
+
+**`pane`** - A row now says what it found in plain words before any code: which programs a candidate starts and what each is for, with shells, compilers and programs chosen at run time called out as worth a look, and which secrets or credential files its code reads. The code lines sit behind their own Show the code toggle, and the verdict's reasons use the same plain headline
+
+**`checks`** - Fewer false alarms, found by scanning a real skill: a standalone skill is no longer failed for having no plugin manifest, a local preview address is not a remote instruction, a person called a reviewer is not a security scanner, a browser's program path is not its profile data, and one-word placeholder hosts are not listed
+
+---
+
 ## v0.1.0 &nbsp;·&nbsp; 2026-10-22
 
 **`pane`** - `/guard scan` opens a verdict pane: the recommendation and its reasons in a coloured banner, the counts, and every check grouped with failures first, each row opening to its evidence and advice. Approve and Reject record the decision against the exact tree hash; on Do not install or Could not verify the button reads Approve anyway and asks a second time. Details opens every row and Copy report copies the full text. Progress shows in the pane and the status line, and a toast says when the verdict is ready

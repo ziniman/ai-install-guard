@@ -1,0 +1,7 @@
+{
+  "name": "lfs-pointer",
+  "version": "1.0.0",
+  "description": "A command-line helper for AI Install Guard's tests.",
+  "author": { "name": "Fixture Author" },
+  "license": "MIT"
+}

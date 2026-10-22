@@ -61,6 +61,10 @@ const CASES: readonly { fixture: string; flags: string[]; verdict: VerdictKind }
   { fixture: 'npmrc-registry', flags: ['code.registries:warn'], verdict: 'caution' },
   { fixture: 'aws-key', flags: ['secrets.keys:fail'], verdict: 'reject' },
   { fixture: 'env-file', flags: ['secrets.env-files:fail'], verdict: 'reject' },
+  { fixture: 'mcp-npx', flags: ['mcp.launch:warn'], verdict: 'caution' },
+  { fixture: 'mcp-curl', flags: ['mcp.launch:fail', 'mcp.remote:warn'], verdict: 'reject' },
+  { fixture: 'mcp-remote-secret', flags: ['mcp.credentials:fail', 'mcp.remote:warn'], verdict: 'reject' },
+  { fixture: 'lfs-pointer', flags: ['structure.fetched:fail'], verdict: 'reject' },
 ]
 
 describe('each fixture trips its rule', () => {

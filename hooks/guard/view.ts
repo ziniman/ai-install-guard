@@ -32,7 +32,14 @@ export function viewOf(report: ScanReport, action: GuardAction): GuardView {
     },
     rows: report.results.map(rowOf),
     kind: report.kind,
-    root: report.inventory === undefined ? undefined : safeLine(report.inventory.root),
+    // A remote scan's folder is a temporary one: its source names it instead.
+    root:
+      report.source !== undefined
+        ? safeLine(`${report.source.url}${report.source.subdir === undefined ? '' : `#${report.source.subdir}`}`)
+        : report.inventory === undefined
+          ? undefined
+          : safeLine(report.inventory.root),
+    sha: report.source?.sha,
     treeHash: report.inventory?.treeHash,
     expanded: [],
     details: false,
@@ -54,6 +61,7 @@ function rowOf(result: CheckResult): GuardRow {
     })),
     more: Math.max(0, result.evidence.length - EVIDENCE_PER_ROW),
     advice: result.advice,
+    ...(result.summary === undefined || result.summary.length === 0 ? {} : { summary: result.summary.slice(0, 8).map(line => clip(safeLine(redactSecrets(line)))) }),
   }
 }
 
