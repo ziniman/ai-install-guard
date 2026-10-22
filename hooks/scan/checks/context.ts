@@ -184,10 +184,13 @@ export function buildContext(tree: ScannedTree): ScanContext {
 
   // Markdown the model reads.
   const promptRoots = kind === 'skill' ? [''] : [...PROMPT_DIRS, ...manifestPaths(manifest, ['commands', 'agents', 'skills', 'outputStyles'])]
+  // Claude Code loads these by place, whatever they are named: a skill in
+  // skills/testing/ is still a skill. Only a standalone skill's own README
+  // and similar files are left out.
   const prompts = files
     .map(file => file.path)
-    .filter(path => isMarkdown(path) && !isDocPath(path) && !isTestPath(path))
-    .filter(path => promptRoots.some(root => root === '' || path === root || path.startsWith(`${root}/`)))
+    .filter(path => isMarkdown(path))
+    .filter(path => promptRoots.some(root => (root === '' ? !DOC_NAMES.test(basename(path)) || path.includes('/') : path === root || path.startsWith(`${root}/`))))
   for (const path of prompts) assign(path, 'prompt')
 
   // Classic hooks and hooks modules.
@@ -229,9 +232,10 @@ export function buildContext(tree: ScannedTree): ScanContext {
     collectMcpServers({ mcpServers: manifest.mcpServers }, manifestPath, text(manifestPath) ?? '', mcpServers)
   }
 
-  // Files that hooks, servers or prompts name are run, not just shipped.
+  // Files (and links) that hooks, servers or prompts name are run, not just shipped.
+  const linkPaths = tree.inventory.entries.filter(entry => entry.kind === 'link').map(entry => entry.path)
   const referenced = (haystack: string, role: FileRole, skipMarkdown: boolean): void => {
-    for (const path of paths) {
+    for (const path of [...paths, ...linkPaths]) {
       if (skipMarkdown && isMarkdown(path)) continue
       if (haystack.includes(path)) assign(path, role)
     }

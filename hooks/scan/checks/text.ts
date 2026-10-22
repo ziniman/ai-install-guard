@@ -149,7 +149,8 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
       const quote = triple ? char.repeat(3) : char
       let j = i + quote.length
       while (j < text.length) {
-        if (text[j] === '\\' && language !== 'shell') {
+        // A backslash escapes in every string but a shell's single-quoted one.
+        if (text[j] === '\\' && !(language === 'shell' && char === "'")) {
           j += 2
           continue
         }

@@ -122,11 +122,14 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     const text = ctx.text(file.path)
     if (text === undefined) continue
     const kindAt = isCodeFile(file.path, text) ? spanKinds(text, languageOf(file.path, text)) : undefined
+    const status: Status = ctx.roleOf(file.path) === 'test' ? 'info' : 'warn'
+    const seen = new Set<number>()
     for (const pattern of SCANNER_ADDRESS) {
       for (const match of findAll(text, pattern, 2)) {
         const kind = kindAt?.(match.index)
-        if (kind === 'regex' || kind === 'comment') continue
-        addressed.push({ file: file.path, line: match.line, excerpt: match.excerpt, status: 'warn' })
+        if (kind === 'regex' || kind === 'comment' || seen.has(match.line)) continue
+        seen.add(match.line)
+        addressed.push({ file: file.path, line: match.line, excerpt: match.excerpt, status })
       }
     }
   }

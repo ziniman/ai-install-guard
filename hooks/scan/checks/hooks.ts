@@ -12,7 +12,8 @@ import {
   WRITE_CODE,
   WRITE_SHELL,
 } from './patterns'
-import { findAll, findFirst } from './text'
+import { languageOf } from './code'
+import { findAll, findFirst, spanKinds, type Match } from './text'
 import { row, type CheckResult, type Evidence } from './types'
 
 const GROUP = 'hooks' as const
@@ -60,29 +61,28 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
     }
   }
 
-  // Scripts the hooks run are part of the hook.
+  // Scripts the hooks run are part of the hook. A match in a comment is only reported.
   for (const file of ctx.files) {
     if (ctx.roleOf(file.path) !== 'hook-script') continue
     const text = ctx.text(file.path)
     if (text === undefined) continue
+    const kindAt = spanKinds(text, languageOf(file.path, text))
+    const isInert = (match: Match): boolean => kindAt(match.index) === 'comment' || kindAt(match.index) === 'regex'
+    const found = (match: Match, what: string): Evidence =>
+      isInert(match)
+        ? { file: file.path, line: match.line, excerpt: `${what}: ${match.excerpt} (in a comment)`, status: 'info' }
+        : { file: file.path, line: match.line, excerpt: `${what}: ${match.excerpt}`, status: 'fail' }
+    const live = (pattern: RegExp): boolean => findAll(text, pattern, 10_000).some(match => !isInert(match))
     for (const { pattern, what } of DANGERS) {
-      for (const match of findAll(text, pattern, 3)) {
-        commands.push({ file: file.path, line: match.line, excerpt: `${what}: ${match.excerpt}`, status: 'fail' })
-      }
+      for (const match of findAll(text, pattern, 3)) commands.push(found(match, what))
     }
-    for (const match of findAll(text, AUTO_APPROVE, 3)) {
-      approvals.push({ file: file.path, line: match.line, excerpt: match.excerpt, status: 'fail' })
+    for (const match of findAll(text, AUTO_APPROVE, 3)) approvals.push(found(match, 'approves the tool call'))
+    const writes = live(WRITE_SHELL) || live(WRITE_CODE)
+    if (writes) {
+      for (const match of findAll(text, PERSISTENCE_TARGET, 3)) commands.push(found(match, 'writes to a startup or persistence location'))
+      for (const match of findAll(text, CLAUDE_LOAD_DIR, 3)) commands.push(found(match, 'writes where Claude Code loads plugins, skills or memory'))
     }
-    const writes = WRITE_SHELL.test(text) || WRITE_CODE.test(text)
-    for (const match of findAll(text, PERSISTENCE_TARGET, 3)) {
-      if (writes) commands.push({ file: file.path, line: match.line, excerpt: `writes to a startup or persistence location: ${match.excerpt}`, status: 'fail' })
-    }
-    for (const match of findAll(text, CLAUDE_SETTINGS, 3)) {
-      commands.push({ file: file.path, line: match.line, excerpt: `changes Claude Code settings or permissions: ${match.excerpt}`, status: 'fail' })
-    }
-    for (const match of findAll(text, CLAUDE_LOAD_DIR, 3)) {
-      if (writes) commands.push({ file: file.path, line: match.line, excerpt: `writes where Claude Code loads plugins, skills or memory: ${match.excerpt}`, status: 'fail' })
-    }
+    for (const match of findAll(text, CLAUDE_SETTINGS, 3)) commands.push(found(match, 'changes Claude Code settings or permissions'))
   }
 
   return [

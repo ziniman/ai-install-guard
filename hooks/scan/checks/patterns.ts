@@ -10,13 +10,13 @@ export const NETWORK_CODE =
 
 /** Downloading code and running it, or decoding text and running it. */
 export const DOWNLOAD_AND_RUN =
-  /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b|\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:python[23]?|node|perl|ruby|php)\b|\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)|\bsource\s+<\(\s*(?:curl|wget)|\bbase64\s+(?:-d|--decode|-D)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b|\bpython[23]?\s+-c\s+["'][^"'\n]*urllib|\beval\s+["']?\$\(\s*(?:curl|wget|echo|base64)/
+  /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\b|\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:python[23]?|node|perl|ruby|php)\b|\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)|\bsource\s+<\(\s*(?:curl|wget)|\bbase64\s+(?:-d|--decode|-D)\b[^\n|]*\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da)?sh\b|\bpython[23]?\s+-c\s+["'][^"'\n]*urllib|\beval\s+["']?\$\(\s*(?:curl|wget|echo|base64)/
 
 /** Fetching and running a package that is not pinned to a version. */
 export const UNPINNED_RUNNER = /\b(?:npx|bunx|pnpx)\s+(?:-y\b|--yes\b)|\b(?:uvx|pipx\s+run)\s+(?!\S+(?:==|@)\d)/
 
 /** Shell `eval` and piping into a shell. */
-export const SHELL_EVAL = /(?:^|[\s;&|(])eval\s|\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\s*(?:$|[;&|)])/
+export const SHELL_EVAL = /(?:^|[\s;&|(])eval\s|\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\s*(?:$|[;&|)])/
 
 /** Places that hold credentials. */
 export const CREDENTIAL_PATH =

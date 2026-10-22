@@ -106,7 +106,9 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
     ...dedupe(info.calls).map(use => ({ use, kind: 'call' as const, capability: callCapability(use.name) })),
   ])
   const explained = explanationsOf(ctx)
-  const isExplained = (name: string): boolean => explained.includes(name.toLowerCase())
+  // The README must spell the call or event out as a name of its own; a wildcard is never explained.
+  const isExplained = (name: string): boolean =>
+    name.length >= 5 && /^[a-z]+\.[a-zA-Z.]+$/.test(name) && new RegExp(`(?<![\\w.$])${name.replace(/\./g, '\\.')}(?![\\w])`, 'i').test(explained)
 
   const inventory: Evidence[] = uses.map(({ use, kind, capability }) => ({
     file: use.file,

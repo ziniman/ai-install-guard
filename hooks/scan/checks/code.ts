@@ -28,6 +28,9 @@ const CONFIG_EXTENSIONS = new Set(['json', 'jsonc', 'yaml', 'yml', 'toml', 'ini'
 const LOCKFILES = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|go\.sum|poetry\.lock|uv\.lock|Pipfile\.lock|composer\.lock|Gemfile\.lock)$|\.map$/
 const JS_EXTENSIONS = new Set(['js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts', 'cts'])
 const SHELL_EXTENSIONS = new Set(['sh', 'bash', 'zsh', 'fish', 'ksh'])
+/** Names worth hiding by splitting them across strings. */
+const SPLIT_NAMES = /\b(?:curl|wget|netcat|ncat|socat|child_process|execSync|spawnSync|execFile|eval|Function|subprocess|system|popen|powershell|bash|zsh|ssh|id_rsa|id_ed25519|credentials|Keychains|ANTHROPIC_API_KEY|GITHUB_TOKEN)\b|\.ssh\b|\.aws\b/
+
 const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepare', 'preprepare', 'postprepare', 'prepublish']
 
 export function codeChecks(ctx: ScanContext): CheckResult[] {
@@ -36,12 +39,22 @@ export function codeChecks(ctx: ScanContext): CheckResult[] {
 
 type Language = 'js' | 'python' | 'shell' | 'other'
 
+/** `#!/bin/bash` → bash, `#!/usr/bin/env -S node --flag` → node. */
+export function interpreterOf(text: string): string {
+  const line = /^#!\s*(\S+)((?:[ \t]+\S+)*)/.exec(text)
+  if (line === null) return ''
+  const program = basename(line[1] as string)
+  if (program !== 'env') return program
+  const args = (line[2] ?? '').trim().split(/\s+/).filter(arg => arg !== '' && !arg.startsWith('-') && !arg.includes('='))
+  return basename(args[0] ?? '')
+}
+
 export function languageOf(path: string, text: string): Language {
   const ext = extension(path)
   if (JS_EXTENSIONS.has(ext)) return 'js'
   if (ext === 'py') return 'python'
   if (SHELL_EXTENSIONS.has(ext)) return 'shell'
-  const shebang = /^#!\s*\S*?(?:\/env\s+)?(\w+)/.exec(text)?.[1] ?? ''
+  const shebang = interpreterOf(text)
   if (/^(?:node|deno|bun)$/.test(shebang)) return 'js'
   if (/^python/.test(shebang)) return 'python'
   if (/^(?:ba|z|da|k|fi)?sh$/.test(shebang)) return 'shell'
@@ -86,10 +99,12 @@ function judged(file: CodeFile, match: Match, status: Status, excerpt: string): 
 
 /** Matches of `pattern` in the file's code and strings, not its comments or patterns. */
 function active(file: CodeFile, pattern: RegExp, limit = 20): Match[] {
-  return findAll(file.text, pattern, limit).filter(match => {
-    const kind = file.kindAt(match.index)
-    return kind === 'code' || kind === 'string'
-  })
+  return findAll(file.text, pattern, 10_000)
+    .filter(match => {
+      const kind = file.kindAt(match.index)
+      return kind === 'code' || kind === 'string'
+    })
+    .slice(0, limit)
 }
 
 function writesFiles(file: CodeFile): boolean {
@@ -200,16 +215,20 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
     const decodes = active(file, DECODE, 1).length > 0
     const level: Status = runs && decodes ? 'fail' : 'warn'
     const found: { match: Match; what: string }[] = []
+    const split: { line: number; what: string }[] = []
     for (const match of findAll(text, /(?<!data:[\w/+.-]{1,40};base64,)(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{200,}={0,2}/g, 2)) found.push({ match, what: `${match.text.length}-character base64 blob` })
     for (const match of findAll(text, /\b(?:[0-9a-fA-F]{2}){100,}\b/g, 2)) found.push({ match, what: `${match.text.length}-character hex blob` })
     for (const match of findAll(text, /String\.fromCharCode\s*\(\s*(?:\d+\s*,\s*){8,}|\bchr\s*\(\s*\d+\s*\)\s*\+\s*chr\s*\(/g, 2)) found.push({ match, what: `text built from character codes: ${match.excerpt}` })
     for (const match of findAll(text, /(?:\\x[0-9a-fA-F]{2}){16,}|(?:\\u00[0-9a-fA-F]{2}){12,}/g, 2)) found.push({ match, what: 'long run of escaped bytes' })
-    const joined = text.replace(/(['"`])\s*\+\s*\1/g, '')
+    const joined = text.replace(/(['"`])[ \t]*\+[ \t]*\1/g, '')
     if (joined !== text) {
-      for (const pattern of [NETWORK_COMMAND, PROCESS_CODE, CODE_FROM_TEXT, CREDENTIAL_PATH]) {
-        if (pattern.test(joined) && !pattern.test(text)) {
-          const hit = findFirst(joined, pattern)
-          if (hit !== undefined) found.push({ match: { ...hit, index: 0 }, what: `a name split across strings to hide it: ${hit.text.trim()}` })
+      // A dangerous name that only appears once adjacent strings are joined
+      // was split to hide it. Joining only happens in code, never a comment.
+      const before = new Set(findAll(text, SPLIT_NAMES, 10_000).map(match => `${match.line}:${match.text}`))
+      for (const match of findAll(joined, SPLIT_NAMES, 10_000)) {
+        if (!before.has(`${match.line}:${match.text}`)) {
+          split.push({ line: match.line, what: `a name split across strings to hide it: ${match.text}` })
+          break
         }
       }
     }
@@ -219,6 +238,7 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
       if (dense !== undefined) found.push({ match: dense, what: 'a long line of random-looking text' })
     }
     for (const item of found) evidence.push(judged(file, item.match, level, item.what))
+    for (const item of split) evidence.push({ file: path, line: item.line, excerpt: item.what, status: isLive(file.role) ? level : 'info' })
   }
   for (const path of ctx.prompts) {
     const text = ctx.text(path) ?? ''

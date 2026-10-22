@@ -94,7 +94,7 @@ export function magicOf(bytes: Uint8Array): Magic | undefined {
   const at = (offset: number, ...values: number[]): boolean => values.every((value, i) => bytes[offset + i] === value)
   if (at(0, 0x7f, 0x45, 0x4c, 0x46)) return 'elf'
   if (at(0, 0xfe, 0xed, 0xfa, 0xce) || at(0, 0xfe, 0xed, 0xfa, 0xcf) || at(0, 0xce, 0xfa, 0xed, 0xfe) || at(0, 0xcf, 0xfa, 0xed, 0xfe) || at(0, 0xca, 0xfe, 0xba, 0xbe)) return 'mach-o'
-  if (at(0, 0x4d, 0x5a)) return 'pe'
+  if (at(0, 0x4d, 0x5a) && isPortableExecutable(bytes)) return 'pe'
   if (at(0, 0x00, 0x61, 0x73, 0x6d)) return 'wasm'
   if (at(0, 0x50, 0x4b, 0x03, 0x04) || at(0, 0x50, 0x4b, 0x05, 0x06)) return 'zip'
   if (at(0, 0x1f, 0x8b)) return 'gzip'
@@ -110,6 +110,13 @@ export function magicOf(bytes: Uint8Array): Magic | undefined {
   if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return 'webp'
   if (at(0, 0x25, 0x50, 0x44, 0x46)) return 'pdf'
   return undefined
+}
+
+/** An MZ header whose e_lfanew field points at a `PE\0\0` signature, not just text that starts with "MZ". */
+function isPortableExecutable(bytes: Uint8Array): boolean {
+  if (bytes.length < 0x40) return false
+  const offset = ((bytes[0x3c] as number) | ((bytes[0x3d] as number) << 8) | ((bytes[0x3e] as number) << 16) | ((bytes[0x3f] as number) << 24)) >>> 0
+  return offset + 4 <= bytes.length && bytes[offset] === 0x50 && bytes[offset + 1] === 0x45 && bytes[offset + 2] === 0 && bytes[offset + 3] === 0
 }
 
 function filesCheck(ctx: ScanContext): CheckResult {
@@ -201,7 +208,8 @@ function linksCheck(ctx: ScanContext): CheckResult {
 function describeLink(link: InventoryLink, ctx: ScanContext): Evidence {
   // A link in a test folder that nothing names is only reported.
   const climbsOut = link.target.startsWith('/') || /^[A-Za-z]:[\\/]/.test(link.target) || joinPath(dirname(link.path), link.target) === undefined
-  const live = !isTestPath(link.path) || ctx.roleOf(link.path) !== 'other'
+  const role = ctx.roleOf(link.path)
+  const live = role !== 'other' || !isTestPath(link.path)
   if (climbsOut || (link.landsAt !== undefined && !link.isInside)) {
     return { file: link.path, excerpt: `links outside the folder to ${link.target}`, status: live ? 'fail' : 'info' }
   }

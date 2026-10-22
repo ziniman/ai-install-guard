@@ -7,7 +7,7 @@ const GROUP = 'secrets' as const
 /** Known key formats. Evidence names the kind and place, never the value. */
 const KEYS: readonly { kind: string; pattern: RegExp }[] = [
   { kind: 'AWS access key ID', pattern: /\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b/ },
-  { kind: 'AWS secret access key', pattern: /\baws_secret_access_key\b\s*[:=]\s*['"]?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/i },
+  { kind: 'AWS secret access key', pattern: /\baws_?secret_?access_?key\b['"]?\s*[:=]\s*['"]?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/i },
   { kind: 'GitHub token', pattern: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{22,}\b/ },
   { kind: 'Slack token', pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/ },
   { kind: 'Slack webhook', pattern: /https:\/\/hooks\.slack\.com\/services\/T[A-Za-z0-9]+\/B[A-Za-z0-9]+\/[A-Za-z0-9]+/ },
