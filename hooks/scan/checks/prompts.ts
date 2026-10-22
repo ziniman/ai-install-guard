@@ -1,6 +1,6 @@
 import { languageOf, secretName } from './code'
 import { isCodeFile, isLive, type ScanContext } from './context'
-import { CREDENTIAL_PATH, NETWORK_COMMAND, NETWORK_CODE, SECRET_ENV } from './patterns'
+import { CREDENTIAL_PATH, DOWNLOAD_AND_RUN, NETWORK_COMMAND, NETWORK_CODE, SECRET_ENV, UNPINNED_RUNNER } from './patterns'
 import { basename, dirname, findAll, findFirst, spanKinds } from './text'
 import { row, type CheckResult, type Evidence, type Status } from './types'
 
@@ -104,6 +104,13 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     for (const match of findAll(text, REMOTE_INSTRUCTIONS, 3)) {
       remote.push({ file: path, line: match.line, excerpt: match.excerpt, status: cap('warn') })
     }
+    // Telling the model to download and run code, or run an unpinned package.
+    for (const match of findAll(text, DOWNLOAD_AND_RUN, 3)) {
+      remote.push({ file: path, line: match.line, excerpt: `tells the model to download and run code: ${match.excerpt}`, status: cap('fail') })
+    }
+    for (const match of findAll(text, UNPINNED_RUNNER, 3)) {
+      remote.push({ file: path, line: match.line, excerpt: `tells the model to run an unpinned package: ${match.excerpt}`, status: cap('warn') })
+    }
 
     const front = frontmatter(text)
     for (const key of ['allowed-tools', 'tools']) {
@@ -160,7 +167,7 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     row({ id: 'prompts.injection', group: GROUP, title: 'Prompt injection', advice: 'Skills, commands and agents are instructions the model follows. Text that tells it to ignore you, hide what it does or send data out is an attack, more so when it names a URL or your keys.' }, injection),
     row({ id: 'prompts.credentials', group: GROUP, title: 'Instructions that touch credentials', advice: 'A skill has no reason to read your keys, tokens or browser data. Do not install one that asks the model to.' }, credentials),
     row({ id: 'prompts.tools', group: GROUP, title: 'Tool permissions it grants itself', advice: 'allowed-tools runs those tools without asking you. Bash with no pattern, a wildcard, an interpreter or a package runner is the same as giving it your shell.' }, tools),
-    row({ id: 'prompts.remote', group: GROUP, title: 'Instructions fetched at run time', advice: 'Instructions loaded from a URL can change after this scan, so they were never checked. Prefer skills that ship their instructions.' }, remote),
+    row({ id: 'prompts.remote', group: GROUP, title: 'Remote instructions and code', advice: 'Instructions or code loaded from a URL at run time can change after this scan, so they were never checked. Prefer skills that ship everything they run.' }, remote),
     row({ id: 'prompts.names', group: GROUP, title: 'Names and claims', advice: 'A name that shadows a built-in command or claims to be from Anthropic is a common way to be trusted by mistake.' }, names),
     row({ id: 'prompts.scanner', group: GROUP, title: 'Text addressed to a security scanner', advice: 'Legitimate plugins do not talk to scanners. This text cannot change the verdict here; treat it as a sign of intent.' }, addressed),
   ]

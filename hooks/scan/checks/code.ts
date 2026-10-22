@@ -83,7 +83,8 @@ function codeFiles(ctx: ScanContext): CodeFile[] {
     // Whatever live code loads is code, whatever its name (a required ./helper.map).
     const loaded = LIVE_ROLES.has(ctx.roleOf(file.path))
     if (isCodeFile(file.path, text) || loaded || CONFIG_EXTENSIONS.has(extension(file.path)) || basename(file.path).startsWith('.')) {
-      const language = languageOf(file.path, text)
+      // A hook or server that runs the file with an interpreter decides how it is read.
+      const language = ctx.interpreters.get(file.path) ?? languageOf(file.path, text)
       const kindAt = isCodeFile(file.path, text) ? spanKinds(text, language) : () => 'string' as const
       out.push({ path: file.path, text, role: ctx.roleOf(file.path), language, kindAt })
     }

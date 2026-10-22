@@ -80,7 +80,8 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
     if (!ctx.hookScripts.has(file.path) && ctx.roleOf(file.path) !== 'hook-script') continue
     const text = ctx.text(file.path)
     if (text === undefined) continue
-    const kindAt = spanKinds(text, languageOf(file.path, text))
+    // Read as the interpreter the hook runs it with, not as its name suggests.
+    const kindAt = spanKinds(text, ctx.interpreters.get(file.path) ?? languageOf(file.path, text))
     const isInert = (match: Match): boolean => ['comment', 'regex', 'trailing-comment'].includes(kindAt(match.index))
     const found = (match: Match, what: string): Evidence => {
       const shown = `${what}: ${what === 'reads secret environment variables' ? secretName(match) : match.excerpt}`

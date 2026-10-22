@@ -90,6 +90,11 @@ export type ScanContext = {
   hookCommands: HookCommand[]
   /** Every file a classic hook command names, whatever role it ends up with. */
   hookScripts: Set<string>
+  /**
+   * The interpreter a hook or server runs a file with (`sh hooks/x.js` runs
+   * it as shell), which decides how it is read whatever its extension says.
+   */
+  interpreters: Map<string, 'js' | 'python' | 'shell'>
   hookConfigErrors: { file: string; error: string }[]
   mcpServers: McpServer[]
   /** Markdown the model reads: skills, commands, agents, output styles. */
@@ -312,11 +317,33 @@ export function buildContext(tree: ScannedTree): ScanContext {
   const nameCount = new Map<string, number>()
   for (const path of [...paths, ...linkPaths]) nameCount.set(basename(path), (nameCount.get(basename(path)) ?? 0) + 1)
   const hookScripts = new Set<string>()
+  const interpreters = new Map<string, 'js' | 'python' | 'shell'>()
+  const noteInterpreter = (command: string, path: string): void => {
+    const language = interpreterNaming(command, path)
+    if (language !== undefined) interpreters.set(aliases.get(path) ?? path, language)
+  }
   for (const hook of hookCommands) {
     referenced(hook.command, 'hook-script', false)
-    for (const path of [...paths, ...linkPaths]) if (namedIn(hook.command, path)) hookScripts.add(aliases.get(path) ?? path)
+    for (const path of [...paths, ...linkPaths]) {
+      if (!namedIn(hook.command, path)) continue
+      hookScripts.add(aliases.get(path) ?? path)
+      noteInterpreter(hook.command, path)
+    }
   }
-  for (const server of mcpServers) referenced([server.command ?? '', ...server.args].join(' '), 'server', false)
+  for (const server of mcpServers) {
+    const command = [server.command ?? '', ...server.args].join(' ')
+    referenced(command, 'server', false)
+    for (const path of [...paths, ...linkPaths]) if (namedIn(command, path)) noteInterpreter(command, path)
+  }
+  // Markdown a prompt tells the model to read is a prompt too, however it is
+  // named (a skill's own README): followed until nothing new is named.
+  for (let index = 0; index < prompts.length; index += 1) {
+    const body = text(prompts[index] as string) ?? ''
+    for (const path of paths) {
+      if (isMarkdown(path) && !prompts.includes(path) && namedIn(body, path)) prompts.push(path)
+    }
+  }
+  for (const path of prompts) assign(path, 'prompt')
   for (const prompt of prompts) {
     const body = text(prompt) ?? ''
     referenced(body, 'prompt-script', true)
@@ -371,12 +398,26 @@ export function buildContext(tree: ScannedTree): ScanContext {
     modules,
     hookCommands,
     hookScripts,
+    interpreters,
     hookConfigErrors,
     mcpServers,
     prompts,
     text,
     roleOf: path => roles.get(path) ?? 'other',
   }
+}
+
+/** The interpreter a command runs `path` with, when it names one right before it. */
+function interpreterNaming(command: string, path: string): 'js' | 'python' | 'shell' | undefined {
+  const normalized = command.replace(/["']/g, ' ').replace(/\/{2,}/g, '/')
+  const at = normalized.includes(path) ? normalized.indexOf(path) : normalized.indexOf(basename(path))
+  if (at === -1) return undefined
+  const words = normalized.slice(0, at).trim().split(/\s+/).filter(word => !word.startsWith('-') && !word.includes('='))
+  const program = basename(words[words.length - 1] ?? '').toLowerCase()
+  if (/^(?:sh|bash|zsh|dash|ksh|fish|source|\.)$/.test(program)) return 'shell'
+  if (/^(?:node|deno|bun|tsx|ts-node)$/.test(program)) return 'js'
+  if (/^python\d*(?:\.\d+)?$/.test(program)) return 'python'
+  return undefined
 }
 
 const LIVE_CODE_ROLES: ReadonlySet<FileRole> = new Set(['module', 'hook-script', 'server', 'prompt-script', 'bin', 'code'])
