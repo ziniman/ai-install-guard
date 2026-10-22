@@ -131,8 +131,11 @@ async function osvCheck(host: Host, ctx: ScanContext): Promise<CheckResult> {
   const base = { id: 'provenance.packages', group: 'provenance' as const, title: 'Known malicious or vulnerable packages' }
   if (packages.length === 0) return row({ ...base, advice: 'No packages to look up.' }, [])
   const fetch = host.fetch as NonNullable<Host['fetch']>
-  // One list of advisory ids per package, in order; OSV answers in batches.
-  const ids: string[][] = []
+  // One list of advisory ids per package, in order, or undefined for a
+  // package whose batch got no usable answer. OSV answers in batches, and a
+  // batch that fails never discards what earlier batches found.
+  const ids: (string[] | undefined)[] = []
+  let failure: string | undefined
   for (let start = 0; start < packages.length; start += BATCH) {
     const batch = packages.slice(start, start + BATCH)
     let results: unknown
@@ -142,22 +145,28 @@ async function osvCheck(host: Host, ctx: ScanContext): Promise<CheckResult> {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ queries: batch.map(pkg => ({ package: { name: pkg.name, ecosystem: pkg.ecosystem }, ...(pkg.version === undefined ? {} : { version: pkg.version }) })) }),
       })
-      if (!answer.ok) return failedRow(base.id, base.title, `OSV answered ${answer.status}`)
       const parsed = parseJson(answer.text)
-      results = parsed.ok && isRecord(parsed.value) ? parsed.value.results : undefined
+      results = answer.ok && parsed.ok && isRecord(parsed.value) ? parsed.value.results : undefined
+      if (!answer.ok) failure = `OSV answered ${answer.status}`
     } catch (error) {
-      return failedRow(base.id, base.title, `could not reach OSV: ${error instanceof Error ? error.message : String(error)}`)
+      failure = `could not reach OSV: ${error instanceof Error ? error.message : String(error)}`
     }
-    // A reply that does not answer every package is not trusted for any.
-    if (!Array.isArray(results) || results.length !== batch.length) return failedRow(base.id, base.title, 'OSV gave an answer that does not cover every package')
+    // A reply that does not answer every package is not trusted for any of its batch.
+    if (!Array.isArray(results) || results.length !== batch.length) {
+      failure ??= 'OSV gave an answer that does not cover every package'
+      for (let index = 0; index < batch.length; index += 1) ids.push(undefined)
+      continue
+    }
     for (const entry of results) {
       ids.push(isRecord(entry) && Array.isArray(entry.vulns) ? entry.vulns.map(vuln => (isRecord(vuln) && typeof vuln.id === 'string' ? vuln.id : '')).filter(id => /^[A-Z][\w.-]{2,60}$/.test(id)) : [])
     }
   }
+  const unchecked = ids.filter(list => list === undefined).length
+  if (unchecked === packages.length) return failedRow(base.id, base.title, failure ?? 'OSV gave no usable answer')
   // Malware is often filed as an ordinary advisory (GHSA) marked CWE-506, so
   // each id's details are read; MAL- ids are malware by definition. An id
   // whose details could not be read stays unresolved, never cleared.
-  const all = [...new Set(ids.flat())]
+  const all = [...new Set(ids.flatMap(list => list ?? []))]
   const harmful = new Set(all.filter(id => id.startsWith('MAL-')))
   const resolved = new Set(harmful)
   const wanted = all.filter(id => !id.startsWith('MAL-')).slice(0, MAX_DETAILS)
@@ -183,7 +192,8 @@ async function osvCheck(host: Host, ctx: ScanContext): Promise<CheckResult> {
   const vulnerable: string[] = []
   const unknown: string[] = []
   packages.forEach((pkg, index) => {
-    const list = ids[index] ?? []
+    const list = ids[index]
+    if (list === undefined) return
     const label = `${pkg.name}${pkg.version === undefined ? '' : `@${pkg.version}`} (${pkg.ecosystem})`
     const lead = pkg.via === undefined ? '' : `${pkg.via}: `
     const bad = list.filter(id => harmful.has(id))
@@ -201,14 +211,15 @@ async function osvCheck(host: Host, ctx: ScanContext): Promise<CheckResult> {
       evidence.push({ file: pkg.file, excerpt: `${lead}${label} has ${open.length} advisor${open.length === 1 ? 'y' : 'ies'} whose details could not be read; any of them may be malware`, status: 'warn' })
     }
   })
-  if (found.length > packages.length) evidence.push({ file: '-', excerpt: `${found.length - packages.length} more packages were not looked up`, status: 'warn' })
-  const checked = `Checked ${packages.length} package${packages.length === 1 ? '' : 's'} against OSV${found.length > packages.length ? `; ${found.length - packages.length} more were not looked up` : ''}`
+  const notLooked = found.length - packages.length + unchecked
+  if (notLooked > 0) evidence.push({ file: '-', excerpt: `${notLooked} package${notLooked === 1 ? ' was' : 's were'} not looked up${failure === undefined ? '' : ` (${failure})`}`, status: 'warn' })
+  const checked = `Checked ${packages.length - unchecked} package${packages.length - unchecked === 1 ? '' : 's'} against OSV${notLooked > 0 ? `; ${notLooked} more ${notLooked === 1 ? 'was' : 'were'} not looked up` : ''}`
   const summary =
     malicious.length > 0
       ? [`Uses a package listed as malware: ${malicious.slice(0, 3).join(', ')}`, checked]
       : vulnerable.length + unknown.length > 0
         ? [`${vulnerable.length + unknown.length} package${vulnerable.length + unknown.length === 1 ? ' has' : 's have'} advisories: ${[...vulnerable, ...unknown].slice(0, 3).join(', ')}`, checked]
-        : found.length > packages.length
+        : notLooked > 0
           ? [checked]
           : undefined
   return row(

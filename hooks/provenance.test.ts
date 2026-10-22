@@ -275,3 +275,21 @@ describe('GitHub lookups, local review fixes', () => {
     expect(results[1]?.evidence.map(item => item.excerpt)).toContain('whether it is on the default branch was not checked: GitHub answered 500')
   })
 })
+
+describe('a later OSV batch that fails', () => {
+  test('keeps what earlier batches found, and says what was not looked up', async () => {
+    const deps = Object.fromEntries(Array.from({ length: 1500 }, (_, index) => [`pkg-${index}`, '1.0.0']))
+    const ctx = buildContext(await takeInventory(memoryHost('/p', { ...fixture('clean-plugin'), 'package.json': b64(JSON.stringify({ name: 'x', dependencies: deps })) }), '/p'))
+    let batches = 0
+    const answers = (url: string, init?: FetchInit): FetchResult | Error => {
+      if (url !== OSV_BATCH) return json({ plugins: [] })
+      batches += 1
+      if (batches === 2) return new Error('reset')
+      const queries = (JSON.parse(init?.body ?? '{}') as { queries: unknown[] }).queries
+      return json({ results: queries.map((_, index) => (index === 3 ? { vulns: [{ id: 'MAL-2026-2' }] } : {})) })
+    }
+    const row = (await outsideLookups(netHost(answers), ctx)).find(result => result.id === 'provenance.packages')
+    expect(row?.status).toBe('fail')
+    expect(row?.summary?.[1]).toBe('Checked 1000 packages against OSV; 500 more were not looked up')
+  })
+})
