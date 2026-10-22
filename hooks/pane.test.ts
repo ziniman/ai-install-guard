@@ -183,7 +183,45 @@ describe('pane review fixes', () => {
     expect(await pane.find({ key: 'install' })).toBeUndefined()
     await pane.press({ key: 'reject' })
     expect(ui.closed).toEqual([PANE_ID])
+    expect(ui.toasts.at(-1)).toContain('no decision to remember')
     expect((await $.command.run(typed('guard', 'list'))).text).toContain('no decisions yet')
+    await pane.unmount()
+  })
+
+  test('the pane header shows a hidden character in the target as a code point', async ($, on) => {
+    mock.store(on)
+    serveUi(on)
+    serveFixture(on, '/work/evil\u202eclean', fixture('clean-plugin'))
+    await $.command.run(typed('guard', 'scan /work/evil\u202eclean'))
+    const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+
+    expect((await pane.find({ type: 'Text', text: /^AI Install Guard/ }))?.text).toContain('evil<U+202E>clean')
+    await pane.unmount()
+  })
+
+  test('a failure to show progress does not fail the scan', async ($, on) => {
+    mock.store(on)
+    serveUi(on)
+    serveFixture(on, ROOT, fixture('clean-plugin'))
+    let sets = 0
+    on('state.set', ($, e, next) => (++sets === 2 ? { deny: 'test: progress refused' } : next(e)))
+    const { text } = await $.command.run(typed('guard', `scan ${ROOT}`))
+
+    expect(text).toContain('Safe to install')
+  })
+
+  test('after a failed scan, Copy report copies that failure, not an older report', async ($, on) => {
+    mock.store(on)
+    const ui = serveUi(on)
+    serveFixture(on, ROOT, fixture('curl-hook'))
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    await $.command.run(typed('guard', 'scan /work/other'))
+    const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+    await pane.press({ key: 'copy' })
+
+    expect(ui.copied.at(-1)).toContain('AI Install Guard: /work/other')
+    expect(ui.copied.at(-1)).toContain('Verdict: Could not verify')
+    expect(ui.copied.at(-1)).not.toContain('Shell hooks')
     await pane.unmount()
   })
 

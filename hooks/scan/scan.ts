@@ -37,7 +37,18 @@ export type ScanOptions = {
 }
 
 /** Scans a local folder: inventory, every deterministic check, the verdict. */
-export async function scanFolder(host: Host, target: string, path: string, options: ScanOptions = {}): Promise<ScanReport> {
+export async function scanFolder(host: Host, target: string, path: string, rawOptions: ScanOptions = {}): Promise<ScanReport> {
+  // Progress is a courtesy: a failure to show it never fails the scan.
+  const options: ScanOptions = {
+    ...rawOptions,
+    onStage: async stage => {
+      try {
+        await rawOptions.onStage?.(stage)
+      } catch {
+        // ignored on purpose
+      }
+    },
+  }
   let tree: ScannedTree
   try {
     await options.onStage?.('reading files')

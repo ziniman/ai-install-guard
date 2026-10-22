@@ -10,13 +10,14 @@ const EVIDENCE_PER_ROW = 20
 export const PANE_ID = 'ai-install-guard'
 
 export function scanningView(target: string, action: GuardAction): GuardView {
-  return { target, action, stage: 'Starting', rows: [], expanded: [], details: false, confirming: false }
+  return { target: safeLine(target), action, stage: 'Starting', rows: [], expanded: [], details: false, confirming: false }
 }
 
 /** The pane's view of a finished scan: compact, every quoted text made safe. */
 export function viewOf(report: ScanReport, action: GuardAction): GuardView {
   return {
-    target: report.target,
+    // The person's own words, but drawn beside an Approve button: made safe too.
+    target: safeLine(report.target),
     action,
     stage: '',
     verdict: {
@@ -25,7 +26,7 @@ export function viewOf(report: ScanReport, action: GuardAction): GuardView {
     },
     rows: report.results.map(rowOf),
     kind: report.kind,
-    root: report.inventory?.root,
+    root: report.inventory === undefined ? undefined : safeLine(report.inventory.root),
     treeHash: report.inventory?.treeHash,
     expanded: [],
     details: false,
@@ -40,7 +41,7 @@ function rowOf(result: CheckResult): GuardRow {
     title: result.title,
     status: result.status,
     evidence: result.evidence.slice(0, EVIDENCE_PER_ROW).map(item => ({
-      file: safeLine(item.file),
+      file: safeLine(redactSecrets(item.file)),
       line: item.line,
       excerpt: safeLine(redactSecrets(item.excerpt)),
       status: item.status,
@@ -50,7 +51,7 @@ function rowOf(result: CheckResult): GuardRow {
   }
 }
 
-/** Whether pressing the primary button once is enough. */
+/** Whether the primary button needs a second, explicit confirmation: the verdict is Do not install or Could not verify. */
 export function needsConfirmation(view: GuardView): boolean {
   return view.verdict === undefined || view.verdict.kind === 'reject' || view.verdict.kind === 'unverified'
 }

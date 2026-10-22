@@ -46,8 +46,13 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     const current = await read($, viewAtom)
     if (current === null || current.verdict === undefined) return
     // A scan that never read the files has no tree hash to pin a decision to:
-    // the pane closes and nothing is remembered.
-    if (current.treeHash !== undefined) {
+    // the pane closes, nothing is remembered, and nothing claims otherwise.
+    if (current.treeHash === undefined) {
+      $.ui.toast('AI Install Guard: closed; the scan read nothing, so there is no decision to remember')
+      await $.ui.close({ id: PANE_ID })
+      return
+    }
+    {
       await recordDecision($, {
         target: current.target,
         root: current.root,

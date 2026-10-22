@@ -57,6 +57,9 @@ export const register: Register = on => {
 async function scan($: EngineInterface, target: string, details: boolean): Promise<string> {
   const host = modHost($)
   const opened = await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => ({ isPlaced: false }))
+  // Until this scan's report is stored, Copy report has nothing to copy, never
+  // the previous scan's report.
+  await $.store.delete(REPORT_TEXT).catch(() => undefined)
   await update($, viewAtom, () => scanningView(target, 'approve'))
   $.ui.status(`AI Install Guard: scanning ${safeLine(target)}`)
   try {
@@ -65,12 +68,13 @@ async function scan($: EngineInterface, target: string, details: boolean): Promi
       onStage: stage => update($, viewAtom, current => (current === null ? current : { ...current, stage: safeLine(stage) })).then(() => undefined),
     })
     const view = viewOf(report, 'approve')
-    await update($, viewAtom, () => view)
     const text = formatReport(report, { details: true })
-    // The report text first, held well inside the store's limit, then the
-    // view; a failed write leaves the pane as it is and the answer intact.
+    // The report text is stored before the pane shows the verdict, so Copy
+    // report always copies this scan's report. It is held well inside the
+    // store's limit; a failed write leaves Copy with nothing, not old text.
     const stored = text.length > MAX_REPORT_CHARS ? `${text.slice(0, MAX_REPORT_CHARS)}\n… the report was cut here to fit the store` : text
     await $.store.set(REPORT_TEXT, stored).catch(() => undefined)
+    await update($, viewAtom, () => view)
     await saveLastView($, view).catch(() => undefined)
     $.ui.toast(`AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}`)
     // Where no pane shows, the answer is the whole report: findings and advice.
@@ -78,6 +82,7 @@ async function scan($: EngineInterface, target: string, details: boolean): Promi
     return `AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}. The report is in the pane; /guard report reopens it.`
   } catch (error) {
     const reason = `Could not verify ${safeLine(target)}: ${safeLine(reasonOf(error))}`
+    await $.store.set(REPORT_TEXT, reason).catch(() => undefined)
     // The pane must not keep saying it is scanning.
     await update($, viewAtom, current => (current === null ? current : { ...current, stage: '', verdict: { kind: 'unverified' as const, recommendation: 'Could not verify', reasons: [reason], counts: { pass: 0, warn: 0, fail: 0, info: 0 } } })).catch(() => undefined)
     return reason
