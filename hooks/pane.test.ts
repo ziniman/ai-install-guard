@@ -84,7 +84,7 @@ describe('the verdict pane', () => {
       await $.command.run(typed('guard', `scan ${ROOT}`))
       const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface, component: 'Pane', requestId: PANE_ID, props: paneProps() })
 
-      expect(await pane.find({ type: 'Text', text: /^Install with caution$/ })).toBeDefined()
+      expect(await pane.find({ type: 'Text', text: /^Review what it can do$/ })).toBeDefined()
       expect((await pane.find({ key: 'install' }))?.text).toBe('Approve')
       await pane.press({ key: 'reject' })
 
@@ -505,7 +505,7 @@ describe('the README badge', () => {
     target: 'acme/notes',
     action: 'approve',
     stage: '',
-    verdict: { kind, recommendation: { safe: 'Safe to install', caution: 'Install with caution', reject: 'Do not install', unverified: 'Could not verify' }[kind], reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
+    verdict: { kind, recommendation: { safe: 'Safe to install', caution: 'Review what it can do', reject: 'Do not install', unverified: 'Could not verify' }[kind], reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
     rows: [],
     expanded: [],
     details: false,
@@ -520,7 +520,7 @@ describe('the README badge', () => {
       `[![AI Install Guard: Safe to install at aaaaaaa](https://img.shields.io/badge/AI_Install_Guard-safe_to_install_%C2%B7_aaaaaaa-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned at commit ${SHA}, ${TREE}")`,
     )
     const local = badgeFor(view('caution'))
-    expect('markdown' in local && local.markdown).toContain('install_with_caution_%C2%B7_tree_bbbbbbbb-dbab09')
+    expect('markdown' in local && local.markdown).toContain('review_what_it_can_do_%C2%B7_tree_bbbbbbbb-dbab09')
   })
 
   test('there is no badge for Do not install, Could not verify, or nothing scanned', () => {
