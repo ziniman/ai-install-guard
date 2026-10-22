@@ -228,6 +228,9 @@ function isLoneInString(text: string, index: number, kindAt: (index: number) => 
   // The quote must open the string: what comes before it is no string, and no
   // `}`, which may close a template's `${...}` and leave the quote as its text.
   if (index >= 2 && (kindAt(index - 2) === 'string' || text[index - 2] === '}')) return false
+  // Only LF ends the line here. U+2028 and U+2029 end a JavaScript line, but
+  // editors often show them inline and U+2028 ends no bidi paragraph, so code
+  // after one can still be reordered: that fails.
   for (let i = index + 2; i < text.length && text[i] !== '\n'; i += 1) {
     const char = text[i]
     if (char === ' ' || char === '\t' || char === ';' || char === ',') continue

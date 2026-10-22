@@ -1464,6 +1464,8 @@ describe('a bidirectional control that is all of a string', () => {
     expect((await hidden('skills/greet/marks.js', "const RLO = '\u202e'\rconst isAdmin = false\n"))?.status).toBe('fail')
     expect((await hidden('skills/greet/marks.js', "const RLO = '\u202e' // note\u2028isAdmin = true\n"))?.status).toBe('fail')
     expect((await hidden('skills/greet/marks.sh', "#!/bin/sh\nRLO='\u202e';#x\n"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.js', "const RLO = '\u202e'\u2028isAdmin = true\n"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.js', "const RLM = '\u200f'\u2029isAdmin = true\n"))?.status).toBe('fail')
   })
 
   test('anywhere else it still fails', async () => {
