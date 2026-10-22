@@ -4,12 +4,12 @@ import { hookChecks } from './checks/hooks'
 import { mcpChecks } from './checks/mcp'
 import { modChecks } from './checks/mod'
 import { promptChecks } from './checks/prompts'
-import { marketplacePinsCheck } from './checks/provenance'
+import { badgeClaim, badgeRow, marketplacePinsCheck, type BadgeClaim } from './checks/provenance'
 import { licenseCheck, qualityChecks } from './checks/quality'
 import { secretChecks } from './checks/secrets'
 import { structureChecks } from './checks/structure'
 import { joinPath } from './checks/text'
-import { GROUPS, rankOf, type CheckResult, type Evidence } from './checks/types'
+import { GROUPS, rankOf, row, type CheckResult, type Evidence } from './checks/types'
 import { runValidator } from './checks/validator'
 import type { Host } from './host'
 import { treeHash } from './hash'
@@ -26,6 +26,8 @@ export type ScanReport = {
   verdict: Verdict
   /** For a remote scan: the one commit that was fetched and checked. */
   source?: PinnedSource
+  /** What an AI Install Guard badge in the README claims, judged in `results`. */
+  badgeClaim?: BadgeClaim
 }
 
 export type ScanOptions = {
@@ -83,7 +85,10 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
         results = mergeResults(results, [missingSourceRow(source.name, source.path)])
         continue
       }
-      results = mergeResults(results, prefixed(await checksFor(host, buildContext(nested), options), source.path))
+      // A listed plugin's own README badge is judged against its own rows.
+      const nestedCtx = buildContext(nested)
+      const nestedResults = withBadgeClaim(await checksFor(host, nestedCtx, options), badgeClaim(nestedCtx.readme), { treeHash: nested.inventory.treeHash })
+      results = mergeResults(results, prefixed(nestedResults, source.path))
     }
   } catch (error) {
     return { target, kind: ctx.kind, inventory: tree.inventory, results: [], verdict: decide([], `a check failed: ${reasonOf(error)}`) }
@@ -104,8 +109,26 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
       ])
     results = [...results, ...extra]
   }
-  results = sortResults(results)
-  return { target, kind: ctx.kind, inventory: tree.inventory, results, verdict: decide(results) }
+  const claim = badgeClaim(ctx.readme)
+  results = withBadgeClaim(sortResults(results), claim, { treeHash: tree.inventory.treeHash })
+  return { target, kind: ctx.kind, inventory: tree.inventory, results, verdict: decide(results), ...(claim === undefined ? {} : { badgeClaim: claim }) }
+}
+
+/**
+ * The results with a README badge judged against everything else: the badge
+ * row is computed last, from the verdict the other rows give, so a badge can
+ * add a warning and never lift a verdict.
+ */
+export function withBadgeClaim(results: readonly CheckResult[], claim: BadgeClaim | undefined, version: { sha?: string; treeHash?: string }): CheckResult[] {
+  if (claim === undefined) return [...results]
+  // Evidence about nested plugins' badges, merged in already, stays; this
+  // README's own is judged again.
+  const rest = results.flatMap(result => {
+    if (result.id !== 'provenance.badge') return [result]
+    const kept = result.evidence.filter(item => item.file !== claim.file)
+    return kept.length === 0 ? [] : [row({ id: result.id, group: result.group, title: result.title, advice: result.advice, summary: result.summary }, kept, 'info')]
+  })
+  return sortResults(mergeResults(rest, [badgeRow(claim, decide(rest).kind, version)]))
 }
 
 async function checksFor(host: Host, ctx: ScanContext, options: ScanOptions): Promise<CheckResult[]> {
@@ -156,7 +179,8 @@ export async function scanRemote(host: Host, target: string, spec: RemoteSpec, o
   try {
     const report = await scanFolder(host, target, fetched.root, options)
     if (report.verdict.kind === 'unverified') return { ...report, source: fetched.source }
-    const results = sortResults([...fetched.results, ...report.results])
+    // The badge is judged again with the source's own rows counted.
+    const results = withBadgeClaim(sortResults([...fetched.results, ...report.results]), report.badgeClaim, { sha: fetched.source.sha, treeHash: report.inventory?.treeHash })
     return { ...report, source: fetched.source, results, verdict: decide(results) }
   } finally {
     await fetched.cleanup().catch(() => undefined)

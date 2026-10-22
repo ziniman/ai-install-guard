@@ -1,6 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
+import { badgeFor } from './guard/badge'
 import { decisionFor, forgetDecisions, loadDecisions, loadLastView, MAX_REPORT_CHARS, saveLastView } from './guard/decisions'
 import { drawPane, REPORT_TEXT } from './guard/pane'
 import { PANE_ID, scanningView, viewOf } from './guard/view'
@@ -24,6 +25,7 @@ const USAGE = [
   '      --path <folder>             A folder inside the repository',
   '      --details                   The full report as text',
   '  /guard report                 Reopen the last report',
+  '  /guard badge                  A README badge for the last scan (Safe to install or Install with caution)',
   '  /guard list                   Your approved and rejected versions',
   '  /guard forget <name>          Forget decisions about a name, so it is judged again',
 ].join('\n')
@@ -33,7 +35,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'guard',
       description: 'Scan a plugin, mod, skill or MCP server without installing it',
-      argumentHint: 'scan <path | repository> | report | list | forget <name>',
+      argumentHint: 'scan <path | repository> | report | badge | list | forget <name>',
     })
     return next(e)
   })
@@ -43,6 +45,7 @@ export const register: Register = on => {
     if (error !== undefined) return { text: `AI Install Guard: ${error}\n\n${USAGE}` }
     if (sub === 'scan' && rest !== '') return { text: await scan($, rest, details, { ref, path }) }
     if (sub === 'report') return { text: await reopen($) }
+    if (sub === 'badge') return { text: await badge($) }
     if (sub === 'list') return { text: await list($) }
     if (sub === 'forget' && rest !== '') {
       const count = (await forgetDecisions($, rest)).length
@@ -113,6 +116,19 @@ async function reopen($: EngineInterface): Promise<string> {
   if (opened.isPlaced) return `AI Install Guard: reopened the report for ${safeLine(view.target)}.`
   const text = await $.store.get(REPORT_TEXT)
   return typeof text === 'string' ? text : 'AI Install Guard: the last report is no longer stored.'
+}
+
+async function badge($: EngineInterface): Promise<string> {
+  const view = await loadLastView($)
+  const made = badgeFor(view)
+  if ('refusal' in made) return `AI Install Guard: ${made.refusal}`
+  return [
+    `AI Install Guard: a README badge for ${view?.target ?? 'the last scan'} at ${made.pin}. Paste it near the top of your README:`,
+    '',
+    made.markdown,
+    '',
+    'It names the exact version that was scanned. A change to your code needs a new scan and a new badge; the guard checks a badge against its own scan and never trusts it.',
+  ].join('\n')
 }
 
 async function list($: EngineInterface): Promise<string> {

@@ -40,6 +40,7 @@ export function viewOf(report: ScanReport, action: GuardAction): GuardView {
           ? undefined
           : safeLine(report.inventory.root),
     sha: report.source?.sha,
+    ...(report.source?.subdir === undefined ? {} : { subdir: encodeFolder(report.source.subdir) }),
     treeHash: report.inventory?.treeHash,
     expanded: [],
     details: false,
@@ -74,4 +75,13 @@ export function needsConfirmation(view: GuardView): boolean {
 export function primaryLabel(view: GuardView): string {
   const verb = view.action === 'install' ? 'Install' : 'Approve'
   return needsConfirmation(view) ? `${verb} anyway` : verb
+}
+
+/**
+ * A folder name as the pane and a badge show it: whole characters other than
+ * letters, digits and `_ . / -` percent-encoded, so the exact folder stays
+ * named and nothing in it can be read as markup or hide itself.
+ */
+export function encodeFolder(folder: string): string {
+  return folder.replace(/[^\w./-]/gu, char => [...new TextEncoder().encode(char)].map(byte => `%${byte.toString(16).toUpperCase().padStart(2, '0')}`).join(''))
 }

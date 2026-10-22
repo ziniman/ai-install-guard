@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/reviewed-by-ai-install-guard-light@1x.png" alt="Reviewed by AI Install Guard" width="406" height="104">
+
 # AI Install Guard
 
 **A security gate for Claude Code. Nothing new gets installed until you have seen what it can do.**
@@ -68,6 +70,7 @@ Approvals are remembered by commit and content hash, so the same version is neve
 | `/guard scan --ref <ref> --path <folder> <repository>` | Scan a branch, tag or full commit id (the default branch otherwise), and a folder inside the repository |
 | `/guard scan --details …` | Any of the above, and print the full report with every finding and its advice |
 | `/guard report` | Reopen the last report |
+| `/guard badge` | A README badge for the last scan, when it was Safe to install or Install with caution (see [Review badge](#review-badge)) |
 | `/guard list` | Your approved and rejected versions, newest first |
 | `/guard forget <name>` | Forget decisions about a name, so it is judged again |
 
@@ -76,6 +79,22 @@ A remote scan resolves the ref to one commit, fetches only that commit (no hooks
 Each row opens to say what it found in plain words first: which programs the candidate starts and what each is for, which secrets its code reads, and what is worth a closer look. The code lines that back it up sit behind **Show the code**.
 
 In the pane, **Approve** (`i`) and **Reject** (`r`) record your decision for that exact content (its tree hash). When the verdict is Do not install or Could not verify, the button reads **Approve anyway** and asks a second time. **Details** (`d`) opens every row, and **Copy report** (`c`) copies the full report as text. Where no pane can show (a headless `claude -p` run), `/guard scan` prints the report instead.
+
+## Review badge
+
+If you publish a plugin, mod, skill or MCP server, you can show that it was scanned. Scan your own repository, then run `/guard badge` or press **Copy badge** (`b`) in the pane, and paste the result near the top of your README:
+
+```markdown
+[![AI Install Guard: Safe to install at 4ac6edc](https://img.shields.io/badge/AI_Install_Guard-safe_to_install_%C2%B7_4ac6edc-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned at commit 4ac6edc…, sha256:…")
+```
+
+The badge says two things: the verdict (green for **Safe to install**, yellow for **Install with caution**) and the exact version that was scanned, the commit or, for a local folder, the tree hash. Hovering over it shows the full commit and tree hash. There is no badge for **Do not install** or **Could not verify**.
+
+A badge is a picture anyone can paste, so the guard never trusts one:
+
+- **When you see one:** scan that version yourself with `/guard scan owner/repo --ref <commit>`, adding `--path <folder>` when the badge names a folder. Your own scan is what counts.
+- **When the guard meets one:** a README badge that claims a better verdict than the guard's own scan is a warning, saying the badge is outdated or was never earned. A badge that matches is only noted. It never lifts a verdict.
+- **When the code changes:** the badge still names the old commit. A new version needs a new scan and a new badge.
 
 ## What the guard itself can do
 
