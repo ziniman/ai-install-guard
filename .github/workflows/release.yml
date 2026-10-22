@@ -45,9 +45,15 @@ jobs:
           # A release is always built from the commit on main that set its
           # version (the PR's merge commit), even when a later push retries
           # it, so the npm package and the tag name the same files.
-          RELEASE_SHA=$(git log -s --first-parent --diff-merges=first-parent -n 1 --format=%H \
-            -G'"version"[[:space:]]*:' "$GITHUB_SHA" -- package.json)
-          RELEASE_SHA=${RELEASE_SHA:-$GITHUB_SHA}
+          # Walk back along main while package.json's version field holds
+          # this version; the oldest such commit is the one that set it.
+          RELEASE_SHA=$GITHUB_SHA
+          for c in $(git rev-list --first-parent "$GITHUB_SHA"); do
+            v=$( (git show "$c:package.json" 2>/dev/null || true) \
+              | node -p "try { JSON.parse(require('fs').readFileSync(0, 'utf8')).version } catch { '' }")
+            [ "$v" = "$VERSION" ] || break
+            RELEASE_SHA=$c
+          done
           echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
           if out=$(npm view "$NAME@$VERSION" version 2>&1); then
             echo "$NAME@$VERSION is already on npm." >> "$GITHUB_STEP_SUMMARY"
