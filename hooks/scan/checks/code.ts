@@ -160,6 +160,7 @@ const ANSI = /\u001b\[[0-9;?]{0,40}[A-Za-z]|\u001b\][^\u0007\u001b]{0,1000}\u000
 
 function hiddenCheck(ctx: ScanContext): CheckResult {
   const evidence: Evidence[] = []
+  let foundLone = false
   for (const file of ctx.files) {
     const text = file.isText ? ctx.text(file.path) : undefined
     if (text === undefined) continue
@@ -173,9 +174,23 @@ function hiddenCheck(ctx: ScanContext): CheckResult {
     for (const match of findAll(text, VARIATION_SUPPLEMENT, 3)) {
       evidence.push({ file: file.path, line: match.line, excerpt: `${[...match.text].length} invisible variation selectors in a row (a way to smuggle data)`, status: cap('fail') })
     }
-    const bidi = findAll(text, BIDI, 5)
-    for (const match of bidi) {
+    // In code a control that is all of a string, with nothing after it, is
+    // only a warning, and only in a language the tokenizer knows. Failures
+    // are found first, so no number of such strings can crowd out a real one.
+    const language = isCode ? (ctx.interpreters.get(file.path) ?? languageOf(file.path, text)) : 'other'
+    let kinds: ((index: number) => SpanKind) | undefined
+    const kindAt = (index: number): SpanKind => (kinds ??= spanKinds(text, language))(index)
+    const lone = (index: number): boolean => language !== 'other' && isLoneInString(text, index, kindAt)
+    for (const match of findAll(text, BIDI, 5, index => !lone(index))) {
       evidence.push({ file: file.path, line: match.line, excerpt: `bidirectional control ${codePoints(match.text)}: text may read differently than it runs`, status: cap(isCode ? 'fail' : 'warn') })
+    }
+    if (language !== 'other') {
+      for (const match of findAll(text, BIDI, 3, lone)) {
+        const status = cap('warn')
+        if (status === 'warn') foundLone = true
+        const excerpt = `bidirectional control ${codePoints(match.text)} is all of a string: it cannot reorder code there, but the string looks empty; write it as ${escapeFor(match, text, language)}`
+        evidence.push({ file: file.path, line: match.line, excerpt, status })
+      }
     }
     const zero = findAll(text, ZERO_WIDTH, 50)
     if (zero.length > 0 && (isCode || isMarkdown(file.path))) {
@@ -192,10 +207,42 @@ function hiddenCheck(ctx: ScanContext): CheckResult {
       id: 'code.hidden-characters',
       group: GROUP,
       title: 'Hidden characters',
-      advice: 'Invisible tag characters carry text the model reads and you do not see. Bidirectional controls make code read differently than it runs. Neither belongs in a plugin.',
+      advice: `Invisible tag characters carry text the model reads and you do not see. Bidirectional controls make code read differently than it runs. Neither belongs in a plugin.${
+        foundLone ? " A plugin that needs a direction mark, as one for right-to-left text does, should write it as an escape such as '\\u200f', never the raw character, which makes its string look empty." : ''
+      }`,
     },
     evidence,
   )
+}
+
+/**
+ * Whether the bidirectional control at `index` is all of a one-line string,
+ * as in `const RLM = '\u200f'`, with nothing after it on its line but blanks,
+ * `;`, `,` or a comment. What it can reorder runs to the end of its line, and
+ * there that is no code; what comes before it does not move.
+ */
+function isLoneInString(text: string, index: number, kindAt: (index: number) => SpanKind): boolean {
+  const quote = text[index - 1]
+  if ((quote !== "'" && quote !== '"') || text[index + 1] !== quote) return false
+  if (kindAt(index - 1) !== 'string' || kindAt(index) !== 'string' || kindAt(index + 1) !== 'string') return false
+  // The quote must open the string: what comes before it is no string, and no
+  // `}`, which may close a template's `${...}` and leave the quote as its text.
+  if (index >= 2 && (kindAt(index - 2) === 'string' || text[index - 2] === '}')) return false
+  for (let i = index + 2; i < text.length && text[i] !== '\n'; i += 1) {
+    const char = text[i]
+    if (char === ' ' || char === '\t' || char === ';' || char === ',') continue
+    // Only a CR that ends the line: a lone one ends a line too, and code may follow it.
+    if (char === '\r' && (i + 1 === text.length || text[i + 1] === '\n')) continue
+    const kind = kindAt(i)
+    if (kind !== 'comment' && kind !== 'trailing-comment') return false
+  }
+  return true
+}
+
+/** `'\u200f'` for a lone control, as its language writes the escape. */
+function escapeFor(match: Match, text: string, language: Language): string {
+  const hex = (match.text.codePointAt(0) as number).toString(16).padStart(4, '0')
+  return language === 'shell' ? `$'\\u${hex}'` : `${text[match.index - 1]}\\u${hex}${text[match.index - 1]}`
 }
 
 /** Tag characters U+E0020..U+E007E mirror printable ASCII. */

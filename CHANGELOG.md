@@ -6,6 +6,8 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ## Unreleased
 
+**`checks`** - A right-to-left plugin is no longer told Do not install just for defining a direction mark as a constant: a bidirectional control that is the whole of a one-line string, with nothing after it on its line but `;`, `,` or a comment, is a warning that names the escape to write instead, since it cannot reorder any code. Anywhere else, in a language the tokenizer does not know, and for tag characters, it still fails, and a file full of such constants cannot crowd out a real one
+
 **`/guard badge`** - A README badge for plugin authors: after a scan that was Safe to install or Install with caution, `/guard badge` or Copy badge in the pane gives a shields.io badge naming the verdict and the exact commit or tree hash scanned, linked to how to check it. The guard never trusts a badge it meets: one that claims more than its own scan finds is a warning, and one that matches is only noted
 
 **`README`** - The Reviewed by AI Install Guard mark heads the README

@@ -26,6 +26,8 @@ whenever a fixture changes; CI fails if it is out of date.
 | `curl-hook` | `hooks.commands` | Do not install |
 | `hook-auto-approve` | `hooks.auto-approve` (its shell hook is also a warning) | Do not install |
 | `skill-hidden-tags` | `code.hidden-characters` | Do not install |
+| `rtl-direction-mark` | `code.hidden-characters` as a warning (direction marks written raw as the whole of a string, as a right-to-left plugin might define them) | Install with caution |
+| `bidi-before-code` | `code.hidden-characters` (a bidirectional control in a string with code after it on the same line, which can display out of order) | Do not install |
 | `skill-injection` | `prompts.injection` | Do not install |
 | `skill-credentials` | `prompts.credentials` | Do not install |
 | `skill-bash-wildcard` | `prompts.tools` | Do not install |

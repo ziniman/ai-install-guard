@@ -48,6 +48,8 @@ const CASES: readonly { fixture: string; flags: string[]; verdict: VerdictKind }
   { fixture: 'curl-hook', flags: ['hooks.commands:fail'], verdict: 'reject' },
   { fixture: 'hook-auto-approve', flags: ['hooks.auto-approve:fail', 'hooks.commands:warn'], verdict: 'reject' },
   { fixture: 'skill-hidden-tags', flags: ['code.hidden-characters:fail'], verdict: 'reject' },
+  { fixture: 'rtl-direction-mark', flags: ['code.hidden-characters:warn'], verdict: 'caution' },
+  { fixture: 'bidi-before-code', flags: ['code.hidden-characters:fail'], verdict: 'reject' },
   { fixture: 'skill-injection', flags: ['prompts.injection:fail'], verdict: 'reject' },
   { fixture: 'skill-credentials', flags: ['prompts.credentials:fail'], verdict: 'reject' },
   { fixture: 'skill-bash-wildcard', flags: ['prompts.tools:fail'], verdict: 'reject' },
@@ -1417,5 +1419,73 @@ describe('badge claims, PR review round two', () => {
   test('a fenced example inside a list item is code, not a claim', async () => {
     const report = await scanWith('script-exec', `- Add the badge:\n\n    \`\`\`markdown\n    ${badge('safe_to_install')}\n    \`\`\``)
     expect(report.results.find(result => result.id === 'provenance.badge')).toBeUndefined()
+  })
+})
+
+describe('a bidirectional control that is all of a string', () => {
+  const utf8 = (text: string) => ({ base64: btoa(String.fromCharCode(...new TextEncoder().encode(text))) })
+  const scanFiles = (files: FixtureFiles) => scanFolder(memoryHost(ROOT, files), 'case', ROOT, { validate: false })
+  const hidden = async (path: string, code: string) => {
+    const report = await scanFiles({ ...fixture('clean-plugin'), [path]: utf8(code) })
+    return report.results.find(result => result.id === 'code.hidden-characters')
+  }
+
+  test('a direction mark as a constant is a warning that names the escape to write', async () => {
+    const row = await hidden('skills/greet/marks.js', "export const RLM = '\u200f'\n")
+
+    expect(row?.status).toBe('warn')
+    expect(row?.evidence[0]).toMatchObject({ file: 'skills/greet/marks.js', line: 1 })
+    expect(row?.evidence[0]?.excerpt).toContain("write it as '\\u200f'")
+    expect(row?.advice).toContain("'\\u200f'")
+  })
+
+  test('blanks, a semicolon, a comma or a comment may follow it', async () => {
+    expect((await hidden('skills/greet/marks.js', 'const RLI = "\u2067"; // isolate\n'))?.status).toBe('warn')
+    expect((await hidden('skills/greet/marks.js', "const MARKS = [\n  '\u200f',\n  '\u200e',\n]\n"))?.status).toBe('warn')
+    expect((await hidden('skills/greet/marks.js', "const RLE = '\u202b' /* embedding */\r\n"))?.status).toBe('warn')
+    expect((await hidden('skills/greet/marks.py', "RLM = '\u200f'  # mark\n"))?.status).toBe('warn')
+    expect((await hidden('skills/greet/marks.js', "export const RLM = '\u200f'"))?.status).toBe('warn')
+  })
+
+  test('a shell script is told to write the escape the shell reads', async () => {
+    const row = await hidden('skills/greet/marks.sh', "#!/bin/bash\nRLM='\u200f'\n")
+
+    expect(row?.status).toBe('warn')
+    expect(row?.evidence[0]?.excerpt).toContain("write it as $'\\u200f'")
+  })
+
+  test('code after it on the same line fails', async () => {
+    expect((await hidden('skills/greet/marks.js', "const RLO = '\u202e'; const isAdmin = false\n"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.js', "mark('\u202e')\n"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.js', "const RLO = '\u202e'\rconst isAdmin = false\n"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.js', "const RLO = '\u202e' // note\u2028isAdmin = true\n"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.sh', "#!/bin/sh\nRLO='\u202e';#x\n"))?.status).toBe('fail')
+  })
+
+  test('anywhere else it still fails', async () => {
+    expect((await hidden('skills/greet/marks.js', "const s = '\u202eabc'\n"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.js', "// '\u202e'\n"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.js', "const s = \"it's '\u202e'\"\n"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.js', 'const s = `${x}\'\u202e\'`\n'))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.js', "const s = `${x}'\u202e'"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.py', "s = 'a''\u202e'\n"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.py', "s = '''\n'\u202e'\n'''\n"))?.status).toBe('fail')
+  })
+
+  test('in a language the tokenizer does not know it still fails', async () => {
+    expect((await hidden('skills/greet/marks.rb', "RLM = '\u200f'\n"))?.status).toBe('fail')
+    expect((await hidden('skills/greet/marks.vbs', "' '\u200f'\n"))?.status).toBe('fail')
+  })
+
+  test('no number of lone marks hides a control in code', async () => {
+    const code = "const M = '\u200f'\n".repeat(20) + "const s = '\u202e' + isAdmin\n"
+    const row = await hidden('skills/greet/marks.js', code)
+
+    expect(row?.status).toBe('fail')
+    expect(row?.evidence[0]).toMatchObject({ line: 21 })
+  })
+
+  test('a tag character alone in a string still fails', async () => {
+    expect((await hidden('skills/greet/marks.js', "const T = '\u{e0041}'\n"))?.status).toBe('fail')
   })
 })
