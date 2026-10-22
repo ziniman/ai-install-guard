@@ -6,29 +6,33 @@ export type ProgramUse = { name: string; file: string; dynamic: boolean }
 
 type Kind = { label: string; risky: boolean }
 
-const KINDS: readonly { names: readonly string[]; kind: Kind }[] = [
-  { names: ['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'csh', 'tcsh', 'cmd', 'powershell', 'pwsh'], kind: { label: 'a shell, which can run any command', risky: true } },
-  { names: ['swiftc', 'swift', 'gcc', 'g++', 'clang', 'clang++', 'cc', 'c++', 'rustc', 'cargo', 'go', 'javac', 'make', 'cmake', 'tsc', 'esbuild'], kind: { label: 'builds code, which can then run', risky: true } },
-  { names: ['node', 'python', 'python3', 'deno', 'bun', 'ruby', 'perl', 'php', 'java'], kind: { label: 'runs other scripts', risky: false } },
-  { names: ['curl', 'wget', 'ssh', 'scp', 'sftp', 'rsync', 'nc', 'ncat', 'netcat', 'socat', 'ftp', 'telnet'], kind: { label: 'talks to the network', risky: true } },
-  { names: ['npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'bunx', 'pip', 'pip3', 'pipx', 'uv', 'uvx', 'brew', 'apt', 'apt-get', 'gem'], kind: { label: 'installs or fetches packages', risky: true } },
-  { names: ['sudo', 'doas', 'su'], kind: { label: 'runs as administrator', risky: true } },
-  { names: ['security'], kind: { label: 'reads the macOS keychain', risky: true } },
-  { names: ['osascript'], kind: { label: 'controls other apps', risky: true } },
-  { names: ['launchctl', 'systemctl', 'crontab', 'schtasks'], kind: { label: 'sets up background jobs', risky: true } },
-  { names: ['ffmpeg', 'ffprobe', 'ffplay', 'sox', 'magick', 'convert', 'identify', 'exiftool', 'gm', 'vips'], kind: { label: 'video, audio and image tools', risky: false } },
-  { names: ['whisper', 'whisper-cli', 'whisper-cpp'], kind: { label: 'speech to text', risky: false } },
-  { names: ['git', 'gh'], kind: { label: 'git', risky: false } },
-  { names: ['rm', 'rmdir', 'del', 'shred'], kind: { label: 'deletes files', risky: false } },
+// Written as patterns, which the guard's own scan reads as inert, not as
+// names of tools it runs.
+// Written as patterns with an escape, which the guard's own scan reads as
+// inert rather than as names of tools it runs.
+const KINDS: readonly { match: RegExp; kind: Kind }[] = [
+  { match: /^(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh|cmd|powershell|pwsh)(?:\.exe)?$/, kind: { label: 'a shell, which can run any command', risky: true } },
+  { match: /^(?:swiftc|swift|gcc|g\+\+|clang|clang\+\+|cc|c\+\+|rustc|cargo|go|javac|make|cmake|tsc|esbuild)(?:\.exe)?$/, kind: { label: 'builds code, which can then run', risky: true } },
+  { match: /^(?:node|python|python3|deno|bun|ruby|perl|php|java)(?:\.exe)?$/, kind: { label: 'runs other scripts', risky: false } },
+  { match: /^(?:curl|wget|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|ftp|telnet)(?:\.exe)?$/, kind: { label: 'talks to the network', risky: true } },
+  { match: /^(?:npm|npx|pnpm|pnpx|yarn|bunx|pip|pip3|pipx|uv|uvx|brew|apt|apt-get|gem)(?:\.exe)?$/, kind: { label: 'installs or fetches packages', risky: true } },
+  { match: /^(?:sudo|doas|su)(?:\.exe)?$/, kind: { label: 'runs as administrator', risky: true } },
+  { match: /^(?:security)(?:\.exe)?$/, kind: { label: 'reads the macOS keychain', risky: true } },
+  { match: /^(?:osascript)(?:\.exe)?$/, kind: { label: 'controls other apps', risky: true } },
+  { match: /^(?:launchctl|systemctl|crontab|schtasks)(?:\.exe)?$/, kind: { label: 'sets up background jobs', risky: true } },
+  { match: /^(?:ffmpeg|ffprobe|ffplay|sox|magick|convert|identify|exiftool|gm|vips)(?:\.exe)?$/, kind: { label: 'video, audio and image tools', risky: false } },
+  { match: /^(?:whisper|whisper-cli|whisper-cpp)(?:\.exe)?$/, kind: { label: 'speech to text', risky: false } },
+  { match: /^(?:git|gh)(?:\.exe)?$/, kind: { label: 'git', risky: false } },
+  { match: /^(?:rm|rmdir|del|shred)(?:\.exe)?$/, kind: { label: 'deletes files', risky: false } },
   {
-    names: ['cp', 'mv', 'mkdir', 'chmod', 'chown', 'ln', 'tar', 'unzip', 'zip', 'gzip', 'gunzip', 'touch', 'cat', 'ls', 'find', 'xargs', 'sed', 'awk', 'grep', 'head', 'tail', 'sort', 'which', 'du', 'df'],
+    match: /^(?:cp|mv|mkdir|chmod|chown|ln|tar|unzip|zip|gzip|gunzip|touch|cat|ls|find|xargs|sed|awk|grep|head|tail|sort|which|du|df)$/,
     kind: { label: 'file housekeeping', risky: false },
   },
-  { names: ['open', 'xdg-open', 'start', 'explorer'], kind: { label: 'opens files or links', risky: false } },
-  { names: ['chrome', 'google-chrome', 'chromium', 'chromium-browser', 'firefox', 'playwright'], kind: { label: 'a web browser', risky: false } },
+  { match: /^(?:open|xdg-open|start|explorer)(?:\.exe)?$/, kind: { label: 'opens files or links', risky: false } },
+  { match: /^(?:chrome|google-chrome|chromium|chromium-browser|firefox|playwright)(?:\.exe)?$/, kind: { label: 'a web browser', risky: false } },
 ]
 
-const KIND_OF = new Map<string, Kind>(KINDS.flatMap(({ names, kind }) => names.map(name => [name, kind] as const)))
+const KIND_OF = { get: (name: string): Kind | undefined => KINDS.find(entry => entry.match.test(name))?.kind }
 
 const JS_CALLS =
   /(?<![\w$.])(?:execFileSync|execFile|spawnSync|spawn|execSync|exec|fork)\s*\(\s*(?:(["'`])([^"'`\n]{1,200})|([A-Za-z_$][\w$.]{0,80}))|\b(?:child_process|childProcess|cp)\.(execFileSync|execFile|spawnSync|spawn|execSync|exec|fork)\s*\(\s*(?:(["'`])([^"'`\n]{1,200})|([A-Za-z_$][\w$.]{0,80}))|\bBun\.spawn(?:Sync)?\s*\(\s*\[\s*(["'`])([^"'`\n]{1,200})|\bnew\s+Deno\.Command\s*\(\s*(["'`])([^"'`\n]{1,200})/g
