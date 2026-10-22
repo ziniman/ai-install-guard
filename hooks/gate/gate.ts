@@ -69,13 +69,20 @@ function nameOf(request: InstallRequest): string {
 }
 
 function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement {
-  if (shown.kind === 'failed') return hold(request, 'Could not verify', '', shown.placed)
+  if (shown.kind === 'failed') return shown.superseded ? superseded(request) : hold(request, 'Could not verify', '', shown.placed)
   const sha = shown.report.source?.sha
   const where = sha === undefined ? '' : ` at commit ${sha.slice(0, 12)}`
   // The same files approved before (through /guard scan, or an earlier install) need no second press.
   if (shown.view.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${name}${where} before; installing it` }
   if (shown.view.decision === 'rejected') return rejected(request, name, where, shown.view.decidedAt)
+  if (shown.superseded) return superseded(request)
   return hold(request, shown.report.verdict.recommendation, where, shown.placed, shown.text)
+}
+
+/** Another scan took the pane before this one finished: nothing to press, so nothing installs. */
+function superseded(request: GuardRequest): Judgement {
+  const text = `AI Install Guard: another scan took the pane before the one for ${request.label} finished, so nothing was installed.`
+  return { kind: 'hold', text: request.origin === 'tool' ? `${text} Do not retry it now; tell the person, and run it again once they ask.` : `${text} Run it again to review it.` }
 }
 
 function earlier(request: GuardRequest, decided: Decision, name: string): Judgement {

@@ -77,6 +77,30 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('claude plugin install notes --marketplace acme/market')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('marketplace add') })
   })
 
+  test('an install hidden behind a variable, or riding along with another command, is held', () => {
+    for (const command of [
+      'CMD=claude; $CMD plugin install notes@acme',
+      "OTHER='claude plugin install bar@acme'; claude plugin install notes@acme | $OTHER",
+      'X=plu; claude ${X}gin install notes@acme',
+      `python3 -c "import subprocess; subprocess.run(['claude', 'plugin', 'install', 'notes@acme'])"`,
+      'claude plugin install notes@acme && ./more.sh',
+      'xargs claude plugin install < plugins.txt',
+    ]) {
+      expect(readShellCommand(command).kind).toBe('unreadable')
+    }
+    expect(readShellCommand('claude plugin install notes@acme && ./more.sh')).toMatchObject({ reason: expect.stringContaining('runs more than the install') })
+  })
+
+  test('the program is found past env, sudo and the like; arguments of a printing program are text', () => {
+    expect(readShellCommand('sudo -u me env A=1 claude plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
+    expect(readShellCommand('env -S "claude plugin install notes@acme"')).toMatchObject(install('notes', 'acme'))
+    expect(readShellCommand('timeout 60 claude plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
+    expect(readShellCommand('watch claude plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
+    expect(readShellCommand('cd /tmp && claude plugin install notes@acme 2>&1 | tail -20')).toMatchObject(install('notes', 'acme'))
+    expect(readShellCommand("printf '%s\\n' claude plugin install notes@acme")).toEqual({ kind: 'pass', browse: false })
+    expect(readShellCommand('echo claude plugin install notes@acme')).toEqual({ kind: 'pass', browse: false })
+  })
+
   test('splits like a shell: quotes, separators, redirections and here-documents', () => {
     expect(splitShell(`a 'b c' "d \\"e\\"" f\\ g; h && i | j 2>&1 > out < in`).commands.map(item => item.words)).toEqual([['a', 'b c', 'd "e"', 'f g'], ['h'], ['i'], ['j']])
     expect(splitShell('cat <<-END\n\tbody\n\tEND\nnext').commands).toEqual([{ words: ['cat'], input: 'body' }, { words: ['next'] }])
@@ -250,6 +274,26 @@ describe('gate A: /plugin install', () => {
     const answer = await $.command.run(typed('plugin', 'update notes@acme'))
     expect(answer.text).toContain('Safe to install for /plugin update notes@acme at commit aaaaaaaaaaaa')
     expect(state.core).toEqual([])
+  })
+
+  test("a marketplace named is that marketplace's plugin, never another one's", async ($, on) => {
+    seededStore(on)
+    serveUi(on)
+    const state = world(on)
+    state.listing = { installed: [{ id: 'notes@other' }, { id: 'notes@acme' }], available: [] }
+    const answer = await $.command.run(typed('plugin', 'update notes@acme'))
+    expect(answer.text).toContain('for /plugin update notes@acme at commit aaaaaaaaaaaa')
+  })
+
+  test('two presses at once install once', async ($, on) => {
+    seededStore(on)
+    serveUi(on)
+    const state = world(on)
+    await $.command.run(typed('plugin', 'install notes@acme'))
+    const pane = await mountPane($)
+    await Promise.all([pane.press({ key: 'install' }), pane.press({ key: 'install' })])
+    expect(state.core).toEqual(['install notes@acme'])
+    await pane.unmount()
   })
 
   test('a version you rejected stays rejected', async ($, on) => {
@@ -445,6 +489,22 @@ describe("gate B: Claude's own install commands", () => {
     await pane.unmount()
     expect((await $.tool.call(bash(command))).deny).toBeUndefined()
     expect((await $.tool.call(bash(command))).deny).toContain('Could not verify')
+    expect(state.core).toEqual([command])
+  })
+
+  test('one pass lets one of two commands at once through', async ($, on) => {
+    seededStore(on)
+    serveUi(on)
+    const state = world(on)
+    const command = 'echo "claude plugin install notes@acme" | bash'
+    await $.tool.call(bash(command))
+    const pane = await mountPane($)
+    await pane.press({ key: 'install' })
+    await pane.press({ key: 'confirm' })
+    await pane.unmount()
+
+    const results = await Promise.all([$.tool.call(bash(command)), $.tool.call(bash(command))])
+    expect(results.filter(result => result.deny === undefined)).toHaveLength(1)
     expect(state.core).toEqual([command])
   })
 

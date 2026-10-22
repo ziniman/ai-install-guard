@@ -55,6 +55,8 @@ export type GuardPass = {
 
 /** The scan the pane shows: in progress, then done with a verdict and a decision. */
 export type GuardView = {
+  /** Which scan this is: a scan writes only its own view, and a press counts only on the view it was drawn from. */
+  scanId?: string
   target: string
   action: GuardAction
   /** What the scan is doing now; empty once it is done. */
@@ -78,6 +80,8 @@ export type GuardView = {
   request?: GuardRequest
   /** "Install anyway" was pressed once and waits for its confirmation. */
   confirming: boolean
+  /** A decision is being saved and carried out; the buttons wait. */
+  deciding?: boolean
   decision?: 'approved' | 'rejected'
   /** When the decision was made: now, or in an earlier scan of the same tree. */
   decidedAt?: number

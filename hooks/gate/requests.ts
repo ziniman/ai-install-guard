@@ -40,10 +40,12 @@ export function readPluginArgs(args: string): Reading {
 }
 
 /**
- * A shell command Claude is about to run. It is held when any part of it
- * installs a plugin or adds a marketplace through the `claude` command, also
- * inside `sh -c` or `eval`; a command built at run time that may do so is
- * held as one the guard cannot read.
+ * A shell command Claude is about to run. It is held when it installs a
+ * plugin or adds a marketplace through the `claude` command, also behind
+ * `env`, `sudo` and the like, inside `sh -c`, `eval` or a here-document. An
+ * install is approved as that exact command, so it must be readable whole: a
+ * command that also runs something else, or that is only known as it runs,
+ * is held as one the guard cannot read, never let through.
  */
 export function readShellCommand(command: string): Reading {
   // This runs before every shell command Claude runs: it must never fail one
@@ -57,65 +59,228 @@ export function readShellCommand(command: string): Reading {
 
 function readShell(command: string): Reading {
   const found: Reading[] = []
-  const unseen = collectInstalls(command, found, 0)
+  const { unseen, others } = collectInstalls(command, found, 0)
   const installs = found.filter(reading => reading.kind !== 'pass')
   if (installs.length > 1) return { kind: 'unreadable', label: 'several installs', reason: 'the command installs more than one thing; run each install as a command of its own' }
   const [only] = installs
-  if (only !== undefined) return only
+  if (only !== undefined) {
+    if (only.kind !== 'install') return only
+    // Approving the install approves the whole command, so nothing else may ride along.
+    if (unseen) return { kind: 'unreadable', label: only.label, reason: `part of the command is only known as it runs, so approving it could run more than the install; run ${only.label} as a command of its own` }
+    if (others > 0) return { kind: 'unreadable', label: only.label, reason: `the command runs more than the install; run ${only.label} as a command of its own, so approving it approves only the install` }
+    return only
+  }
   if (unseen && MAY_INSTALL.test(command)) {
     return { kind: 'unreadable', label: 'a claude plugin command', reason: 'part of the command is only known as it runs, so the guard cannot tell what it installs; run claude plugin install <name>@<marketplace> as a plain command' }
   }
   return PASS
 }
 
-/** `claude plugin install` and its kin, however the words are quoted or spaced. */
-const MAY_INSTALL = /\bclaude(?:\.exe)?\b[\s"'\\)}`]+plugins?\b[\s"'\\]+(?:install|i|update|marketplace)\b/i
+/**
+ * The words of a plugin install however they are joined: by spaces, quotes or
+ * the commas of a list in another language (`['plugin', 'install']`).
+ */
+const MAY_INSTALL = /\bplugins?\b[^\w\n]{1,8}(?:install|i|update|marketplace)\b/i
+
+/** Names the `claude` command goes by. */
+const CLAUDE = new Set(['claude', 'claude.exe', 'claude-code'])
 
 /** Programs that run their `-c` argument as a script. */
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'])
 
+/** Programs that run code given inline, with the option that takes it. */
+const INTERPRETERS: Record<string, readonly string[]> = {
+  python: ['-c'],
+  python3: ['-c'],
+  node: ['-e', '--eval', '-p', '--print'],
+  deno: ['eval'],
+  bun: ['-e', '--eval'],
+  perl: ['-e', '-E'],
+  ruby: ['-e'],
+  php: ['-r'],
+  osascript: ['-e'],
+  pwsh: ['-c', '-command'],
+  powershell: ['-c', '-command'],
+}
+
+/**
+ * Programs that only print, read or wait: an install's words among their
+ * arguments are text, and running one beside an install adds nothing to it.
+ */
+const QUIET = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'less', 'more', 'jq', 'sort', 'uniq', 'wc', 'tr', 'cut', 'tee', 'ls', 'pwd', 'cd', 'true', 'false', 'sleep', 'test', '[', 'date', 'which', 'type', 'column', 'nl', 'fold'])
+
+/**
+ * Programs that run the command that follows their own options: the options
+ * that take a value, how many plain words come before the command, whether
+ * `NAME=value` words may come first, and whether the command's words come in
+ * part from input (xargs).
+ */
+type Wrapper = { values?: readonly string[]; positionals?: number; assignments?: boolean; fromInput?: boolean; script?: readonly string[] }
+const WRAPPERS: Record<string, Wrapper> = {
+  env: { values: ['-u', '--unset', '-C', '--chdir'], assignments: true, script: ['-S', '--split-string'] },
+  sudo: { values: ['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from', '-D', '--chdir', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-U', '--other-user'], assignments: true },
+  doas: { values: ['-u', '-C'] },
+  command: {},
+  exec: { values: ['-a'] },
+  nohup: {},
+  time: {},
+  nice: { values: ['-n', '--adjustment'] },
+  timeout: { values: ['-s', '--signal', '-k', '--kill-after'], positionals: 1 },
+  stdbuf: { values: ['-i', '-o', '-e', '--input', '--output', '--error'] },
+  caffeinate: { values: ['-t', '-w'] },
+  ionice: { values: ['-c', '-n', '-p', '--class', '--classdata', '--pid'] },
+  setsid: {},
+  chronic: {},
+  unbuffer: {},
+  xargs: { values: ['-I', '-i', '-n', '-P', '-L', '-l', '-s', '-d', '-E', '-e', '-a', '--max-args', '--max-procs', '--max-lines', '--max-chars', '--delimiter', '--eof', '--arg-file', '--replace'], fromInput: true },
+}
+
 /** How deep `sh -c "sh -c '…'"` is followed before the guard gives up reading it. */
 const MAX_DEPTH = 4
 
+type Collected = {
+  /** Part of what runs is only known as it runs, or comes from input the guard does not see. */
+  unseen: boolean
+  /** Simple commands that run something other than an install, a quiet program or a shell the guard read into. */
+  others: number
+}
+
+/** A word whose text is only known as the command runs. */
+function isDynamic(word: string): boolean {
+  return /[$`]/.test(word)
+}
+
 /**
- * Adds every install `command` asks for to `found`. True when part of it is
- * only known as it runs, or it feeds a shell a script the guard cannot see.
+ * Where the program of a simple command is: after `NAME=value` words and
+ * any wrappers with their options. `scripts` are strings a wrapper runs as
+ * shell text (`env -S`); `fromInput` is set when its words come in part
+ * from input (`xargs`).
  */
-function collectInstalls(command: string, found: Reading[], depth: number): boolean {
-  const { commands, dynamic } = splitShell(command)
-  let unseen = dynamic
-  const nested = (script: string): void => {
-    unseen = depth >= MAX_DEPTH || collectInstalls(script, found, depth + 1) || unseen
-  }
-  for (const { words, input } of commands) {
-    for (let index = 0; index < words.length; index += 1) {
-      const program = programName(words[index])
-      // `sh -c '…'`, `env bash -lc '…'`, `eval …`: the script is read as a command too.
-      if (SHELLS.has(program)) {
-        const flag = words.findIndex((word, at) => at > index && /^-[A-Za-z]*c[A-Za-z]*$/.test(word))
-        const script = flag === -1 ? undefined : words[flag + 1]
-        if (script !== undefined) nested(script)
-        else if (input !== undefined) nested(input)
-        // A shell given no script reads one from its input, often a pipe.
-        else if (!words.slice(index + 1).some(word => !word.startsWith('-'))) unseen = true
+function programAt(words: readonly string[]): { index: number; scripts: string[]; fromInput: boolean } {
+  const scripts: string[] = []
+  let fromInput = false
+  let index = 0
+  while (index < words.length && /^[A-Za-z_]\w*=/.test(words[index] as string)) index += 1
+  for (let guard = 0; guard < 8 && index < words.length; guard += 1) {
+    const wrapper = WRAPPERS[programName(words[index])]
+    if (wrapper === undefined) break
+    fromInput ||= wrapper.fromInput === true
+    index += 1
+    let plain = wrapper.positionals ?? 0
+    while (index < words.length) {
+      const word = words[index] as string
+      if (word === '--') {
+        index += 1
         break
       }
-      if (program === 'eval') {
-        nested(words.slice(index + 1).join(' '))
-        break
+      if (wrapper.assignments === true && /^[A-Za-z_]\w*=/.test(word)) {
+        index += 1
+        continue
       }
-      // `claude` anywhere in the command, so `env X=1 claude …`, `sudo claude …`
-      // and `/usr/local/bin/claude …` count as well.
-      if (!['claude', 'claude.exe'].includes(program) || !/^plugins?$/i.test(words[index + 1] ?? '')) continue
-      const rest = words.slice(index + 2)
-      const sub = rest[0]?.toLowerCase()
-      if (sub === 'install' || sub === 'i') found.push(readInstall(rest.slice(1), 'install', 'claude plugin install'))
-      else if (sub === 'update') found.push(readInstall(rest.slice(1), 'update', 'claude plugin update'))
-      else if (sub === 'marketplace' && rest[1]?.toLowerCase() === 'add') found.push(readMarketplaceAdd(rest.slice(2), 'claude plugin marketplace add'))
+      if (word.startsWith('-') && word !== '-') {
+        const name = word.includes('=') ? word.slice(0, word.indexOf('=')) : word
+        const takesValue = !word.includes('=') && ((wrapper.values ?? []).includes(name) || (wrapper.script ?? []).includes(name))
+        if ((wrapper.script ?? []).includes(name)) scripts.push(word.includes('=') ? word.slice(word.indexOf('=') + 1) : (words[index + 1] ?? ''))
+        index += takesValue ? 2 : 1
+        continue
+      }
+      if (plain > 0) {
+        plain -= 1
+        index += 1
+        continue
+      }
       break
     }
   }
-  return unseen
+  return { index, scripts, fromInput }
+}
+
+/** Whether `claude plugin …` starts at `index`. */
+function isClaudePlugin(words: readonly string[], index: number): boolean {
+  return CLAUDE.has(programName(words[index])) && /^plugins?$/i.test(words[index + 1] ?? '')
+}
+
+/** The install a `claude plugin` command at `index` asks for, if it is one. */
+function claudePlugin(words: readonly string[], index: number): Reading | undefined {
+  const rest = words.slice(index + 2)
+  const sub = rest[0]?.toLowerCase()
+  if (sub === 'install' || sub === 'i') return readInstall(rest.slice(1), 'install', 'claude plugin install')
+  if (sub === 'update') return readInstall(rest.slice(1), 'update', 'claude plugin update')
+  if (sub === 'marketplace' && rest[1]?.toLowerCase() === 'add') return readMarketplaceAdd(rest.slice(2), 'claude plugin marketplace add')
+  return undefined
+}
+
+/**
+ * Adds every install `command` asks for to `found`, and says whether part of
+ * what runs is unseen and how many other commands run beside it.
+ */
+function collectInstalls(command: string, found: Reading[], depth: number): Collected {
+  const out: Collected = { unseen: false, others: 0 }
+  if (depth > MAX_DEPTH) return { unseen: true, others: 0 }
+  const nested = (script: string): void => {
+    const inner = collectInstalls(script, found, depth + 1)
+    out.unseen ||= inner.unseen
+    out.others += inner.others
+  }
+  for (const { words, input } of splitShell(command).commands) {
+    const { index, scripts, fromInput } = programAt(words)
+    scripts.forEach(nested)
+    const word = words[index]
+    // Only NAME=value words: nothing runs.
+    if (word === undefined) continue
+    const program = programName(word)
+    // `claude` with a subcommand only known as it runs could be an install.
+    if (CLAUDE.has(program) && isDynamic(words[index + 1] ?? '')) {
+      found.push({ kind: 'unreadable', label: 'a claude command', reason: 'what it asks claude to do is only known as it runs; run claude plugin install <name>@<marketplace> as a plain command' })
+      continue
+    }
+    // A program only known as it runs.
+    if (isDynamic(word)) {
+      out.unseen = true
+      out.others += 1
+      continue
+    }
+    if (isClaudePlugin(words, index)) {
+      const reading = claudePlugin(words, index)
+      if (reading === undefined) {
+        out.others += 1
+        continue
+      }
+      // Its plugin may come from input (xargs), which the guard does not see.
+      if (fromInput) out.unseen = true
+      found.push(reading)
+      continue
+    }
+    if (SHELLS.has(program)) {
+      // `sh -c '…'`, `bash -lc '…'`, `bash <<EOF`: the script is read as commands too.
+      const flag = words.findIndex((item, at) => at > index && /^-[A-Za-z]*c[A-Za-z]*$/.test(item))
+      const script = flag === -1 ? undefined : words[flag + 1]
+      if (script !== undefined) nested(script)
+      else if (input !== undefined) nested(input)
+      // A shell given no script reads one from its input, often a pipe; one given a file runs that file.
+      else {
+        out.unseen = true
+        out.others += 1
+      }
+      continue
+    }
+    if (program === 'eval') {
+      nested(words.slice(index + 1).join(' '))
+      continue
+    }
+    const inline = INTERPRETERS[program.replace(/\.exe$/, '').replace(/^python3\.\d+$/, 'python3')]
+    if (inline !== undefined && words.slice(index + 1).some(item => inline.includes(item.toLowerCase()))) out.unseen = true
+    if (QUIET.has(program)) continue
+    // Any other program may run an install among its arguments (`watch`, `flock`).
+    const inside = words.findIndex((item, at) => at > index && isClaudePlugin(words, at))
+    const reading = inside === -1 ? undefined : claudePlugin(words, inside)
+    if (reading !== undefined) {
+      found.push(reading)
+      continue
+    }
+    out.others += 1
+  }
+  return out
 }
 
 /** The last part of a program's path, lower-cased: `/usr/bin/Claude` is `claude`. */

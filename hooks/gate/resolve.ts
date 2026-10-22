@@ -42,7 +42,8 @@ async function pluginTarget(host: Host, request: Extract<InstallRequest, { kind:
 
   if (matches.length === 0) {
     // An installed plugin is not in the available list: its catalog says where an update comes from.
-    const mine = installed.map(item => (typeof item.id === 'string' ? item.id : '')).filter(item => item === id || item.startsWith(`${request.plugin}@`))
+    // A marketplace named is that marketplace's plugin and no other's.
+    const mine = installed.map(item => (typeof item.id === 'string' ? item.id : '')).filter(item => (request.marketplace === undefined ? item.startsWith(`${request.plugin}@`) : item === id))
     if (mine.length > 1 && request.marketplace === undefined) return ambiguous(request.plugin, mine.map(item => item.split('@')[1] ?? ''))
     const owner = mine[0]?.split('@')[1] ?? request.marketplace
     const market = marketplaces.find(item => item.name === owner)

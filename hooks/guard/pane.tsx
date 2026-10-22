@@ -58,9 +58,24 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       return { ...current, codeOpen: open.includes(id) ? open.filter(item => item !== id) : [...open, id] }
     })
 
+  // A press counts only on the scan it was drawn from, and only once: the
+  // first press claims the decision, and a scan that took the pane since, or
+  // a second press, changes nothing.
+  const claim = async (): Promise<GuardView | undefined> => {
+    let claimed: GuardView | undefined
+    await update($, viewAtom, latest => {
+      claimed = undefined
+      if (latest === null || latest.scanId !== view.scanId || latest.verdict === undefined || latest.decision !== undefined || latest.deciding === true) return latest
+      claimed = { ...latest, deciding: true }
+      return claimed
+    })
+    return claimed
+  }
+  const release = () => update($, viewAtom, latest => (latest === null || latest.scanId !== view.scanId ? latest : { ...latest, deciding: false })).then(() => undefined)
+
   const decide = (decision: 'approved' | 'rejected', overridden: boolean) => async () => {
-    const current = await read($, viewAtom)
-    if (current === null || current.verdict === undefined) return
+    const current = await claim()
+    if (current === undefined || current.verdict === undefined) return
     const held = current.action === 'install' ? current.request : undefined
     // A scan that never read the files has no tree hash to pin a decision to:
     // nothing is remembered, and nothing claims otherwise. A held install the
@@ -72,6 +87,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
         return
       }
       $.ui.toast(held !== undefined ? 'AI Install Guard: rejected; nothing was installed' : 'AI Install Guard: closed; the scan read nothing, so there is no decision to remember')
+      await release()
       await $.ui.close({ id: PANE_ID })
       return
     }
@@ -91,9 +107,10 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     } catch {
       // Nothing was saved: say so, and leave the pane open to try again.
       $.ui.toast('AI Install Guard: could not save the decision; nothing was recorded')
+      await release()
       return
     }
-    const decided = { ...current, decision, decidedAt, confirming: false }
+    const decided = { ...current, decision, decidedAt, confirming: false, deciding: false }
     await update($, viewAtom, () => decided)
     // The reopened report shows the outcome, not the buttons again.
     await saveLastView($, decided).catch(() => undefined)
@@ -109,9 +126,9 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
 
   const primary = async () => {
     const current = await read($, viewAtom)
-    if (current === null) return
+    if (current === null || current.scanId !== view.scanId) return
     if (needsConfirmation(current)) {
-      await update($, viewAtom, latest => (latest === null ? latest : { ...latest, confirming: true }))
+      await update($, viewAtom, latest => (latest === null || latest.scanId !== view.scanId ? latest : { ...latest, confirming: true }))
       return
     }
     await decide('approved', false)()
@@ -231,7 +248,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
         </Box>
       ))}
 
-      {verdict !== undefined && view.decision === undefined && !view.confirming && (
+      {verdict !== undefined && view.decision === undefined && !view.confirming && view.deciding !== true && (
         <Box key="actions" flexDirection="row" gap={1} marginTop={1}>
           {(view.treeHash !== undefined || (view.action === 'install' && view.request !== undefined)) && (
             <Button key="install" label={primaryLabel(view)} hotkey="i" variant={needsConfirmation(view) ? 'secondary' : 'primary'} onPress={primary} />
@@ -243,7 +260,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
         </Box>
       )}
 
-      {verdict !== undefined && view.confirming && (
+      {verdict !== undefined && view.confirming && view.deciding !== true && (
         <Box key="confirm-row" flexDirection="column" marginTop={1}>
           <Text color="warning" wrap="wrap">
             The verdict is {verdict.recommendation}. {primaryLabel(view)}?

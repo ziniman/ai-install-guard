@@ -115,7 +115,7 @@ async function scan($: EngineInterface, target: string, details: boolean, flags:
 async function reopen($: EngineInterface): Promise<string> {
   const view = await loadLastView($)
   if (view === undefined) return 'AI Install Guard: no report yet. Run /guard scan <path>.'
-  await update($, viewAtom, () => ({ ...view, confirming: false }))
+  await update($, viewAtom, () => ({ ...view, confirming: false, deciding: false }))
   const opened = await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => ({ isPlaced: false }))
   if (opened.isPlaced) return `AI Install Guard: reopened the report for ${safeLine(view.target)}.`
   const text = await $.store.get(REPORT_TEXT)

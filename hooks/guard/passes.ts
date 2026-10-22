@@ -2,7 +2,7 @@
 // not verify, then Install anyway, confirmed. Each pass lets that exact
 // command through one time in this session and is then used up.
 
-import { atom, read, update } from 'claude-code'
+import { atom, update } from 'claude-code'
 import type { EngineInterface } from 'claude-code'
 
 import type { GuardPass } from '../../types'
@@ -20,10 +20,15 @@ export async function grantPass($: EngineInterface, pass: GuardPass): Promise<vo
   await update($, passesAtom, current => [...current.filter(item => !samePass(item, pass)), pass].slice(-MAX_PASSES))
 }
 
-/** Uses up the pass for this command, if there is one. */
+/**
+ * Uses up the pass for this command, if there is one. Finding and removing it
+ * is one write, so two commands at once cannot both use the same pass.
+ */
 export async function takePass($: EngineInterface, pass: GuardPass): Promise<boolean> {
-  const current = await read($, passesAtom)
-  if (!current.some(item => samePass(item, pass))) return false
-  await update($, passesAtom, latest => latest.filter(item => !samePass(item, pass)))
-  return true
+  let taken = false
+  await update($, passesAtom, latest => {
+    taken = latest.some(item => samePass(item, pass))
+    return taken ? latest.filter(item => !samePass(item, pass)) : latest
+  })
+  return taken
 }
