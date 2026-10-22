@@ -290,6 +290,6 @@ describe('a later OSV batch that fails', () => {
     }
     const row = (await outsideLookups(netHost(answers), ctx)).find(result => result.id === 'provenance.packages')
     expect(row?.status).toBe('fail')
-    expect(row?.summary?.[1]).toBe('Checked 1000 packages against OSV; 500 more were not looked up')
+    expect(row?.summary?.[1]).toBe('Checked 1000 packages against OSV; 500 more were not looked up (could not reach OSV: reset)')
   })
 })

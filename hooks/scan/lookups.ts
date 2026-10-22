@@ -213,7 +213,8 @@ async function osvCheck(host: Host, ctx: ScanContext): Promise<CheckResult> {
   })
   const notLooked = found.length - packages.length + unchecked
   if (notLooked > 0) evidence.push({ file: '-', excerpt: `${notLooked} package${notLooked === 1 ? ' was' : 's were'} not looked up${failure === undefined ? '' : ` (${failure})`}`, status: 'warn' })
-  const checked = `Checked ${packages.length - unchecked} package${packages.length - unchecked === 1 ? '' : 's'} against OSV${notLooked > 0 ? `; ${notLooked} more ${notLooked === 1 ? 'was' : 'were'} not looked up` : ''}`
+  // The reason rides in the summary, which no evidence cap can drop.
+  const checked = `Checked ${packages.length - unchecked} package${packages.length - unchecked === 1 ? '' : 's'} against OSV${notLooked > 0 ? `; ${notLooked} more ${notLooked === 1 ? 'was' : 'were'} not looked up${failure === undefined ? '' : ` (${failure})`}` : ''}`
   const summary =
     malicious.length > 0
       ? [`Uses a package listed as malware: ${malicious.slice(0, 3).join(', ')}`, checked]
