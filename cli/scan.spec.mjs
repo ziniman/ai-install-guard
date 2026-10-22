@@ -143,6 +143,23 @@ describe('zip archives', () => {
     assert.equal(report.verdict.kind, 'safe')
   })
 
+  test('a README beside the plugin folder: the plugin is scanned as one', () => {
+    const entries = [{ name: 'README.md', data: '# Notes\n' }, ...fixtureEntries('skill-injection', 'notes-plugin/')]
+    const { report } = scanJson(zipFile('beside.zip', entries))
+
+    assert.equal(report.target, 'beside.zip/notes-plugin')
+    assert.deepEqual(flagged(report), ['prompts.injection:fail'])
+  })
+
+  test('two plugins side by side: Could not verify until one is named', () => {
+    const zip = zipFile('pair.zip', [...fixtureEntries('clean-plugin', 'one/'), ...fixtureEntries('curl-hook', 'two/')])
+    const { status, report } = scanJson(zip)
+
+    assert.equal(status, EXIT.unverified)
+    assert.match(report.verdict.reasons[0], /2 plugins or skills side by side .*--path/)
+    assert.equal(scanJson('--path', 'two', zip).report.verdict.kind, 'reject')
+  })
+
   test('--path picks a folder inside the zip', () => {
     const entries = [...fixtureEntries('curl-hook', 'repo/plugins/one/'), ...fixtureEntries('clean-plugin', 'repo/plugins/two/')]
     const zip = zipFile('market.zip', entries)

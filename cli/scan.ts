@@ -43,11 +43,14 @@ const USAGE = [
   '  --lookups                   Also check packages against OSV and the name against the official',
   '                              plugin list; this sends package and plugin names to those services',
   '',
-  'Exit status: 0 Safe to install, 1 Install with caution, 2 Do not install, 3 Could not verify, 64 a usage error.',
+  'Exit status: 0 Safe to install, 1 warnings to review, 2 Do not install, 3 Could not verify, 64 a usage error.',
 ].join('\n')
 
 /** Folders a plugin keeps at its top: a zip holding only one of them is the plugin itself, not a wrapper. */
 const PLUGIN_PARTS = new Set(['.claude-plugin', 'skills', 'commands', 'agents', 'hooks', 'output-styles'])
+
+/** What makes a folder a plugin, skill or marketplace, as the scan's context reads it. */
+const CANDIDATE_MARKS = ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', 'SKILL.md', 'hooks/hooks.json', '.mcp.json', 'skills', 'commands', 'agents', 'output-styles']
 
 /** What a macOS archive adds beside the folder it packed. */
 const ARCHIVE_LITTER = new Set(['__MACOSX', '.DS_Store'])
@@ -114,7 +117,9 @@ async function scanTarget(host: Host, args: Args): Promise<ScanReport> {
 /**
  * Unpacks a zip into a new temporary folder and scans it. When the archive
  * holds one folder and nothing else (as GitHub's Download ZIP does), that
- * folder is the candidate.
+ * folder is its top. With no `--path`, a top that is no plugin or skill itself
+ * but holds exactly one that is (a README beside the plugin's folder) gives
+ * way to that one, so its skills and commands are checked as such.
  */
 async function scanZip(host: Host, file: string, path: string | undefined, options: ScanOptions): Promise<ScanReport> {
   const name = basename(file)
@@ -131,8 +136,8 @@ async function scanZip(host: Host, file: string, path: string | undefined, optio
     const wrapper = await soleFolder(dir)
     let root = wrapper === undefined ? dir : `${dir}/${wrapper}`
     let shown = wrapper === undefined ? name : `${name}/${wrapper}`
-    if (path !== undefined) {
-      const inner = await descend(root, path)
+    const inner = path === undefined ? await candidateIn(root) : await descend(root, path)
+    if (inner !== undefined) {
       root = inner.root
       shown = `${shown}/${inner.shown}`
     }
@@ -149,8 +154,36 @@ async function soleFolder(dir: string): Promise<string | undefined> {
   const names = (await fs.readdir(dir)).filter(name => !ARCHIVE_LITTER.has(name))
   const only = names[0]
   if (names.length !== 1 || only === undefined || PLUGIN_PARTS.has(only)) return undefined
-  const stats = await fs.lstat(`${dir}/${only}`)
-  return stats.isDirectory() && !stats.isSymbolicLink() ? only : undefined
+  return (await isPlainFolder(`${dir}/${only}`)) ? only : undefined
+}
+
+/**
+ * The one folder under `root` that is a plugin, skill or marketplace, when
+ * `root` is none itself. Several cannot be told apart, so the scan stops and
+ * asks for one by name rather than judge them as a plain folder.
+ */
+async function candidateIn(root: string): Promise<{ root: string; shown: string } | undefined> {
+  if (await isCandidate(root)) return undefined
+  const found: string[] = []
+  for (const name of (await fs.readdir(root)).sort()) {
+    if (!ARCHIVE_LITTER.has(name) && (await isPlainFolder(`${root}/${name}`)) && (await isCandidate(`${root}/${name}`))) found.push(name)
+  }
+  if (found.length > 1) {
+    const listed = found.slice(0, 5).map(name => `"${safeLine(name)}"`).join(', ')
+    throw new Error(`the archive holds ${found.length} plugins or skills side by side (${listed}${found.length > 5 ? ', …' : ''}); scan one at a time with --path`)
+  }
+  const only = found[0]
+  return only === undefined ? undefined : { root: `${root}/${only}`, shown: only }
+}
+
+async function isCandidate(dir: string): Promise<boolean> {
+  for (const mark of CANDIDATE_MARKS) if ((await fs.lstat(`${dir}/${mark}`).catch(() => undefined)) !== undefined) return true
+  return false
+}
+
+async function isPlainFolder(path: string): Promise<boolean> {
+  const stats = await fs.lstat(path).catch(() => undefined)
+  return stats !== undefined && stats.isDirectory() && !stats.isSymbolicLink()
 }
 
 /** A folder inside `root`, reached through plain folders only: a link on the way could lead anywhere. */
