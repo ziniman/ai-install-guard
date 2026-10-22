@@ -18,7 +18,7 @@
 
 </div>
 
-> **Status: early development.** Today `/guard scan` runs the deterministic checks on a local folder, or on one commit of a repository it fetches without running anything, and shows the verdict in a pane, where you approve or reject that exact version. The install gates below are being built in stages; see [Roadmap](#roadmap).
+> **Status: early development.** `/plugin install` and `/plugin marketplace add`, and the same installs when Claude runs `claude plugin` itself, are held until you approve the exact version the guard scanned. `/guard scan` checks a folder or a repository before you install it anywhere. The other gates are being built in stages; see [Where it steps in](#where-it-steps-in) and [Roadmap](#roadmap).
 
 Everything you add to Claude Code runs with your permissions. A plugin can ship shell hooks that run every session, an MCP server can download and launch a package, a mod can read files or auto-approve tools, and a skill can carry hidden instructions the model will follow. The install prompt asks you to trust the author, and an update can change the files after you looked.
 
@@ -26,7 +26,7 @@ AI Install Guard is a Claude Code mod that stops every new plugin, mod, skill, M
 
 ## Who it is for
 
-You, before you add something to Claude Code. It runs inside your own session, needs no account, server or agent, and is open source, so you can read every check it makes. This release makes no network calls; later stages fetch the candidate itself, and any outside lookup stays optional and off by default. Today you run `/guard scan` on a folder yourself before installing it; the gates that hold an install automatically come in later stages (see [Roadmap](#roadmap)).
+You, before you add something to Claude Code. It runs inside your own session, needs no account, server or agent, and is open source, so you can read every check it makes. It reaches the network only to fetch the candidate from where it lives and to read that repository's public details; any outside lookup stays optional and off by default.
 
 Company security platforms such as AIR, Pluto and Neo watch a whole fleet of agents and enforce policy across it. The guard does not replace them: it is an open, local check for one developer's installs, and it works the same whether or not your company runs one.
 
@@ -41,13 +41,25 @@ Approvals are remembered by commit and content hash, so the same version is neve
 
 ## Where it steps in
 
-| Layer | Catches | What happens |
-|-------|---------|--------------|
-| Slash command | `/plugin install`, `/plugin update`, `/plugin marketplace add` | Held until you press Install |
-| Claude's own tool calls | `claude plugin install`, `claude mcp add`, copies into skills folders, edits to `.mcp.json` or settings, `npx -y`, `curl \| sh` | Denied, with a note to the model that a scan is pending |
-| Mod loading | Any mod about to load, however it got there | Refused if its files do not match what you approved |
-| First use of a skill | Skills and commands, including ones copied in by hand | Blocked until scanned |
-| Session start | Anything installed while the guard was not running | Scanned, with Keep or Uninstall |
+| Layer | Catches | What happens | Today |
+|-------|---------|--------------|-------|
+| Slash command | `/plugin install <name>@<marketplace>`, `/plugin marketplace add <source>` | Held until you press Install | Yes |
+| Claude's own commands | `claude plugin install`, `claude plugin update`, `claude plugin marketplace add`, also inside `sh -c`, `eval` or a here-document | Refused, with a note telling Claude the install waits for your decision | Yes |
+| Claude's own commands | `claude mcp add`, copies into skills folders, edits to `.mcp.json` or settings, `npx -y`, `curl \| sh` | Refused until scanned | Next stage |
+| Mod loading | Any mod about to load, however it got there, including plugins picked from the `/plugin` menu | Refused if its files do not match what you approved | Later |
+| First use of a skill | Skills and commands, including ones copied in by hand | Blocked until scanned | Later |
+| Session start | Anything installed while the guard was not running | Scanned, with Keep or Uninstall | Later |
+
+### Installing with the guard on
+
+Run `/plugin install notes@acme` as usual. The guard looks up where Claude Code would install it from (the repository, folder and commit its marketplace names), scans that commit, and answers in the command's place, so nothing is installed yet. The pane shows the verdict and the command it is holding.
+
+- **Install** (`i`) records your approval for that exact commit and tree hash, looks the plugin up once more, and runs your `/plugin` command again. If the commit moved since the scan, nothing is installed and the next `/plugin install` scans the new one.
+- **Reject** (`r`) records the rejection. The same version is refused from then on; `/guard forget notes@acme` judges it again.
+- A version you already approved (the same commit of the same folder, here or with `/guard scan`) installs at once, without asking again. A new commit is always scanned.
+- When the verdict is **Do not install**, the button reads **Install anyway** and asks a second time. **Could not verify** (the guard could not tell what would be installed: a package from npm, a plugin no marketplace lists, a name two marketplaces share) works the same way, and lets that one command through once.
+
+When Claude runs `claude plugin install` itself, the guard refuses the command and tells Claude why: the install waits for your decision, and Claude should not retry it or find another way. Approve it in the pane, then tell Claude to run it again; the same command now goes through.
 
 ## What it checks
 
@@ -78,7 +90,7 @@ A remote scan resolves the ref to one commit, fetches only that commit (no hooks
 
 Each row opens to say what it found in plain words first: which programs the candidate starts and what each is for, which secrets its code reads, and what is worth a closer look. The code lines that back it up sit behind **Show the code**.
 
-In the pane, **Approve** (`i`) and **Reject** (`r`) record your decision for that exact content (its tree hash). When the verdict is Do not install or Could not verify, the button reads **Approve anyway** and asks a second time. **Details** (`d`) opens every row, and **Copy report** (`c`) copies the full report as text. Where no pane can show (a headless `claude -p` run), `/guard scan` prints the report instead.
+In the pane, **Approve** (`i`) and **Reject** (`r`) record your decision for that exact content (its tree hash); for an install the guard is holding, the button reads **Install**. When the verdict is Do not install or Could not verify, the button reads **Approve anyway** (or **Install anyway**) and asks a second time. **Details** (`d`) opens every row, and **Copy report** (`c`) copies the full report as text. Where no pane can show (a headless `claude -p` run), `/guard scan` prints the report instead.
 
 ## Use it in Claude chat
 
@@ -121,12 +133,14 @@ A security tool should be held to its own rules, so here is everything this mod 
 
 | Capability | Why |
 |------------|-----|
-| `process.run` | Runs `git` to resolve a ref and fetch one commit into the guard's own temporary folder (made with `mktemp` and removed with `rm` afterwards), `claude plugin validate` on a candidate (it reads source and runs none of it), `readlink` to see where a symbolic link points without following it, and `printenv HOME` to expand `~`. It never runs anything from a candidate. |
-| `fs.read`, `fs.list`, `fs.stat` | Reads the candidate's files to scan them. It writes no files itself; only `git` writes, into the guard's temporary folder. |
+| `process.run` | Runs `git` to resolve a ref and fetch one commit into the guard's own temporary folder (made with `mktemp` and removed with `rm` afterwards), `claude plugin validate` on a candidate (it reads source and runs none of it), `claude plugin list --available --json` and `claude plugin marketplace list --json` to find where a plugin you install comes from, `readlink` to see where a symbolic link points without following it, and `printenv HOME` to expand `~`. It never runs anything from a candidate. |
+| `fs.read`, `fs.list`, `fs.stat` | Reads the candidate's files to scan them, and a marketplace's catalog in Claude Code's own copy of it. It writes no files itself; only `git` writes, into the guard's temporary folder. |
+| `command.run` (hook) | Intercepts `/plugin`, so `/plugin install` and `/plugin marketplace add` are scanned and held until you approve them. Every other `/plugin` command goes on untouched. |
+| `command.run` (call) | When you press Install, runs your own `/plugin` command again, after checking the version is still the one you approved. |
+| `tool.call` (hook) | Reads the text of each shell command Claude is about to run, to catch `claude plugin install` and its kin, and refuses those until you approve. Every other command and every other tool goes on untouched; it never rewrites or answers one. |
 | `command.register` | Adds the `/guard` command. |
-| `store`, `state` | Remembers your decisions and the last report, and holds what the pane shows. |
+| `store`, `state` | Remembers your decisions and the last report, holds what the pane shows, and keeps a one-time pass for an install you allowed anyway. |
 | `ui` | The verdict pane, its status line and toasts, and copying the report. |
-
 | `http.fetch` | For a repository on GitHub, reads its public metadata from GitHub's API: age, owner, stars, contributors, and whether the scanned commit is signed and on the default branch. GitHub is where the code came from, so this tells it nothing new. With **outside lookups** on, also sends package names to [OSV](https://osv.dev) and reads Anthropic's [official plugin list](https://github.com/anthropics/claude-plugins-official). |
 
 A later stage adds, optionally, `model.complete` (a review that can only add warnings).
@@ -151,6 +165,9 @@ A lookup that fails or hits a rate limit is noted in the report and never fails 
 - **Not a proof of safety.** Static analysis raises the bar and makes every capability visible; a determined attacker can still evade it.
 - **Install it first.** It judges only mods that load after it. For a company, the strongest setup is deploying it through managed settings so it loads first.
 - **No per-plugin block for classic shell hooks.** Claude Code runs them outside mods, so the guard scans before install and uninstalls on reject.
+- **The `/plugin` menu is not gated yet.** A plugin picked from the menu installs without a scan; the guard says so when the menu opens. The mod loading gate in a later stage closes this. Until then, install with `/plugin install <name>@<marketplace>`.
+- **Claude's commands are read, not run.** The guard finds an install in a shell command however it is quoted or wrapped, and holds a command it cannot read (one built while it runs, or a script piped into a shell) as Could not verify. A script file that installs something is not read; the mod loading gate is the backstop for that.
+- **Between Install and the install itself** Claude Code fetches the plugin again. The guard checks the commit just before, and a commit is fixed content, but a marketplace that names a branch rather than a commit can move in that moment. The scan warns about such marketplaces.
 
 ## Roadmap
 
@@ -158,10 +175,11 @@ A lookup that fails or hits a rate limit is noted in the report and never fails 
 2. [x] Checks for structure, mod capabilities, classic hooks, skills, code patterns and committed secrets
 3. [x] The verdict pane with Install and Reject
 4. [x] Remote fetch pinned to a commit, repository provenance, MCP server checks, and optional lookups against OSV and the official plugin list
-5. [ ] Gates on `/plugin` and on Claude's own install commands, with approvals
-6. [ ] Module load gate with hash match, skill gate, session-start reconciliation
-7. [ ] Update diffs and the optional model review
-8. [ ] Full documentation
+5. [x] Gates on `/plugin install`, `/plugin marketplace add` and Claude's own `claude plugin` installs, with approvals pinned to a commit
+6. [ ] Gates on Claude adding MCP servers and writing into skill, plugin and settings folders
+7. [ ] Module load gate with hash match, skill gate, session-start reconciliation
+8. [ ] Update diffs and the optional model review
+9. [ ] Full documentation
 
 ## Contributing
 
