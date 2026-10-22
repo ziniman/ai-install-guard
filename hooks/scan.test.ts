@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { splitArgs } from './register'
 import type { Host } from './scan/host'
@@ -7,13 +7,15 @@ import { formatReport } from './scan/report'
 import { scanFolder } from './scan/scan'
 import { safeLine, safeText } from './scan/safe-text'
 import { FIXTURES } from './test-support/fixtures.gen'
-import { HOME, memoryHost, serveFixture, typed, type FixtureFiles } from './test-support/memfs'
+import { HOME, memoryHost, serveFixture, serveUi, typed, type FixtureFiles } from './test-support/memfs'
 
 const CLEAN = FIXTURES['clean-plugin'] as FixtureFiles
 const text = (value: string) => ({ base64: btoa(value) })
 
 describe('/guard scan on a local folder', () => {
   test('lists and hashes every file of a plugin', async ($, on) => {
+    mock.store(on)
+    serveUi(on, { placed: false })
     serveFixture(on, '/work/clean-plugin', CLEAN)
     const { text: report } = await $.command.run(typed('guard', 'scan /work/clean-plugin'))
 
@@ -24,6 +26,8 @@ describe('/guard scan on a local folder', () => {
   })
 
   test('expands ~ to the home folder', async ($, on) => {
+    mock.store(on)
+    serveUi(on, { placed: false })
     serveFixture(on, `${HOME}/plugins/clean`, CLEAN)
     const { text: report } = await $.command.run(typed('guard', 'scan ~/plugins/clean'))
 
@@ -31,6 +35,8 @@ describe('/guard scan on a local folder', () => {
   })
 
   test('reads link targets through PowerShell where there is no readlink', async ($, on) => {
+    mock.store(on)
+    serveUi(on, { placed: false })
     serveFixture(on, '/work/linked', { 'README.md': text('x\n'), 'docs/readme': { link: '../README.md' } }, { platform: 'windows' })
     const { text: report } = await $.command.run(typed('guard', 'scan /work/linked'))
 
@@ -40,6 +46,8 @@ describe('/guard scan on a local folder', () => {
   })
 
   test('says it could not verify a folder that is not there', async ($, on) => {
+    mock.store(on)
+    serveUi(on, { placed: false })
     serveFixture(on, '/work/clean-plugin', CLEAN)
     const { text: report } = await $.command.run(typed('guard', 'scan /work/missing'))
 

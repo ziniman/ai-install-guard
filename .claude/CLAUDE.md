@@ -30,7 +30,9 @@ These are product requirements, not style preferences. A change that breaks one 
   - File roles decide weight: a hooks module, a script a hook or skill names, `bin/` and other code count in full; tests and docs nothing refers to, and CI or dotfiles, are only reported (INFO). A match inside a comment or a regex literal is also only reported, so a check's own patterns do not trip it.
 - Never put a literal invisible or bidirectional character in source: write `\u202e`, never the character. The hidden-characters check fails the guard's own source if one slips in.
   - `report.ts` formats the plain-text report.
-- `hooks/*.test.ts`: tests, run by `claude plugin test .`.
+- `hooks/guard/`: the pane. `view.ts` turns a scan report into the compact `GuardView` the pane draws (evidence capped, quoted text made safe), `pane.tsx` draws it and handles its buttons, `decisions.ts` keeps decisions and the last report in `$.store` (capped; the store is 4 MiB in all).
+- `types/index.d.ts`: the state contract (`plugin.json` names it under `types`). The pane's view is one value, `ai-install-guard.view`. Claude Code reads a state reference only from the file that uses it, so each module declares its own `atom({ plugin: 'ai-install-guard', key: 'view' } as const, null)`; never import one.
+- `hooks/*.test.ts`: tests, run by `claude plugin test .`. `pane.test.ts` mounts the pane on the terminal and desktop surfaces and drives its buttons. `Text` elements keep no `key`; find them by text, and key a `Box` or `Button` when a test needs to address it.
 - `hooks/test-support/`: `memfs.ts` serves fixtures to the engine's `fs.*` and `process.run` events; `fixtures.gen.ts` is generated.
 - `fixtures/<name>/`: inert sample plugins, one per rule, listed with the rule each trips in `fixtures/README.md`. Never installed, loaded or run. `hooks/checks.test.ts` holds the table of what each fixture must trip.
 - `scripts/`: `sync-versions.js` (release) and `build-fixtures.js` (tests).
@@ -39,9 +41,11 @@ These are product requirements, not style preferences. A change that breaks one 
 
 A hooks module runs in its own environment: no DOM, no Node, no timers, no `eval`, no `import()`. Everything outside it goes through `$`. Globals available include `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `URL` and `crypto.subtle.digest`. JSX compiles against the global `h`, and elements come from `$.ui.resolve(e)`.
 
+The scan runs inside the `/guard` command's hook (its 10 s budget counts the hook's own time, never `$` calls), updating the pane's state between stages; `$.clock` is not used, as it is not in the allowed capabilities.
+
 The API is early access and moves between releases. The declaration file is the authority: the engine lays it at `.claude-plugin/types/claude-code/index.d.ts` when it loads the mod from a folder it watches (an interactive `claude --plugin-dir .`). That folder is gitignored. Grep it for every event and `$` call before using one.
 
-Hooks on `$` calls (`fs.read`, `process.run`, ...) answer `{ value }` or `{ deny }`, not the bare result.
+Hooks on `$` calls (`fs.read`, `process.run`, ...) answer `{ value }` or `{ deny }`, not the bare result. Tests stand in for `$.store` with `mock.store(on)` and for the pane's `ui.*` calls with `serveUi(on)` from `hooks/test-support/memfs.ts`.
 
 ## Commands
 

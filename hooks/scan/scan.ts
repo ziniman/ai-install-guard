@@ -26,6 +26,8 @@ export type ScanReport = {
 export type ScanOptions = {
   /** Run `claude plugin validate` on the candidate (on by default). */
   validate?: boolean
+  /** Told each stage as it starts, for progress in the pane. */
+  onStage?: (stage: string) => Promise<void> | void
   /**
    * Rows from analyzers outside the deterministic checks (the model review, an
    * add-on). They are added to the report; they can raise the verdict and
@@ -35,9 +37,21 @@ export type ScanOptions = {
 }
 
 /** Scans a local folder: inventory, every deterministic check, the verdict. */
-export async function scanFolder(host: Host, target: string, path: string, options: ScanOptions = {}): Promise<ScanReport> {
+export async function scanFolder(host: Host, target: string, path: string, rawOptions: ScanOptions = {}): Promise<ScanReport> {
+  // Progress is a courtesy: a failure to show it never fails the scan.
+  const options: ScanOptions = {
+    ...rawOptions,
+    onStage: async stage => {
+      try {
+        await rawOptions.onStage?.(stage)
+      } catch {
+        // ignored on purpose
+      }
+    },
+  }
   let tree: ScannedTree
   try {
+    await options.onStage?.('reading files')
     tree = await takeInventory(host, path)
   } catch (error) {
     return { target, results: [], verdict: decide([], reasonOf(error)) }
@@ -45,6 +59,7 @@ export async function scanFolder(host: Host, target: string, path: string, optio
   const ctx = buildContext(tree)
   let results: CheckResult[]
   try {
+    await options.onStage?.('running the checks')
     results = await checksFor(host, ctx, options)
     // A marketplace's local plugins are plugins in their own right: each is
     // checked from its own folder, as Claude Code would read it.
@@ -57,6 +72,7 @@ export async function scanFolder(host: Host, target: string, path: string, optio
         results = mergeResults(results, [remoteSourceNote(source.name, source.description)])
         continue
       }
+      await options.onStage?.(`checking ${source.name}`)
       const nested = await subTree(tree, source.path)
       if (nested === undefined) {
         results = mergeResults(results, [missingSourceRow(source.name, source.path)])

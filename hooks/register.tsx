@@ -1,15 +1,26 @@
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
+import { atom, update } from 'claude-code'
 
+import { decisionFor, forgetDecisions, loadDecisions, loadLastView, MAX_REPORT_CHARS, saveLastView } from './guard/decisions'
+import { drawPane, REPORT_TEXT } from './guard/pane'
+import { PANE_ID, scanningView, viewOf } from './guard/view'
 import { modHost } from './mod-host'
 import type { Host } from './scan/host'
 import { formatReport } from './scan/report'
 import { safeLine } from './scan/safe-text'
 import { scanFolder } from './scan/scan'
 
+// Claude Code reads every state reference from the file that uses it, so each
+// module declares its own atom for the pane's view.
+const viewAtom = atom({ plugin: 'ai-install-guard', key: 'view' } as const, null)
+
 const USAGE = [
   'Usage:',
   '  /guard scan <path>            Scan a local plugin, mod or skill folder without installing it',
-  '  /guard scan --details <path>  The same, with every finding and the advice for each',
+  '  /guard scan --details <path>  The same, with the full report as text',
+  '  /guard report                 Reopen the last report',
+  '  /guard list                   Your approved and rejected versions',
+  '  /guard forget <name>          Forget decisions about a name, so it is judged again',
 ].join('\n')
 
 export const register: Register = on => {
@@ -17,25 +28,94 @@ export const register: Register = on => {
     await $.command.register({
       name: 'guard',
       description: 'Scan a plugin, mod, skill or MCP server without installing it',
-      argumentHint: 'scan [--details] <path>',
+      argumentHint: 'scan <path> | report | list | forget <name>',
     })
     return next(e)
   })
 
   on('command.run', { command: 'guard' }, async ($, e) => {
     const { sub, rest, details } = splitArgs(e.args)
-    const target = rest
-    if (sub !== 'scan' || target === '') {
-      return { text: USAGE }
+    if (sub === 'scan' && rest !== '') return { text: await scan($, rest, details) }
+    if (sub === 'report') return { text: await reopen($) }
+    if (sub === 'list') return { text: await list($) }
+    if (sub === 'forget' && rest !== '') {
+      const count = (await forgetDecisions($, rest)).length
+      return { text: `AI Install Guard: forgot ${count} decision${count === 1 ? '' : 's'} about ${safeLine(rest)}.` }
     }
-    const host = modHost($)
-    try {
-      const report = await scanFolder(host, target, await expandHome(host, target))
-      return { text: formatReport(report, { details }) }
-    } catch (error) {
-      return { text: `Could not verify ${safeLine(target)}: ${safeLine(reasonOf(error))}` }
-    }
+    return { text: USAGE }
   }).catch(() => ({ text: 'AI Install Guard: the command failed before it could answer.' }))
+
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($, e) => drawPane($, e))
+}
+
+/**
+ * Scans a folder with the pane showing progress and then the verdict. The
+ * command's own answer, which the model also reads, is one line: the quoted
+ * findings stay in the pane. Where no pane can show (a headless run), or with
+ * --details, the answer is the full text report.
+ */
+async function scan($: EngineInterface, target: string, details: boolean): Promise<string> {
+  const host = modHost($)
+  const opened = await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => ({ isPlaced: false }))
+  // Until this scan's report is stored, Copy report has nothing to copy, never
+  // the previous scan's report.
+  await $.store.delete(REPORT_TEXT).catch(() => undefined)
+  await update($, viewAtom, () => scanningView(target, 'approve'))
+  $.ui.status(`AI Install Guard: scanning ${safeLine(target)}`)
+  try {
+    const report = await scanFolder(host, target, await expandHome(host, target), {
+      // Stage names can carry a candidate's own words (a plugin's name).
+      onStage: stage => update($, viewAtom, current => (current === null ? current : { ...current, stage: safeLine(stage) })).then(() => undefined),
+    })
+    // A tree you already decided on shows that decision, not the buttons
+    // again, unless it now judges worse than when you approved it.
+    const earlier = report.inventory === undefined ? undefined : await decisionFor($, report.inventory.treeHash, report.verdict.kind).catch(() => undefined)
+    const view = earlier === undefined ? viewOf(report, 'approve') : { ...viewOf(report, 'approve'), decision: earlier.decision, decidedAt: earlier.decidedAt }
+    const text = formatReport(report, { details: true })
+    // The report text is stored before the pane shows the verdict, so Copy
+    // report always copies this scan's report. It is held well inside the
+    // store's limit; a failed write leaves Copy with nothing, not old text.
+    const stored = text.length > MAX_REPORT_CHARS ? `${text.slice(0, MAX_REPORT_CHARS)}\n… the report was cut here to fit the store` : text
+    await $.store.set(REPORT_TEXT, stored).catch(() => undefined)
+    await update($, viewAtom, () => view)
+    await saveLastView($, view).catch(() => undefined)
+    $.ui.toast(`AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}`)
+    // Where no pane shows, the answer is the whole report: findings and advice.
+    if (!opened.isPlaced || details) return text
+    return `AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}. The report is in the pane; /guard report reopens it.`
+  } catch (error) {
+    const reason = `Could not verify ${safeLine(target)}: ${safeLine(reasonOf(error))}`
+    await $.store.set(REPORT_TEXT, reason).catch(() => undefined)
+    // The pane, and the report /guard report reopens, show this failure: never
+    // a scanning pane, and never an older verdict in its place.
+    const failed = { ...scanningView(target, 'approve'), stage: '', verdict: { kind: 'unverified' as const, recommendation: 'Could not verify', reasons: [reason], counts: { pass: 0, warn: 0, fail: 0, info: 0 } } }
+    await update($, viewAtom, () => failed).catch(() => undefined)
+    await saveLastView($, failed).catch(() => undefined)
+    return reason
+  } finally {
+    $.ui.status(undefined)
+  }
+}
+
+async function reopen($: EngineInterface): Promise<string> {
+  const view = await loadLastView($)
+  if (view === undefined) return 'AI Install Guard: no report yet. Run /guard scan <path>.'
+  await update($, viewAtom, () => ({ ...view, confirming: false }))
+  const opened = await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => ({ isPlaced: false }))
+  if (opened.isPlaced) return `AI Install Guard: reopened the report for ${safeLine(view.target)}.`
+  const text = await $.store.get(REPORT_TEXT)
+  return typeof text === 'string' ? text : 'AI Install Guard: the last report is no longer stored.'
+}
+
+async function list($: EngineInterface): Promise<string> {
+  const decisions = await loadDecisions($)
+  if (decisions.length === 0) return 'AI Install Guard: no decisions yet.'
+  const lines = decisions.map(item => {
+    const when = new Date(item.decidedAt).toISOString().slice(0, 10)
+    const how = item.decision === 'approved' ? (item.overridden ? 'approved against the verdict' : 'approved') : 'rejected'
+    return `  ${when}  ${how.padEnd(28)} ${safeLine(item.target)}  (${item.verdict}, tree ${item.treeHash.slice(7, 19)})`
+  })
+  return ['AI Install Guard: your decisions, newest first', ...lines].join('\n')
 }
 
 /**

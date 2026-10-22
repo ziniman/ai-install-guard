@@ -118,7 +118,12 @@ export function memoryHost(root: string, files: FixtureFiles): Host {
  * `files` under `root`; a path outside `root` goes on to the next answer.
  * With `platform: 'windows'` there is no `readlink`, only PowerShell.
  */
-export function serveFixture(on: On, root: string, files: FixtureFiles, options: { platform?: 'posix' | 'windows' } = {}): void {
+export function serveFixture(
+  on: On,
+  root: string,
+  files: FixtureFiles,
+  options: { platform?: 'posix' | 'windows'; homeFails?: () => boolean } = {},
+): void {
   const isWindows = options.platform === 'windows'
   const host = memoryHost(root, files) as Host & { owns: (path: string) => boolean }
   const toBase64 = (bytes: Uint8Array): string => {
@@ -146,6 +151,9 @@ export function serveFixture(on: On, root: string, files: FixtureFiles, options:
   })
   on('process.run', async ($, e, next) => {
     const done = (result: RunResult) => ({ value: { ...result, isStdoutTruncated: false, isStderrTruncated: false } })
+    if (e.argv[0] === 'printenv' && options.homeFails?.() === true) {
+      return done({ exitCode: 1, stdout: '', stderr: '' })
+    }
     if (e.argv[0] === 'readlink' && isWindows) {
       return done({ exitCode: 127, stdout: '', stderr: 'readlink: command not found' })
     }
@@ -187,5 +195,56 @@ export function typed(command: string, args: string) {
     args,
     origin: { kind: 'composer' as const },
     presentation: { isFullscreen: false, columns: 100 },
+  }
+}
+
+/** What the plugin asked of the interface during a test. */
+export type UiRecord = {
+  opened: string[]
+  closed: string[]
+  toasts: string[]
+  statuses: (string | undefined)[]
+  copied: string[]
+}
+
+/**
+ * Answers the engine's `ui.open`, `ui.close`, `ui.toast`, `ui.status` and
+ * `ui.copy` beneath the plugin, recording each. With `placed: false` no
+ * surface takes the pane, as in a headless run.
+ */
+export function serveUi(on: On, options: { placed?: boolean } = {}): UiRecord {
+  const record: UiRecord = { opened: [], closed: [], toasts: [], statuses: [], copied: [] }
+  on('ui.open', ($, e) => {
+    record.opened.push(e.id)
+    return { value: options.placed === false ? { isPlaced: false, reason: 'no-surface' } : { isPlaced: true } }
+  })
+  on('ui.close', ($, e) => {
+    record.closed.push(e.id)
+    return { value: undefined }
+  })
+  on('ui.toast', ($, e) => {
+    record.toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.status', ($, e) => {
+    record.statuses.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.copy', ($, e) => {
+    record.copied.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  return record
+}
+
+/** The props a surface hands a pane's draw. */
+export function paneProps(bodyColumns = 100) {
+  return {
+    title: 'AI Install Guard',
+    isFocused: true,
+    bodyColumns,
+    placement: 'dock' as const,
+    scroll: { offset: 0, bodyRows: 40 },
+    view: {},
   }
 }
