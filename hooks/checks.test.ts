@@ -1331,3 +1331,27 @@ describe('a badge in the README is checked, never trusted', () => {
     expect(statusOf(await scanWith('script-exec', `\`\`\`markdown\n${badge('safe_to_install')}\n\`\`\``))).toBeUndefined()
   })
 })
+
+describe('badge claims, review round one', () => {
+  const b64 = (text: string) => ({ base64: btoa(text) })
+  const badge = (words: string) => `[![AI Install Guard](https://img.shields.io/badge/AI_Install_Guard-${words}-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge)`
+  const scanWith = (base: string, readme: string) =>
+    scanFolder(memoryHost(ROOT, { ...fixture(base), 'README.md': b64(`# x\n\n${readme}\n\nA plugin for the tests. Uninstall it with /plugin uninstall x.\n`) }), 'case', ROOT, { validate: false })
+  const row = (report: ScanReport) => report.results.find(result => result.id === 'provenance.badge')
+
+  test('every badge counts: a later, stronger claim is still caught', async () => {
+    const report = await scanWith('script-exec', `${badge('install_with_caution')}\n\n${'filler line\n'.repeat(6000)}\n${badge('safe_to_install')}`)
+    expect(row(report)?.status).toBe('warn')
+  })
+
+  test('badges in indented code and HTML comments are not shown, so not claims', async () => {
+    expect(row(await scanWith('script-exec', `Example:\n\n    ${badge('safe_to_install')}\n`))).toBeUndefined()
+    expect(row(await scanWith('script-exec', `<!--\n${badge('safe_to_install')}\n-->`))).toBeUndefined()
+  })
+
+  test('a badge that says less than the scan finds is not called agreement', async () => {
+    const report = await scanWith('clean-plugin', badge('do_not_install'))
+    expect(row(report)?.status).toBe('info')
+    expect(row(report)?.summary?.[0]).toBe("The README's badge says Do not install; this scan finds Safe to install")
+  })
+})

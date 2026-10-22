@@ -78,21 +78,26 @@ export type BadgeClaim = { file: string; line: number; claimed: 'safe' | 'cautio
 const BADGE_IMAGE = /img\.shields\.io\/badge\/AI(?:_|%20| )Install(?:_|%20| )Guard-([^)\s"'?]{1,300})/i
 
 /**
- * The first AI Install Guard badge in a README, outside code blocks (where a
- * README shows how to add one). A badge whose words name no verdict is read
- * as claiming the best one, since that is what it would make a reader think.
+ * The strongest claim among the AI Install Guard badges a README shows. Code
+ * blocks (fenced or indented) and HTML comments are left out: there a badge
+ * is an example or hidden, not shown to the reader. A badge whose words name
+ * no verdict is read as claiming the best one, since that is what it would
+ * make a reader think.
  */
 export function badgeClaim(readme: { path: string; text: string } | undefined): BadgeClaim | undefined {
   if (readme === undefined) return undefined
+  // Comments are blanked line for line, so line numbers stay right.
+  const visible = readme.text.replace(/<!--[\s\S]*?(?:-->|$)/g, comment => comment.replace(/[^\n]/g, ' '))
+  const lines = visible.split('\n')
   let inFence = false
-  const lines = readme.text.split('\n')
-  for (let index = 0; index < lines.length && index < 5000; index += 1) {
+  let best: BadgeClaim | undefined
+  for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] as string
     if (/^[ \t]*(?:```|~~~)/.test(line)) {
       inFence = !inFence
       continue
     }
-    if (inFence) continue
+    if (inFence || /^(?: {4}|\t)/.test(line)) continue
     const found = BADGE_IMAGE.exec(line.replace(/`[^`]*`/g, ''))
     if (found === null) continue
     let message = found[1] as string
@@ -103,9 +108,9 @@ export function badgeClaim(readme: { path: string; text: string } | undefined): 
     }
     const words = message.replace(/--/g, '\u0000').replace(/-[0-9a-f]{3,8}$|-[a-z]+$/i, '').replace(/_/g, ' ').replace(/\u0000/g, '-').toLowerCase()
     const claimed = /do not install/.test(words) ? 'reject' : /could not verify/.test(words) ? 'unverified' : /caution/.test(words) ? 'caution' : 'safe'
-    return { file: readme.path, line: index + 1, claimed, text: words.slice(0, 120) }
+    if (best === undefined || VERDICT_RANK[claimed] < VERDICT_RANK[best.claimed]) best = { file: readme.path, line: index + 1, claimed, text: words.slice(0, 120) }
   }
-  return undefined
+  return best
 }
 
 const VERDICT_RANK = { safe: 0, caution: 1, unverified: 2, reject: 3 } as const
@@ -126,7 +131,9 @@ export function badgeRow(claim: BadgeClaim, actual: keyof typeof VERDICT_RANK): 
       advice: 'A badge is a picture anyone can paste. This scan is what counts: a badge that claims more than it finds is outdated or was never earned.',
       summary: overclaims
         ? [`The README's badge says ${VERDICT_WORDS[claim.claimed]}, but this version scans as ${VERDICT_WORDS[actual]}`, 'The badge is outdated or was never earned']
-        : [`The README shows an AI Install Guard badge (${VERDICT_WORDS[claim.claimed]}); this scan agrees`],
+        : claim.claimed === actual
+          ? [`The README shows an AI Install Guard badge (${VERDICT_WORDS[claim.claimed]}); this scan agrees`]
+          : [`The README's badge says ${VERDICT_WORDS[claim.claimed]}; this scan finds ${VERDICT_WORDS[actual]}`],
     },
     [{ file: claim.file, line: claim.line, excerpt: `badge: ${claim.text}`, status: overclaims ? 'warn' : 'info' }],
   )
