@@ -216,9 +216,7 @@ export function resolveRef(listed: RemoteRefs, ref: string | undefined): Pick<Pi
  */
 export async function fetchPinned(host: Host, spec: RemoteSpec, onStage?: (stage: string) => Promise<void> | void): Promise<FetchedSource> {
   await onStage?.(`resolving ${safeLine(spec.url)}`)
-  const listing = await git(host, ['ls-remote', '--symref', spec.url, 'HEAD', 'refs/heads/*', 'refs/tags/*'], 60_000)
-  if (listing.exitCode !== 0) throw failure(listing, `could not reach ${spec.url}`)
-  const listed = parseLsRemote(listing.stdout)
+  const listed = await listRefs(host, spec.url)
   const fromLink = spec.treePath !== undefined && spec.ref === undefined ? splitTreePath(listed, spec.treePath) : undefined
   const subdir = spec.subdir ?? fromLink?.subdir
   const pinned = resolveRef(listed, spec.ref ?? fromLink?.ref)
@@ -278,6 +276,29 @@ export async function fetchPinned(host: Host, spec: RemoteSpec, onStage?: (stage
     await cleanup().catch(() => undefined)
     throw error
   }
+}
+
+/**
+ * The commit `spec` names now, and the folder in it, without fetching
+ * anything: what a later fetch of the same spec would pin, so a decision made
+ * on that commit can be found before a scan.
+ */
+export async function resolvePin(host: Host, spec: RemoteSpec): Promise<{ sha: string; subdir?: string }> {
+  // A full commit id needs no listing: it already is the pin.
+  if (spec.ref !== undefined && spec.treePath === undefined && FULL_SHA.test(spec.ref.toLowerCase())) {
+    return { sha: spec.ref.toLowerCase(), ...(spec.subdir === undefined ? {} : { subdir: spec.subdir }) }
+  }
+  const listed = await listRefs(host, spec.url)
+  const fromLink = spec.treePath !== undefined && spec.ref === undefined ? splitTreePath(listed, spec.treePath) : undefined
+  const subdir = spec.subdir ?? fromLink?.subdir
+  return { sha: resolveRef(listed, spec.ref ?? fromLink?.ref).sha, ...(subdir === undefined ? {} : { subdir }) }
+}
+
+/** The repository's branches and tags, as `git ls-remote` lists them. */
+async function listRefs(host: Host, url: string): Promise<RemoteRefs> {
+  const listing = await git(host, ['ls-remote', '--symref', url, 'HEAD', 'refs/heads/*', 'refs/tags/*'], 60_000)
+  if (listing.exitCode !== 0) throw failure(listing, `could not reach ${url}`)
+  return parseLsRemote(listing.stdout)
 }
 
 function git(host: Host, args: readonly string[], timeoutMs = 60_000, env: Record<string, string> = GIT_ENV): Promise<RunResult> {

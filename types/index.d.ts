@@ -34,6 +34,25 @@ export type GuardVerdict = {
 /** What the primary button does: install the candidate, or approve a scanned folder. */
 export type GuardAction = 'install' | 'approve'
 
+/** An install the guard holds until the person decides: what Install then carries out. */
+export type GuardRequest = {
+  /** Where it was asked for: the person's own /plugin command, or a command Claude ran. */
+  origin: 'command' | 'tool'
+  /** The /plugin arguments, or Claude's whole shell command, exactly as given. */
+  args: string
+  /** What it installs, as the pane names it. */
+  label: string
+}
+
+/**
+ * One install the person allowed although nothing could be pinned (Could not
+ * verify, Install anyway): it lets exactly that command through, once.
+ */
+export type GuardPass = {
+  origin: GuardRequest['origin']
+  args: string
+}
+
 /** The scan the pane shows: in progress, then done with a verdict and a decision. */
 export type GuardView = {
   target: string
@@ -55,6 +74,8 @@ export type GuardView = {
   details: boolean
   /** Rows whose code lines are shown under their summary. */
   codeOpen?: string[]
+  /** The held install Install carries out; absent for a scan you asked for. */
+  request?: GuardRequest
   /** "Install anyway" was pressed once and waits for its confirmation. */
   confirming: boolean
   decision?: 'approved' | 'rejected'
@@ -66,6 +87,8 @@ declare module 'claude-code' {
   interface PluginState {
     'ai-install-guard': {
       view: GuardView | null
+      /** Installs allowed once in this session, each used up when it goes through. */
+      passes: GuardPass[]
     }
   }
 }

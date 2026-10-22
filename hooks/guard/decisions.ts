@@ -82,6 +82,15 @@ export async function decisionFor($: EngineInterface, version: { treeHash: strin
 }
 
 /**
+ * The decision on one commit of one source, found before any scan: a commit
+ * names its files exactly, so the same commit of the same folder is the same
+ * version however it is asked for.
+ */
+export async function pinnedDecision($: EngineInterface, pin: { root: string; sha: string }): Promise<Decision | undefined> {
+  return (await loadDecisions($)).find(item => item.sha === pin.sha && item.root === pin.root)
+}
+
+/**
  * Saves the view /guard report reopens. When it cannot be saved, the old one
  * is removed, so a reopened report never shows an older verdict as current.
  */

@@ -1,11 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 
-import type { GuardRow, GuardStatus, GuardView } from '../../types'
+import type { GuardRequest, GuardRow, GuardStatus, GuardView } from '../../types'
 import { GROUPS } from '../scan/checks/types'
+import { safeLine } from '../scan/safe-text'
 import { locate } from '../scan/verdict'
 import { badgeFor } from './badge'
+import { changedSinceScan } from '../gate/recheck'
+import { modHost } from '../mod-host'
 import { recordDecision, saveLastView } from './decisions'
+import { grantPass, takePass } from './passes'
 import { needsConfirmation, PANE_ID, primaryLabel } from './view'
 
 const viewAtom = atom({ plugin: 'ai-install-guard', key: 'view' } as const, null)
@@ -57,10 +61,17 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
   const decide = (decision: 'approved' | 'rejected', overridden: boolean) => async () => {
     const current = await read($, viewAtom)
     if (current === null || current.verdict === undefined) return
+    const held = current.action === 'install' ? current.request : undefined
     // A scan that never read the files has no tree hash to pin a decision to:
-    // the pane closes, nothing is remembered, and nothing claims otherwise.
+    // nothing is remembered, and nothing claims otherwise. A held install the
+    // person allows anyway goes through once, as that exact command.
     if (current.treeHash === undefined) {
-      $.ui.toast('AI Install Guard: closed; the scan read nothing, so there is no decision to remember')
+      if (held !== undefined && decision === 'approved') {
+        await grantPass($, { origin: held.origin, args: held.args })
+        await carryOut($, held, current)
+        return
+      }
+      $.ui.toast(held !== undefined ? 'AI Install Guard: rejected; nothing was installed' : 'AI Install Guard: closed; the scan read nothing, so there is no decision to remember')
       await $.ui.close({ id: PANE_ID })
       return
     }
@@ -86,7 +97,13 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     await update($, viewAtom, () => decided)
     // The reopened report shows the outcome, not the buttons again.
     await saveLastView($, decided).catch(() => undefined)
-    $.ui.toast(`AI Install Guard: ${decision === 'approved' ? 'approved' : 'rejected'} ${current.target}`)
+    // The approval is saved for this exact version, so the install, asked for
+    // again, now goes through: the gate looks the version up again first.
+    if (held !== undefined && decision === 'approved') {
+      await carryOut($, held, decided)
+      return
+    }
+    $.ui.toast(`AI Install Guard: ${decision === 'approved' ? 'approved' : 'rejected'} ${current.target}${held === undefined ? '' : '; nothing was installed'}`)
     await $.ui.close({ id: PANE_ID })
   }
 
@@ -126,6 +143,12 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       {header !== '' && (
         <Text dimColor wrap="truncate-end">
           {header}
+        </Text>
+      )}
+
+      {view.request !== undefined && (
+        <Text dimColor wrap="truncate-end">
+          {requestLine(view.request)}
         </Text>
       )}
 
@@ -210,7 +233,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
 
       {verdict !== undefined && view.decision === undefined && !view.confirming && (
         <Box key="actions" flexDirection="row" gap={1} marginTop={1}>
-          {view.treeHash !== undefined && (
+          {(view.treeHash !== undefined || (view.action === 'install' && view.request !== undefined)) && (
             <Button key="install" label={primaryLabel(view)} hotkey="i" variant={needsConfirmation(view) ? 'secondary' : 'primary'} onPress={primary} />
           )}
           <Button key="reject" label="Reject" hotkey="r" variant={needsConfirmation(view) ? 'primary' : 'secondary'} onPress={decide('rejected', false)} />
@@ -245,6 +268,43 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       )}
     </Box>
   )
+}
+
+/** What the held install is, in the person's or Claude's own words. */
+function requestLine(request: GuardRequest): string {
+  return request.origin === 'tool' ? `Claude asked to run: ${safeLine(request.args)}` : `Held until you decide: /plugin ${safeLine(request.args)}`
+}
+
+/**
+ * Carries out a held install the person approved. Their own /plugin command
+ * runs again once the version it would install is checked to be the one
+ * scanned; a command Claude ran is Claude's to run again, once the person
+ * tells it to, and its gate checks the version then.
+ */
+async function carryOut($: EngineInterface, held: GuardRequest, view: GuardView): Promise<void> {
+  await $.ui.close({ id: PANE_ID })
+  if (held.origin === 'tool') {
+    $.ui.toast(`AI Install Guard: approved ${held.label}. Tell Claude to run the install again; it goes through now`)
+    return
+  }
+  // The plugin's own command does not pass through its own gate, so the
+  // version is looked up again here: a commit that moved since the scan is
+  // not installed on the strength of the old one's verdict.
+  const changed = await changedSinceScan(modHost($), view).catch((error: unknown) => `the guard could not look it up again (${error instanceof Error ? error.message : String(error)})`)
+  if (changed !== undefined) {
+    await takePass($, { origin: 'command', args: held.args }).catch(() => undefined)
+    $.ui.toast(`AI Install Guard: nothing was installed: ${safeLine(changed)}. Run /plugin ${safeLine(held.args)} again to scan it`)
+    return
+  }
+  $.ui.toast(`AI Install Guard: approved; installing ${held.label}`)
+  try {
+    await $.command.run({ command: 'plugin', args: held.args })
+  } catch {
+    $.ui.toast(`AI Install Guard: approved, but the install did not start. Run /plugin ${safeLine(held.args)} again; it goes through now`)
+  } finally {
+    // A pass the gate did not use up is not left for a later command.
+    await takePass($, { origin: 'command', args: held.args }).catch(() => undefined)
+  }
 }
 
 function truncate(text: string, room: number): string {
