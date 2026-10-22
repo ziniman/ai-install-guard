@@ -1,0 +1,22 @@
+{
+  "name": "ai-install-guard",
+  "version": "0.0.0",
+  "description": "A pre-install security gate for Claude Code: scans plugins, mods, skills and MCP servers without running them, and installs nothing until you approve.",
+  "author": {
+    "name": "Boaz Ziniman",
+    "email": "ziniman@gmail.com",
+    "url": "https://github.com/ziniman"
+  },
+  "homepage": "https://github.com/ziniman/ai-install-guard",
+  "repository": "https://github.com/ziniman/ai-install-guard",
+  "license": "Apache-2.0",
+  "keywords": [
+    "security",
+    "supply-chain",
+    "static-analysis",
+    "plugins",
+    "skills",
+    "mcp",
+    "mods"
+  ]
+}
