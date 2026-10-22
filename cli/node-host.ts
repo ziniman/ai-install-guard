@@ -10,7 +10,11 @@ import { constants, promises as fs } from 'node:fs'
 import type { FetchInit, FetchResult, Host, HostEntry, HostEntryKind, HostStat, RunOptions, RunResult } from '../hooks/scan/host'
 import { LIMITS } from '../hooks/scan/inventory'
 
-/** How much of each output stream a command keeps, as `$.process.run` does. */
+/**
+ * How much output a command may print, per stream, as much as `$.process.run`
+ * keeps. More fails the command: the scanner parses what git prints, and a
+ * listing cut short would undercount what a checkout is about to write.
+ */
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 
 /** How long a command may run when its caller names no limit, as `$.process.run`. */
@@ -69,20 +73,24 @@ async function stat(path: string, options?: { resolve: boolean }): Promise<HostS
 }
 
 /**
- * Reads a plain file and nothing else: a link in its place fails to open, and
- * the read stops one byte past the per-file limit so the inventory refuses a
- * file that grew after it was listed instead of holding all of it.
+ * Reads a plain file and nothing else. A link in its place fails to open
+ * where the platform has O_NOFOLLOW; everywhere, the path must still be that
+ * same file, not a link, once it is open, so a file swapped for a link is
+ * refused rather than read where the link lands. The read stops one byte past
+ * the per-file limit so the inventory refuses a file that grew after it was
+ * listed instead of holding all of it.
  */
 async function readBytes(path: string): Promise<Uint8Array> {
   const handle = await fs.open(path, constants.O_RDONLY | NO_FOLLOW)
   try {
-    const stats = await handle.stat()
-    if (!stats.isFile()) throw new Error(`${path} is not a plain file`)
+    const stats = await handle.stat({ bigint: true })
+    const own = await fs.lstat(path, { bigint: true })
+    if (!stats.isFile() || own.isSymbolicLink() || own.ino !== stats.ino || own.dev !== stats.dev) throw new Error(`${path} is not a plain file`)
     const cap = LIMITS.maxFileBytes + 1
     const chunks: Buffer[] = []
     let size = 0
     while (size < cap) {
-      const chunk = Buffer.alloc(Math.min(Math.max(stats.size - size, 64 * 1024), cap - size))
+      const chunk = Buffer.alloc(Math.min(Math.max(Number(stats.size) - size, 64 * 1024), cap - size))
       const { bytesRead } = await handle.read(chunk, 0, chunk.length, size)
       if (bytesRead === 0) break
       chunks.push(chunk.subarray(0, bytesRead))
@@ -97,7 +105,8 @@ async function readBytes(path: string): Promise<Uint8Array> {
 
 /**
  * Runs `argv` with no shell. Resolves with any exit code (a signal reads as
- * 1); rejects when the command cannot start or outlives its time.
+ * 1); rejects when the command cannot start, outlives its time or prints more
+ * than MAX_OUTPUT_BYTES on a stream.
  */
 function run(argv: readonly string[], options: RunOptions = {}): Promise<RunResult> {
   const [command, ...args] = argv
@@ -106,18 +115,22 @@ function run(argv: readonly string[], options: RunOptions = {}): Promise<RunResu
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env: { ...withoutGitVariables(process.env), ...options.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
-    const stdout = collect()
-    const stderr = collect()
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    const timer = setTimeout(() => fail(new Error(`${command} did not finish within ${Math.round(timeoutMs / 1000)} s`)), timeoutMs)
+    function fail(error: Error): void {
+      clearTimeout(timer)
+      child.kill('SIGKILL')
+      reject(error)
+    }
+    const overflow = () => fail(new Error(`${command} printed more than ${MAX_OUTPUT_BYTES / 1024 / 1024} MB, too much to check`))
+    const stdout = collect(overflow)
+    const stderr = collect(overflow)
     child.stdout.on('data', stdout.add)
     child.stderr.on('data', stderr.add)
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL')
-      reject(new Error(`${command} did not finish within ${Math.round((options.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000)} s`))
-    }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
     child.on('error', error => {
       clearTimeout(timer)
       reject(new Error(`could not start ${command}: ${error.message}`))
@@ -129,19 +142,34 @@ function run(argv: readonly string[], options: RunOptions = {}): Promise<RunResu
   })
 }
 
-/** An output stream's first MAX_OUTPUT_BYTES; the rest is read and dropped. */
-function collect(): { add: (chunk: Buffer) => void; text: () => string } {
+/** An output stream, held whole up to MAX_OUTPUT_BYTES; past that, `overflow` is told once. */
+function collect(overflow: () => void): { add: (chunk: Buffer) => void; text: () => string } {
   const chunks: Buffer[] = []
   let size = 0
   return {
     add: chunk => {
-      if (size >= MAX_OUTPUT_BYTES) return
-      const kept = chunk.subarray(0, MAX_OUTPUT_BYTES - size)
-      chunks.push(kept)
-      size += kept.length
+      if (size > MAX_OUTPUT_BYTES) return
+      size += chunk.length
+      if (size > MAX_OUTPUT_BYTES) overflow()
+      else chunks.push(chunk)
     },
     text: () => Buffer.concat(chunks).toString('utf8'),
   }
+}
+
+/**
+ * The environment without any variable git reads (GIT_DIR, GIT_CONFIG_COUNT,
+ * GIT_CONFIG_PARAMETERS, GIT_PROXY_COMMAND and the rest): one set around this
+ * process could point git at other files or add configuration, such as a hooks
+ * path or a filter, that the candidate's own files then trigger. The scanner
+ * sets the ones it wants itself.
+ */
+function withoutGitVariables(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [name, value] of Object.entries(env)) {
+    if (value !== undefined && !/^GIT_/i.test(name)) out[name] = value
+  }
+  return out
 }
 
 /**
