@@ -394,3 +394,21 @@ describe('GitHub, PR #9 review fixes', () => {
     expect(results[1]?.evidence[0]?.excerpt).toContain('not checked')
   })
 })
+
+describe('lookups, local review of the release', () => {
+  const ctxOf = async (files: FixtureFiles) => buildContext(await takeInventory(memoryHost('/p', { ...fixture('clean-plugin'), ...files }), '/p'))
+
+  test('a package that merely ends like a file is still a package', async () => {
+    const ctx = await ctxOf({ '.mcp.json': b64(JSON.stringify({ mcpServers: { a: { command: 'npx', args: ['-y', 'foo.json'] }, b: { command: 'uvx', args: ['./local/tool'] } } })) })
+    expect(packagesOf(ctx).map(pkg => pkg.name)).toEqual(['foo.json'])
+  })
+
+  test('a huge marketplace is compared up to the limit, and the rest is reported', async () => {
+    const plugins = Array.from({ length: 2100 }, (_, index) => ({ name: `plugin-${index}`, source: `./p${index}` }))
+    const ctx = await ctxOf({ '.claude-plugin/marketplace.json': b64(JSON.stringify({ name: 'm', owner: { name: 'o' }, plugins })) })
+    const results = await outsideLookups(netHost(url => (url === OFFICIAL_MARKETPLACE ? json({ plugins: [{ name: 'code-review' }] }) : json({ results: [] }))), ctx)
+    const row = results.find(result => result.id === 'provenance.names')
+    expect(row?.status).toBe('warn')
+    expect(row?.evidence.map(item => item.excerpt)).toContain('101 more names were not compared')
+  })
+})

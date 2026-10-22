@@ -14,6 +14,8 @@ export const OSV_BATCH = 'https://api.osv.dev/v1/querybatch'
 export const OSV_VULN = 'https://api.osv.dev/v1/vulns/'
 /** How many advisories' details are read to tell malware from a bug. */
 const MAX_DETAILS = 300
+/** How many of a candidate's plugin names are compared with the official list. */
+const MAX_NAMES = 2000
 export const OFFICIAL_MARKETPLACE = 'https://raw.githubusercontent.com/anthropics/claude-plugins-official/main/.claude-plugin/marketplace.json'
 /** OSV takes up to 1,000 queries a request; past this many, the rest are reported as not checked. */
 const BATCH = 1000
@@ -118,9 +120,9 @@ export function packagesOf(ctx: ScanContext): Package[] {
         }
         continue
       }
-      // A path or file is an argument, never a package name; a scoped npm
-      // name (@scope/name) is a name.
-      if (/^(?:\.{1,2}[\\/]|[\\/~])|\.(?:txt|toml|cfg|json|lock|ya?ml)$/i.test(word) || (/[\\/]/.test(word) && !/^@[\w.-]+\/[\w.-]+(?:@[^\\/\s]*)?$/.test(word))) continue
+      // A path is an argument, never a package name; a scoped npm name
+      // (@scope/name) is a name, and so is one that merely ends like a file.
+      if (/^(?:\.{1,2}[\\/]|[\\/~])/.test(word) || (/[\\/]/.test(word) && !/^@[\w.-]+\/[\w.-]+(?:@[^\\/\s]*)?$/.test(word))) continue
       if (!named) addSpec(word, python, server.file, server.name)
       break
     }
@@ -306,6 +308,9 @@ async function namesCheck(host: Host, ctx: ScanContext, cache: LookupCache): Pro
   if (market.ok && isRecord(market.value) && Array.isArray(market.value.plugins)) {
     for (const plugin of market.value.plugins) if (isRecord(plugin) && typeof plugin.name === 'string') names.add(plugin.name)
   }
+  // A bounded amount of work, whatever the file holds; the rest is reported.
+  const all = [...names]
+  const compared = all.slice(0, MAX_NAMES)
   if (names.size === 0) return []
   const title = 'Names like official plugins'
   let official: string[]
@@ -319,7 +324,8 @@ async function namesCheck(host: Host, ctx: ScanContext, cache: LookupCache): Pro
     return [failedRow('provenance.names', title, `could not reach the official list: ${error instanceof Error ? error.message : String(error)}`)]
   }
   const evidence: Evidence[] = []
-  for (const name of names) {
+  if (all.length > compared.length) evidence.push({ file: '-', excerpt: `${all.length - compared.length} more names were not compared`, status: 'warn' })
+  for (const name of compared) {
     if (official.includes(name)) {
       evidence.push({ file: '-', excerpt: `${safeLine(name)} has the same name as an official plugin: make sure this is that plugin, from its own source`, status: 'info' })
       continue
