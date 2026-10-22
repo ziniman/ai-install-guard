@@ -4,6 +4,7 @@ import { modHost } from './mod-host'
 import type { Host } from './scan/host'
 import { takeInventory } from './scan/inventory'
 import { formatInventory } from './scan/report'
+import { safeLine } from './scan/safe-text'
 
 const USAGE = [
   'Usage:',
@@ -30,7 +31,7 @@ export const register: Register = on => {
       const tree = await takeInventory(host, await expandHome(host, rest))
       return { text: formatInventory(rest, tree.inventory) }
     } catch (error) {
-      return { text: `Could not verify ${rest}: ${reasonOf(error)}` }
+      return { text: `Could not verify ${safeLine(rest)}: ${safeLine(reasonOf(error))}` }
     }
   }).catch(() => ({ text: 'AI Install Guard: the command failed before it could answer.' }))
 }

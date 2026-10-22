@@ -2,6 +2,8 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { splitArgs } from './register'
 import { LIMITS, takeInventory } from './scan/inventory'
+import { formatInventory } from './scan/report'
+import { safeLine, safeText } from './scan/safe-text'
 import { FIXTURES } from './test-support/fixtures.gen'
 import { HOME, memoryHost, serveFixture, typed, type FixtureFiles } from './test-support/memfs'
 
@@ -90,6 +92,26 @@ describe('inventory', () => {
     for (let i = 0; i <= LIMITS.maxEntries; i += 1) files[`f${i}.txt`] = text('x')
 
     await expect(takeInventory(memoryHost('/big', files), '/big')).rejects.toThrow(/more than 5000 files/)
+  })
+})
+
+describe('untrusted text in reports', () => {
+  test('hidden and control characters are shown as code points', () => {
+    expect(safeText('a\u001b[31mred')).toBe('a<U+001B>[31mred')
+    expect(safeText('x\u200by')).toBe('x<U+200B>y')
+    expect(safeText('tag\u{e0041}')).toBe('tag<U+E0041>')
+    expect(safeText('rtl\u202eexe.md')).toBe('rtl<U+202E>exe.md')
+    expect(safeText('line one\nline two')).toBe('line one\nline two')
+    expect(safeLine('a\nb\tc')).toBe('a<U+000A>b<U+0009>c')
+  })
+
+  test('a file name with escapes cannot paint the report', async () => {
+    const files: FixtureFiles = { 'evil\u001b[2Jname\u202e.md': text('x') }
+    const { inventory } = await takeInventory(memoryHost('/r', files), '/r')
+    const report = formatInventory('/r', inventory)
+
+    expect(report).toContain('evil<U+001B>[2Jname<U+202E>.md')
+    expect(report).not.toContain('\u001b')
   })
 })
 

@@ -1,4 +1,5 @@
 import { formatBytes, type Inventory } from './inventory'
+import { safeLine } from './safe-text'
 
 const MAX_LISTED = 60
 
@@ -9,23 +10,24 @@ export function formatInventory(target: string, inventory: Inventory): string {
   const others = inventory.entries.filter(entry => entry.kind === 'other')
 
   const lines = [
-    `AI Install Guard: ${target}`,
-    `Folder: ${inventory.root}`,
+    `AI Install Guard: ${safeLine(target)}`,
+    `Folder: ${safeLine(inventory.root)}`,
     `Files: ${files.length} (${formatBytes(inventory.totalBytes)}), links: ${links.length}, other: ${others.length}`,
     `Tree hash: ${inventory.treeHash}`,
   ]
   if (inventory.skipped.length > 0) {
-    lines.push(`Not read: ${inventory.skipped.join(', ')}`)
+    lines.push(`Not read: ${inventory.skipped.map(safeLine).join(', ')}`)
   }
   lines.push('')
 
   for (const entry of inventory.entries.slice(0, MAX_LISTED)) {
+    const path = safeLine(entry.path)
     if (entry.kind === 'file') {
-      lines.push(`  ${entry.path}  ${formatBytes(entry.size)}${entry.isText ? '' : ', binary'}`)
+      lines.push(`  ${path}  ${formatBytes(entry.size)}${entry.isText ? '' : ', binary'}`)
     } else if (entry.kind === 'link') {
-      lines.push(`  ${entry.path}  link to ${entry.target}${entry.isInside ? '' : ' (outside the folder)'}`)
+      lines.push(`  ${path}  link to ${safeLine(entry.target)}${entry.isInside ? '' : ' (outside the folder)'}`)
     } else {
-      lines.push(`  ${entry.path}  not a regular file`)
+      lines.push(`  ${path}  not a regular file`)
     }
   }
   if (inventory.entries.length > MAX_LISTED) {
