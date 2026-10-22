@@ -6,6 +6,7 @@
 
 import { spawn } from 'node:child_process'
 import { constants, promises as fs } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 
 import type { FetchInit, FetchResult, Host, HostEntry, HostEntryKind, HostStat, RunOptions, RunResult } from '../hooks/scan/host'
 import { LIMITS } from '../hooks/scan/inventory'
@@ -36,7 +37,25 @@ const MAX_FETCH_TEXT_BYTES = 8 * 1024 * 1024
 const NO_FOLLOW = (constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0
 
 export function nodeHost(): Host {
-  return { list, stat, readBytes, readLink: path => fs.readlink(path), run, fetch: request }
+  // Where each folder the scan listed really is, so a folder swapped for a
+  // link after it was listed cannot make a later read land outside it.
+  const listed = new Map<string, string>()
+  return {
+    list: async path => {
+      const entries = await list(path)
+      listed.set(trimSlash(path), await fs.realpath(path))
+      return entries
+    },
+    stat,
+    readBytes: path => readBytes(path, listed.get(trimSlash(dirname(path)))),
+    readLink: path => fs.readlink(path),
+    run,
+    fetch: request,
+  }
+}
+
+function trimSlash(path: string): string {
+  return path.length > 1 ? path.replace(/[\\/]+$/, '') : path
 }
 
 function kindOf(stats: { isFile(): boolean; isDirectory(): boolean }): HostEntryKind {
@@ -80,12 +99,21 @@ async function stat(path: string, options?: { resolve: boolean }): Promise<HostS
  * the per-file limit so the inventory refuses a file that grew after it was
  * listed instead of holding all of it.
  */
-async function readBytes(path: string): Promise<Uint8Array> {
+async function readBytes(path: string, folder?: string): Promise<Uint8Array> {
   const handle = await fs.open(path, constants.O_RDONLY | NO_FOLLOW)
   try {
     const stats = await handle.stat({ bigint: true })
     const own = await fs.lstat(path, { bigint: true })
     if (!stats.isFile() || own.isSymbolicLink() || own.ino !== stats.ino || own.dev !== stats.dev) throw new Error(`${path} is not a plain file`)
+    // Its folder must still be where it was when the scan listed it, and the
+    // open file the one there: a folder on the way swapped for a link, even
+    // just while the file was opened, is refused.
+    if (folder !== undefined) {
+      const there = await fs.lstat(join(folder, basename(path)), { bigint: true }).catch(() => undefined)
+      if ((await fs.realpath(dirname(path))) !== folder || there === undefined || there.ino !== stats.ino || there.dev !== stats.dev) {
+        throw new Error(`${path} is no longer inside the folder that was listed`)
+      }
+    }
     const cap = LIMITS.maxFileBytes + 1
     const chunks: Buffer[] = []
     let size = 0

@@ -7,7 +7,7 @@
 import { webcrypto } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, isAbsolute, join, relative } from 'node:path'
 
 import { viewOf } from '../hooks/guard/view'
 import type { Host } from '../hooks/scan/host'
@@ -188,7 +188,9 @@ async function isCandidate(dir: string): Promise<boolean> {
   const real = await fs.realpath(dir)
   for (const file of CANDIDATE_FILES) {
     const landed = await fs.realpath(`${dir}/${file}`).catch(() => undefined)
-    if (landed !== undefined && landed.startsWith(`${real}/`) && (await fs.stat(landed)).isFile()) return true
+    // Inside by path.relative, which reads either separator, not by a '/' prefix.
+    const inside = landed === undefined ? '' : relative(real, landed)
+    if (landed !== undefined && inside !== '' && !inside.startsWith('..') && !isAbsolute(inside) && (await fs.stat(landed)).isFile()) return true
   }
   if ((await fs.lstat(`${dir}/${MARKETPLACE_FILE}`).catch(() => undefined))?.isFile() === true) return true
   for (const folder of CANDIDATE_FOLDERS) if (await holdsFile(`${dir}/${folder}`)) return true
