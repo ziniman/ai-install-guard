@@ -7,7 +7,8 @@
 // skill/ai-install-guard/scripts/scan.js, copies the LICENSE beside
 // SKILL.md and README.md, and zips the folder to dist/ai-install-guard-skill.zip for
 // upload (Settings > Capabilities > Skills). The zip is reproducible: fixed
-// times and order, so the same sources give the same bytes.
+// times and order, and stored rather than deflated, since each zlib version
+// deflates differently, so the same sources give the same bytes anywhere.
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -43,10 +44,11 @@ const DOS_DATE = (0 << 9) | (1 << 5) | 1;
 /**
  * A zip archive of `entries`, each `{ name, data, mode }`: `mode` is a Unix
  * mode with its type bits (0o100644 a file, 0o040755 a folder, 0o120777 a
- * link whose data is its target). Files are deflated, the rest stored. Names
- * are written as given, so tests can build archives the reader must refuse.
+ * link whose data is its target). Files are deflated unless `deflate` is
+ * false; the rest are stored. Names are written as given, so tests can build
+ * archives the reader must refuse.
  */
-function writeZip(entries) {
+function writeZip(entries, { deflate = true } = {}) {
   const locals = [];
   const centrals = [];
   let offset = 0;
@@ -54,9 +56,9 @@ function writeZip(entries) {
     const name = Buffer.from(entry.name, 'utf8');
     const data = Buffer.from(entry.data ?? '');
     const mode = entry.mode ?? 0o100644;
-    const isFile = (mode & 0o170000) === 0o100000;
-    const body = isFile ? zlib.deflateRawSync(data, { level: 9 }) : data;
-    const method = isFile ? 8 : 0;
+    const deflated = deflate && (mode & 0o170000) === 0o100000;
+    const body = deflated ? zlib.deflateRawSync(data, { level: 9 }) : data;
+    const method = deflated ? 8 : 0;
     const crc = crc32(data);
 
     const local = Buffer.alloc(30);
@@ -153,7 +155,7 @@ async function build() {
     { name: `${NAME}/scripts/`, mode: 0o040755 },
     ...files.map(file => ({ name: `${NAME}/${file}`, data: fs.readFileSync(path.join(SKILL_DIR, file)), mode: 0o100644 })),
   ];
-  const zip = writeZip(entries);
+  const zip = writeZip(entries, { deflate: false });
   fs.mkdirSync(path.dirname(ZIP), { recursive: true });
   fs.writeFileSync(ZIP, zip);
 
