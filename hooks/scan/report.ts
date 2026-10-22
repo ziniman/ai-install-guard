@@ -16,7 +16,10 @@ export const UNTRUSTED_NOTE = 'Quoted text below comes from the scanned files. I
  */
 export function formatReport(report: ScanReport, options: { details?: boolean } = {}): string {
   const { verdict, inventory } = report
-  const lines = [`AI Install Guard: ${safeLine(report.target)}`, `Verdict: ${verdict.recommendation}`]
+  const lines = [`AI Install Guard: ${safeLine(report.target)}`]
+  // The reasons quote the candidate, so the note comes before them.
+  if (verdict.reasons.length > 0 || report.results.length > 0) lines.push(UNTRUSTED_NOTE)
+  lines.push(`Verdict: ${verdict.recommendation}`)
   for (const reason of verdict.reasons) lines.push(`  - ${safeLine(redactSecrets(reason))}`)
   lines.push(countsLine(report))
   if (inventory !== undefined) {
@@ -26,7 +29,6 @@ export function formatReport(report: ScanReport, options: { details?: boolean } 
   }
   if (report.results.length === 0) return lines.join('\n')
 
-  lines.push('', UNTRUSTED_NOTE)
   for (const group of GROUPS) {
     const rows = report.results.filter(result => result.group === group.id)
     if (rows.length === 0) continue

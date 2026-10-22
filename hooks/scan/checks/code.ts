@@ -483,7 +483,8 @@ function domainsCheck(ctx: ScanContext): CheckResult {
       if (/^\d{1,3}(?:\.\d{1,3}){3}$|^\[/.test(host)) {
         evidence.push(judged(file, match, 'warn', `talks to a raw IP address: ${host}`))
       }
-      if (COLLECTION_HOST.test(`${host}${match.text.slice(match.text.indexOf(host) + host.length)}`)) {
+      const lowered = match.text.toLowerCase()
+      if (COLLECTION_HOST.test(`${host}${lowered.slice(lowered.indexOf(host) + host.length)}`)) {
         evidence.push(judged(file, match, 'warn', `talks to a host often used to collect data: ${host}`))
       }
     }

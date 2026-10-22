@@ -107,7 +107,15 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
   ])
   const explained = explanationsOf(ctx)
   // The README must spell the call or event out as a name of its own; a wildcard is never explained.
+  const explainedCache = new Map<string, boolean>()
   const isExplained = (name: string): boolean => {
+    const cached = explainedCache.get(name)
+    if (cached !== undefined) return cached
+    const answer = explains(name)
+    explainedCache.set(name, answer)
+    return answer
+  }
+  const explains = (name: string): boolean => {
     if (name.length < 5 || !/^[a-z]+\.[a-zA-Z.]+$/.test(name)) return false
     const escaped = name.replace(/\./g, '\\.')
     const mention = new RegExp(`(?<![\\w.$])${escaped}(?![\\w])`, 'gi')

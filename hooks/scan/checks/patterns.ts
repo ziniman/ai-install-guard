@@ -43,7 +43,7 @@ export const WRITE_SHELL =
 
 /** Writing a file from JavaScript or Python. */
 export const WRITE_CODE =
-  /\b(?:writeFile|appendFile|createWriteStream|writeFileSync|appendFileSync|copyFile|copyFileSync|renameSync|symlinkSync|cpSync)\s*\(|\bBun\.write\s*\(|\bDeno\.writeTextFile\s*\(|\$\s*\.\s*fs\s*\.\s*write\b|\bopen\s*\([^)\n]{0,300}['"](?:w|a|x|r\+|w\+|a\+)b?['"]|\.write_(?:text|bytes)\s*\(|\bshutil\.(?:copy\w*|move)\s*\(|\bos\.(?:rename|replace|symlink)\s*\(/
+  /\b(?:writeFile|appendFile|createWriteStream|writeFileSync|appendFileSync|copyFile|copyFileSync|renameSync|symlinkSync|cpSync)\s*\(|\bBun\.write\s*\(|\bDeno\.writeTextFile\s*\(|\$\s*\.\s*fs\s*\.\s*write\b|\bopen\s*\([^\n]{0,300}?,\s*(?:mode\s*=\s*)?['"](?:w|a|x|r\+|w\+|a\+)b?['"]|\.open\s*\(\s*(?:mode\s*=\s*)?['"](?:w|a|x|r\+|w\+|a\+)b?['"]|\.write_(?:text|bytes)\s*\(|\bshutil\.(?:copy\w*|move)\s*\(|\bos\.(?:rename|replace|symlink)\s*\(/
 
 /** Running programs from code. */
 export const PROCESS_CODE =

@@ -1,15 +1,17 @@
 import { codeChecks } from './checks/code'
-import { buildContext, type CandidateKind } from './checks/context'
+import { buildContext, isRecord, parseJson, type CandidateKind, type ScanContext } from './checks/context'
 import { hookChecks } from './checks/hooks'
 import { modChecks } from './checks/mod'
 import { promptChecks } from './checks/prompts'
 import { licenseCheck, qualityChecks } from './checks/quality'
 import { secretChecks } from './checks/secrets'
 import { structureChecks } from './checks/structure'
-import { GROUPS, type CheckResult } from './checks/types'
+import { joinPath } from './checks/text'
+import { GROUPS, rankOf, type CheckResult } from './checks/types'
 import { runValidator } from './checks/validator'
 import type { Host } from './host'
-import { ScanError, takeInventory, type Inventory } from './inventory'
+import { treeHash } from './hash'
+import { ScanError, takeInventory, type Inventory, type ScannedTree } from './inventory'
 import { decide, type Verdict } from './verdict'
 
 export type ScanReport = {
@@ -34,26 +36,30 @@ export type ScanOptions = {
 
 /** Scans a local folder: inventory, every deterministic check, the verdict. */
 export async function scanFolder(host: Host, target: string, path: string, options: ScanOptions = {}): Promise<ScanReport> {
-  let tree
+  let tree: ScannedTree
   try {
     tree = await takeInventory(host, path)
   } catch (error) {
     return { target, results: [], verdict: decide([], reasonOf(error)) }
   }
   const ctx = buildContext(tree)
-  const validator = options.validate === false || ctx.kind === 'folder' ? undefined : await runValidator(host, tree.inventory.root)
   let results: CheckResult[]
   try {
-    results = [
-      licenseCheck(ctx),
-      ...structureChecks(ctx, validator),
-      ...modChecks(ctx, validator),
-      ...hookChecks(ctx),
-      ...promptChecks(ctx),
-      ...codeChecks(ctx),
-      ...secretChecks(ctx),
-      ...qualityChecks(ctx),
-    ]
+    results = await checksFor(host, ctx, options)
+    // A marketplace's local plugins are plugins in their own right: each is
+    // checked from its own folder, as Claude Code would read it.
+    for (const source of marketplaceSources(ctx)) {
+      if (source.kind === 'remote') {
+        results.push(remoteSourceNote(source.name, source.description))
+        continue
+      }
+      const nested = await subTree(tree, source.path)
+      if (nested === undefined) {
+        results.push(missingSourceRow(source.name, source.path))
+        continue
+      }
+      results = mergeResults(results, prefixed(await checksFor(host, buildContext(nested), options), source.path))
+    }
   } catch (error) {
     return { target, kind: ctx.kind, inventory: tree.inventory, results: [], verdict: decide([], `a check failed: ${reasonOf(error)}`) }
   }
@@ -75,6 +81,124 @@ export async function scanFolder(host: Host, target: string, path: string, optio
   }
   results = sortResults(results)
   return { target, kind: ctx.kind, inventory: tree.inventory, results, verdict: decide(results) }
+}
+
+async function checksFor(host: Host, ctx: ScanContext, options: ScanOptions): Promise<CheckResult[]> {
+  const validator = options.validate === false || ctx.kind === 'folder' ? undefined : await runValidator(host, ctx.tree.inventory.root)
+  return [
+    licenseCheck(ctx),
+    ...structureChecks(ctx, validator),
+    ...modChecks(ctx, validator),
+    ...hookChecks(ctx),
+    ...promptChecks(ctx),
+    ...codeChecks(ctx),
+    ...secretChecks(ctx),
+    ...qualityChecks(ctx),
+  ]
+}
+
+const MAX_NESTED_PLUGINS = 50
+
+type MarketplaceSource =
+  | { kind: 'local'; name: string; path: string }
+  | { kind: 'remote'; name: string; description: string }
+
+/** The plugins a `.claude-plugin/marketplace.json` lists, other than the root itself. */
+function marketplaceSources(ctx: ScanContext): MarketplaceSource[] {
+  const raw = ctx.text('.claude-plugin/marketplace.json')
+  const parsed = parseJson(raw)
+  if (!parsed.ok || !isRecord(parsed.value) || !Array.isArray(parsed.value.plugins)) return []
+  const out: MarketplaceSource[] = []
+  for (const plugin of parsed.value.plugins.slice(0, MAX_NESTED_PLUGINS)) {
+    if (!isRecord(plugin)) continue
+    const name = typeof plugin.name === 'string' ? plugin.name : '(unnamed)'
+    const source = plugin.source
+    if (typeof source === 'string' && (source.startsWith('./') || source.startsWith('../'))) {
+      const path = joinPath('', source)
+      if (path === undefined) out.push({ kind: 'remote', name, description: `${source}, outside the marketplace folder` })
+      else if (path !== '') out.push({ kind: 'local', name, path })
+    } else {
+      out.push({ kind: 'remote', name, description: typeof source === 'string' ? source : JSON.stringify(source) })
+    }
+  }
+  return out
+}
+
+/** The part of a scanned tree under `prefix`, re-rooted there. */
+async function subTree(tree: ScannedTree, prefix: string): Promise<ScannedTree | undefined> {
+  const entries = tree.inventory.entries
+    .filter(entry => entry.path.startsWith(`${prefix}/`))
+    .map(entry => ({ ...entry, path: entry.path.slice(prefix.length + 1) }))
+  if (entries.length === 0) return undefined
+  const contents = new Map<string, Uint8Array>()
+  for (const [path, bytes] of tree.contents) if (path.startsWith(`${prefix}/`)) contents.set(path.slice(prefix.length + 1), bytes)
+  return {
+    inventory: {
+      root: `${tree.inventory.root}/${prefix}`,
+      entries,
+      totalBytes: entries.reduce((sum, entry) => sum + (entry.kind === 'file' ? entry.size : 0), 0),
+      treeHash: await treeHash(entries),
+      skipped: [],
+    },
+    contents,
+  }
+}
+
+/** A nested plugin's rows, with every place named from the marketplace root. */
+function prefixed(results: readonly CheckResult[], prefix: string): CheckResult[] {
+  return results.map(result => ({
+    ...result,
+    evidence: result.evidence.map(item =>
+      item.file === '-' || item.file === '' ? { ...item, excerpt: `${prefix}: ${item.excerpt}` } : { ...item, file: `${prefix}/${item.file}` },
+    ),
+  }))
+}
+
+/** One row per check: evidence from both, without repeats, at the worse status. */
+export function mergeResults(base: readonly CheckResult[], extra: readonly CheckResult[]): CheckResult[] {
+  const out = base.map(result => ({ ...result, evidence: [...result.evidence] }))
+  const order = { none: 0, low: 1, medium: 2, high: 3, critical: 4 }
+  for (const result of extra) {
+    const existing = out.find(item => item.id === result.id)
+    if (existing === undefined) {
+      out.push({ ...result, evidence: [...result.evidence] })
+      continue
+    }
+    const seen = new Set(existing.evidence.map(item => `${item.file}:${item.line ?? ''}:${item.excerpt}`))
+    for (const item of result.evidence) {
+      const key = `${item.file}:${item.line ?? ''}:${item.excerpt}`
+      if (!seen.has(key)) existing.evidence.push(item)
+    }
+    // A pass on one side and a note on the other stay a pass; anything worse wins.
+    if (rankOf(result.status) > rankOf(existing.status)) existing.status = result.status
+    if (order[result.severity] > order[existing.severity]) existing.severity = result.severity
+    existing.evidence.sort((a, b) => rankOf(b.status ?? existing.status) - rankOf(a.status ?? existing.status))
+  }
+  return out
+}
+
+function remoteSourceNote(name: string, description: string): CheckResult {
+  return {
+    id: 'structure.marketplace',
+    group: 'structure',
+    title: 'Plugins this marketplace lists',
+    status: 'info',
+    severity: 'none',
+    evidence: [{ file: '.claude-plugin/marketplace.json', excerpt: `${name} comes from ${description}: scanned when you install it`, status: 'info' }],
+    advice: 'A marketplace only lists plugins. Each one is scanned on its own when it is installed.',
+  }
+}
+
+function missingSourceRow(name: string, path: string): CheckResult {
+  return {
+    id: 'structure.marketplace',
+    group: 'structure',
+    title: 'Plugins this marketplace lists',
+    status: 'warn',
+    severity: 'medium',
+    evidence: [{ file: '.claude-plugin/marketplace.json', excerpt: `${name} points at ${path}, which is not in this folder`, status: 'warn' }],
+    advice: 'A marketplace entry that points nowhere cannot be checked.',
+  }
 }
 
 /** In group order; inside a group, failures first, then warnings. */

@@ -360,7 +360,10 @@ function localImports(path: string, source: string, realOf: (path: string) => st
   }
   for (const match of findAll(source, /\b(?:from|import)\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]|\b(?:require|import)\s*\(\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]\s*\)/g, 500)) {
     const spec = /['"](\.{1,2}\/[^'"\n]{1,300})['"]/.exec(match.text)?.[1]
-    if (spec !== undefined) add(spec, MODULE_SUFFIXES)
+    const base = spec === undefined ? undefined : joinPath(dir, spec)
+    // The same resolution as a hooks module's imports: `./x.js` written for `./x.ts`.
+    const real = base === undefined ? undefined : resolveModuleFile(base, realOf)
+    if (real !== undefined) out.push(real)
   }
   for (const match of findAll(source, /^[ \t]*from[ \t]+(\.+)([\w.]*)[ \t]+import[ \t]+([\w, ]+)/gm, 200)) {
     const parts = /from\s+(\.+)([\w.]*)\s+import\s+([\w, ]+)/.exec(match.text)

@@ -163,7 +163,15 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
       i = stop
       continue
     }
-    if (char === '"' || char === "'" || (char === '`' && language === 'js')) {
+    if (char === '`' && language === 'js') {
+      // A template literal: its text is a string, each `${...}` inside it is
+      // code (and may hold strings and templates of its own).
+      const end = templateEnd(text, i, mark, STRING, CODE)
+      i = end
+      lastSignificant = '`'
+      continue
+    }
+    if (char === '"' || char === "'") {
       const triple = language === 'python' && text.startsWith(char.repeat(3), i)
       const quote = triple ? char.repeat(3) : char
       let j = i + quote.length
@@ -177,7 +185,7 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
           j += quote.length
           break
         }
-        if (!triple && char !== '`' && text[j] === '\n' && language !== 'shell') break
+        if (!triple && text[j] === '\n' && language !== 'shell') break
         j += 1
       }
       mark(i, j, STRING)
@@ -230,6 +238,69 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
     i += 1
   }
   return index => (['code', 'string', 'comment', 'regex', 'trailing-comment'] as const)[kinds[index] ?? CODE] as SpanKind
+}
+
+/**
+ * Marks a template literal starting at `start` (its backtick) and returns the
+ * index after its closing backtick: text as `string`, each `${...}` as `code`,
+ * with nested quotes and templates inside an interpolation skipped whole.
+ */
+function templateEnd(text: string, start: number, mark: (from: number, to: number, kind: number) => void, STRING: number, CODE: number): number {
+  let j = start + 1
+  let segment = start
+  while (j < text.length) {
+    if (text[j] === '\\') {
+      j += 2
+      continue
+    }
+    if (text[j] === '`') {
+      mark(segment, j + 1, STRING)
+      return j + 1
+    }
+    if (text[j] === '$' && text[j + 1] === '{') {
+      mark(segment, j + 2, STRING)
+      const close = interpolationEnd(text, j + 2, mark, STRING, CODE)
+      j = close + 1
+      segment = j
+      continue
+    }
+    j += 1
+  }
+  mark(segment, text.length, STRING)
+  return text.length
+}
+
+/** The index of the `}` closing an interpolation opened just before `start`. */
+function interpolationEnd(text: string, start: number, mark: (from: number, to: number, kind: number) => void, STRING: number, CODE: number): number {
+  let depth = 1
+  let j = start
+  let codeFrom = start
+  while (j < text.length) {
+    const char = text[j]
+    if (char === '`') {
+      mark(codeFrom, j, CODE)
+      j = templateEnd(text, j, mark, STRING, CODE)
+      codeFrom = j
+      continue
+    }
+    if (char === '"' || char === "'") {
+      let k = j + 1
+      while (k < text.length && text[k] !== char && text[k] !== '\n') k += text[k] === '\\' ? 2 : 1
+      j = k + 1
+      continue
+    }
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) {
+        mark(codeFrom, j, CODE)
+        return j
+      }
+    }
+    j += 1
+  }
+  mark(codeFrom, text.length, CODE)
+  return text.length
 }
 
 function regexCanStart(lastSignificant: string, lastWord: string): boolean {
