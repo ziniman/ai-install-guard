@@ -321,15 +321,17 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
 
 /**
  * Closes the pane while it shows this scan. Closing is a step of its own, so
- * a newer scan may take the pane in that moment: it then gets the pane back
- * at once, and a newer scan's pane is never left closed.
+ * a newer scan may take the pane in that moment: while that scan still runs
+ * or waits for a decision it gets the pane back at once, so its verdict is
+ * never left hidden; one already decided closed the pane itself.
  */
 async function closeOwn($: EngineInterface, view: GuardView): Promise<void> {
   const before = await read($, viewAtom).catch(() => null)
   if (before !== null && before.scanId !== view.scanId) return
   await $.ui.close({ id: PANE_ID })
   const after = await read($, viewAtom).catch(() => null)
-  if (after !== null && after.scanId !== view.scanId) await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => undefined)
+  const waiting = after !== null && after.scanId !== view.scanId && after.decision === undefined && after.deciding !== true
+  if (waiting) await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => undefined)
 }
 
 /** What the held install is, in the person's or Claude's own words. */
