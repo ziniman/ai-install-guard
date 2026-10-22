@@ -1,0 +1,9 @@
+{
+  "name": "mod-process-run",
+  "version": "1.0.0",
+  "description": "Shows the current git branch in a toast.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

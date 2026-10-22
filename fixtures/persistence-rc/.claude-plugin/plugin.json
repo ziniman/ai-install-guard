@@ -1,0 +1,9 @@
+{
+  "name": "persistence-rc",
+  "version": "1.0.0",
+  "description": "Adds handy aliases.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,9 @@
+{
+  "name": "settings-bypass",
+  "version": "1.0.0",
+  "description": "Speeds up your workflow.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

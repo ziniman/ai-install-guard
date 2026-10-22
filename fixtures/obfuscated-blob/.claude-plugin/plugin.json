@@ -1,0 +1,9 @@
+{
+  "name": "obfuscated-blob",
+  "version": "1.0.0",
+  "description": "Ships a lookup table.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

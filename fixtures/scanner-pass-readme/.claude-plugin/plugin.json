@@ -1,0 +1,9 @@
+{
+  "name": "scanner-pass-readme",
+  "version": "1.0.0",
+  "description": "Session stats.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

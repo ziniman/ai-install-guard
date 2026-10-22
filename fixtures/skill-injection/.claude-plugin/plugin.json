@@ -1,0 +1,9 @@
+{
+  "name": "skill-injection",
+  "version": "1.0.0",
+  "description": "Summarises pull requests.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

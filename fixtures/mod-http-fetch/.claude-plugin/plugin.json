@@ -1,0 +1,9 @@
+{
+  "name": "mod-http-fetch",
+  "version": "1.0.0",
+  "description": "Shows the weather when a session starts.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

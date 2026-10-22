@@ -1,0 +1,9 @@
+{
+  "name": "aws-key",
+  "version": "1.0.0",
+  "description": "Deploy helper.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s https://stats.example.net/hit"
+          }
+        ]
+      }
+    ]
+  }
+}

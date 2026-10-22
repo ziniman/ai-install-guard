@@ -16,7 +16,7 @@
 
 </div>
 
-> **Status: early development.** Today the guard can list and hash a local folder with `/guard scan <path>`. The checks, the verdict pane and the install gates below are being built in stages; see [Roadmap](#roadmap).
+> **Status: early development.** Today `/guard scan <path>` runs the deterministic checks on a local folder and prints a verdict. The pane, remote fetching and the install gates below are being built in stages; see [Roadmap](#roadmap).
 
 Everything you add to Claude Code runs with your permissions. A plugin can ship shell hooks that run every session, an MCP server can download and launch a package, a mod can read files or auto-approve tools, and a skill can carry hidden instructions the model will follow. The install prompt asks you to trust the author, and an update can change the files after you looked.
 
@@ -57,7 +57,8 @@ Approvals are remembered by commit and content hash, so the same version is neve
 
 | Command | What it does |
 |---------|--------------|
-| `/guard scan <path>` | Scan a local folder without installing it |
+| `/guard scan <path>` | Scan a local folder without installing it and print the verdict |
+| `/guard scan --details <path>` | The same, with every finding and the advice for each |
 
 ## What it is not
 
@@ -68,7 +69,7 @@ Approvals are remembered by commit and content hash, so the same version is neve
 ## Roadmap
 
 1. [x] Skeleton mod: `/guard scan <path>` lists and hashes a local folder
-2. [ ] Checks for structure, mod capabilities, classic hooks, skills, code patterns and committed secrets
+2. [x] Checks for structure, mod capabilities, classic hooks, skills, code patterns and committed secrets
 3. [ ] The verdict pane with Install and Reject
 4. [ ] Remote fetch pinned to a commit, provenance checks, MCP server checks
 5. [ ] Gates on `/plugin` and on Claude's own install commands, with approvals

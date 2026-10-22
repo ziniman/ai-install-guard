@@ -2,13 +2,14 @@ import type { Register } from 'claude-code'
 
 import { modHost } from './mod-host'
 import type { Host } from './scan/host'
-import { takeInventory } from './scan/inventory'
-import { formatInventory } from './scan/report'
+import { formatReport } from './scan/report'
 import { safeLine } from './scan/safe-text'
+import { scanFolder } from './scan/scan'
 
 const USAGE = [
   'Usage:',
-  '  /guard scan <path>   Scan a local plugin, mod or skill folder without installing it',
+  '  /guard scan <path>            Scan a local plugin, mod or skill folder without installing it',
+  '  /guard scan --details <path>  The same, with every finding and the advice for each',
 ].join('\n')
 
 export const register: Register = on => {
@@ -16,22 +17,24 @@ export const register: Register = on => {
     await $.command.register({
       name: 'guard',
       description: 'Scan a plugin, mod, skill or MCP server without installing it',
-      argumentHint: 'scan <path>',
+      argumentHint: 'scan [--details] <path>',
     })
     return next(e)
   })
 
   on('command.run', { command: 'guard' }, async ($, e) => {
     const { sub, rest } = splitArgs(e.args)
-    if (sub !== 'scan' || rest === '') {
+    const details = /(^|\s)--details(\s|$)/.test(rest)
+    const target = unquote(rest.replace(/(^|\s)--details(?=\s|$)/, ' ').trim())
+    if (sub !== 'scan' || target === '') {
       return { text: USAGE }
     }
     const host = modHost($)
     try {
-      const tree = await takeInventory(host, await expandHome(host, rest))
-      return { text: formatInventory(rest, tree.inventory) }
+      const report = await scanFolder(host, target, await expandHome(host, target))
+      return { text: formatReport(report, { details }) }
     } catch (error) {
-      return { text: `Could not verify ${safeLine(rest)}: ${safeLine(reasonOf(error))}` }
+      return { text: `Could not verify ${safeLine(target)}: ${safeLine(reasonOf(error))}` }
     }
   }).catch(() => ({ text: 'AI Install Guard: the command failed before it could answer.' }))
 }
@@ -42,8 +45,11 @@ export function splitArgs(args: string): { sub: string; rest: string } {
   const space = trimmed.search(/\s/)
   const sub = space === -1 ? trimmed : trimmed.slice(0, space)
   const rest = space === -1 ? '' : trimmed.slice(space).trim()
-  const unquoted = /^(["']).*\1$/.test(rest) ? rest.slice(1, -1) : rest
-  return { sub: sub.toLowerCase(), rest: unquoted }
+  return { sub: sub.toLowerCase(), rest: unquote(rest) }
+}
+
+function unquote(text: string): string {
+  return /^(["']).*\1$/.test(text) ? text.slice(1, -1) : text
 }
 
 async function expandHome(host: Host, path: string): Promise<string> {

@@ -1,0 +1,8 @@
+{
+  "name": "no-license",
+  "version": "1.0.0",
+  "description": "Suggests friendly greetings.",
+  "author": {
+    "name": "Fixture Author"
+  }
+}

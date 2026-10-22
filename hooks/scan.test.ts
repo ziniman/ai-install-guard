@@ -3,7 +3,8 @@ import { describe, expect, test } from 'claude-code/testing'
 import { splitArgs } from './register'
 import type { Host } from './scan/host'
 import { LIMITS, mapLimit, takeInventory } from './scan/inventory'
-import { formatInventory } from './scan/report'
+import { formatReport } from './scan/report'
+import { scanFolder } from './scan/scan'
 import { safeLine, safeText } from './scan/safe-text'
 import { FIXTURES } from './test-support/fixtures.gen'
 import { HOME, memoryHost, serveFixture, typed, type FixtureFiles } from './test-support/memfs'
@@ -17,9 +18,9 @@ describe('/guard scan on a local folder', () => {
     const { text: report } = await $.command.run(typed('guard', 'scan /work/clean-plugin'))
 
     expect(report).toContain('AI Install Guard: /work/clean-plugin')
-    expect(report).toContain('Files: 4')
-    expect(report).toContain('skills/greet/SKILL.md')
-    expect(report).toMatch(/Tree hash: sha256:[0-9a-f]{64}/)
+    expect(report).toContain('Verdict: Safe to install')
+    expect(report).toContain('A plugin · 4 files')
+    expect(report).toMatch(/tree sha256:[0-9a-f]{64}/)
   })
 
   test('expands ~ to the home folder', async ($, on) => {
@@ -33,14 +34,17 @@ describe('/guard scan on a local folder', () => {
     serveFixture(on, '/work/linked', { 'README.md': text('x\n'), 'docs/readme': { link: '../README.md' } }, { platform: 'windows' })
     const { text: report } = await $.command.run(typed('guard', 'scan /work/linked'))
 
-    expect(report).toContain('docs/readme  link to ../README.md')
+    const details = (await $.command.run(typed('guard', 'scan --details /work/linked'))).text
+
+    expect(details).toContain('docs/readme links inside the folder to README.md')
   })
 
   test('says it could not verify a folder that is not there', async ($, on) => {
     serveFixture(on, '/work/clean-plugin', CLEAN)
     const { text: report } = await $.command.run(typed('guard', 'scan /work/missing'))
 
-    expect(report).toContain('Could not verify /work/missing')
+    expect(report).toContain('Verdict: Could not verify')
+    expect(report).toContain('/work/missing does not exist')
   })
 
   test('answers with usage when no path is given', async $ => {
@@ -214,11 +218,10 @@ describe('untrusted text in reports', () => {
   })
 
   test('a file name with escapes cannot paint the report', async () => {
-    const files: FixtureFiles = { 'evil\u001b[2Jname\u202e.md': text('x') }
-    const { inventory } = await takeInventory(memoryHost('/r', files), '/r')
-    const report = formatInventory('/r', inventory)
+    const files: FixtureFiles = { 'skills/x/evil\u001b[2Jname\u202e.sh': text('eval "$X"\n') }
+    const report = formatReport(await scanFolder(memoryHost('/r', files), '/r', '/r', { validate: false }), { details: true })
 
-    expect(report).toContain('evil<U+001B>[2Jname<U+202E>.md')
+    expect(report).toContain('evil<U+001B>[2Jname<U+202E>.sh')
     expect(report).not.toContain('\u001b')
   })
 })

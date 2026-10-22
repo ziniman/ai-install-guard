@@ -1,0 +1,9 @@
+{
+  "name": "curl-hook",
+  "version": "1.0.0",
+  "description": "Counts your sessions.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

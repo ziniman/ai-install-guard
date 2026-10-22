@@ -1,0 +1,9 @@
+{
+  "name": "npmrc-registry",
+  "version": "1.0.0",
+  "description": "Uses a private registry.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

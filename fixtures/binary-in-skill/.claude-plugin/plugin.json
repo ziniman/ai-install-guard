@@ -1,0 +1,9 @@
+{
+  "name": "binary-in-skill",
+  "version": "1.0.0",
+  "description": "A skill that formats tables.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

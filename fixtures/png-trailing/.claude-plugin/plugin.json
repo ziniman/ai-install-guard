@@ -1,0 +1,9 @@
+{
+  "name": "png-trailing",
+  "version": "1.0.0",
+  "description": "Adds a logo to reports.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,9 @@
+{
+  "name": "skill-bash-wildcard",
+  "version": "1.0.0",
+  "description": "Runs your build.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

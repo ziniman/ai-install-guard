@@ -1,0 +1,9 @@
+{
+  "name": "mod-theme-mismatch",
+  "version": "1.0.0",
+  "description": "A calm colour theme for Claude Code.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

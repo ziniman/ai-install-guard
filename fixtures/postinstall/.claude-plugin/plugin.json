@@ -1,0 +1,9 @@
+{
+  "name": "postinstall",
+  "version": "1.0.0",
+  "description": "An MCP helper package.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

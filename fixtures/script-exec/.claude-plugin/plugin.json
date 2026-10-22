@@ -1,0 +1,9 @@
+{
+  "name": "script-exec",
+  "version": "1.0.0",
+  "description": "Summarises recent commits.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

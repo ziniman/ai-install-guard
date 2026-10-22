@@ -1,0 +1,64 @@
+// Detection patterns shared by the checks. They are written as escaped
+// regular expressions so the guard's own source does not match its rules.
+
+/** A network tool at the start of a shell command or after a separator. */
+export const NETWORK_COMMAND = /(?:^|[\s;&|(`'"])(?:curl|wget|nc|ncat|netcat|socat|telnet|ssh|scp|sftp|rsync|ftp|tftp|nslookup)(?=\s|$)/
+
+/** Network access in source code. */
+export const NETWORK_CODE =
+  /\bfetch\s*\(|\bXMLHttpRequest\b|\bhttps?\.(?:request|get)\s*\(|\brequire\s*\(\s*['"](?:node:)?(?:http|https|net|dgram|tls|dns)['"]\s*\)|\bfrom\s+['"](?:node:)?(?:http|https|net|dgram|tls|dns)['"]|\baxios\b|\bundici\b|\brequests\.(?:get|post|put|patch|request|Session)\b|\burllib\b|\bhttpx\b|\bsocket\.(?:socket|create_connection)\b|\bnew\s+WebSocket\b|\$\s*\.\s*http\s*\.\s*fetch\b|\bdns\.(?:lookup|resolve\w*)\s*\(/
+
+/** Downloading code and running it, or decoding text and running it. */
+export const DOWNLOAD_AND_RUN =
+  /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b|\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:python[23]?|node|perl|ruby|php)\b|\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)|\bsource\s+<\(\s*(?:curl|wget)|\bbase64\s+(?:-d|--decode|-D)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b|\bpython[23]?\s+-c\s+["'][^"'\n]*urllib|\beval\s+["']?\$\(\s*(?:curl|wget|echo|base64)/
+
+/** Fetching and running a package that is not pinned to a version. */
+export const UNPINNED_RUNNER = /\b(?:npx|bunx|pnpx)\s+(?:-y\b|--yes\b)|\b(?:uvx|pipx\s+run)\s+(?!\S+(?:==|@)\d)/
+
+/** Shell `eval` and piping into a shell. */
+export const SHELL_EVAL = /(?:^|[\s;&|(])eval\s|\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\s*(?:$|[;&|)])/
+
+/** Places that hold credentials. */
+export const CREDENTIAL_PATH =
+  /\.ssh(?:\/|\b)|\bid_(?:rsa|dsa|ecdsa|ed25519)\b|\.aws\/(?:credentials|config)\b|\.(?:netrc|git-credentials|pypirc)\b|\.npmrc\b|\.docker\/config\.json|\.kube\/config\b|\.config\/gh\/hosts|\.gnupg\b|\.claude\/\.credentials|Library\/Keychains|\bsecurity\s+(?:find|dump)-(?:generic|internet)-password|\bdump-keychain\b|\bLogin Data\b|Cookies\.binarycookies|\/Google\/Chrome\/|\.mozilla\/firefox|BraveSoftware|Microsoft\/Edge\//
+
+/** Environment variables that hold secrets, and dumps of the whole environment. */
+export const SECRET_ENV =
+  /\b(?:ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|GITLAB_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AZURE_CLIENT_SECRET|GOOGLE_APPLICATION_CREDENTIALS|SLACK_BOT_TOKEN|SLACK_TOKEN|STRIPE_SECRET_KEY|HF_TOKEN|HUGGING_FACE_HUB_TOKEN)\b|\bJSON\.stringify\s*\(\s*process\.env\s*\)|\bObject\.(?:entries|keys|values)\s*\(\s*process\.env\s*\)|\bjson\.dumps\s*\(\s*(?:dict\s*\(\s*)?os\.environ|(?:^|[\s;&|])printenv\s*(?:$|[|>;&])|(?:^|[\s;&|])env\s*\|/
+
+/** Places whose change persists past the session or grants itself more. */
+export const PERSISTENCE_TARGET =
+  /\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b|\bconfig\.fish\b|\bcrontab\b|\/etc\/cron|\bLaunchAgents\b|\bLaunchDaemons\b|\blaunchctl\s+(?:load|bootstrap|submit)\b|\bsystemctl\s+(?:--user\s+)?enable\b|\/etc\/systemd\/|\.config\/systemd\/|\.git\/hooks\b|\bcore\.hooksPath\b|\/etc\/profile\b|\.config\/autostart\b|CurrentVersion\\+Run\b/
+
+/** Claude Code settings and permission switches. */
+export const CLAUDE_SETTINGS =
+  /\.claude\/settings(?:\.local)?\.json|\bbypassPermissions\b|--dangerously-skip-permissions|\bdangerouslySkipPermissions\b|\benableAllProjectMcpServers\b|\benabledMcpjsonServers\b|"defaultMode"\s*:\s*"(?:bypassPermissions|acceptEdits)"|\bskipDangerousModePermissionPrompt\b|\bpermissions\s*(?:\.|\[\s*['"])\s*allow\b/
+
+/** Claude Code folders that load what is written into them. */
+export const CLAUDE_LOAD_DIR = /\.claude\/(?:skills|plugins|agents|commands|hooks)\b|\bCLAUDE\.md\b/
+
+/** Writing a file from a shell command: a redirect, tee, cp, mv and the like. */
+export const WRITE_SHELL =
+  /(?:^|[\s;&|(])(?:\d?>>?|&>>?)\s*["']?(?!\/dev\/null)[~$\/.\w]|\btee\s+(?:-a\s+)?["']?[~$\/.\w]|(?:^|[\s;&|])(?:cp|mv|install|ln|rsync)\s+\S|\bsed\s+-i\b/
+
+/** Writing a file from JavaScript or Python. */
+export const WRITE_CODE =
+  /\b(?:writeFile|appendFile|createWriteStream|writeFileSync|appendFileSync|copyFile|copyFileSync|renameSync|symlinkSync|cpSync)\s*\(|\bBun\.write\s*\(|\bDeno\.writeTextFile\s*\(|\$\s*\.\s*fs\s*\.\s*write\b|\bopen\s*\([^)\n]*['"](?:w|a|x|r\+|w\+|a\+)b?['"]|\.write_(?:text|bytes)\s*\(|\bshutil\.(?:copy\w*|move)\s*\(|\bos\.(?:rename|replace|symlink)\s*\(/
+
+/** Running programs from code. */
+export const PROCESS_CODE =
+  /\brequire\s*\(\s*['"](?:node:)?child_process['"]\s*\)|\bfrom\s+['"](?:node:)?child_process['"]|\b(?:execSync|execFileSync|spawnSync|execFile)\s*\(|\bchild_process\b|\bBun\.spawn(?:Sync)?\s*\(|\bDeno\.(?:run|Command)\b/
+
+export const PYTHON_PROCESS = /\bsubprocess\.(?:run|call|Popen|check_output|check_call|getoutput|getstatusoutput)\b|\bos\.(?:system|popen|spawn\w*|exec[lv]p?e?)\s*\(|\bpty\.spawn\s*\(/
+
+/** Building code from text at run time. */
+export const CODE_FROM_TEXT = /\beval\s*\(|\bnew\s+Function\s*\(|\bvm\.(?:runIn\w*Context|Script|compileFunction)\b|\bimport\s*\(\s*['"`]https?:/
+
+export const PYTHON_CODE_FROM_TEXT = /(?:^|[^.\w])(?:exec|eval|compile)\s*\(|\b__import__\s*\(|\b(?:pickle|marshal|dill|cloudpickle)\.loads?\s*\(/
+
+/** Decoding text into bytes or code. */
+export const DECODE = /\batob\s*\(|\bBuffer\.from\s*\([^)\n]*['"](?:base64|hex)['"]|\bbase64\.(?:b64decode|b32decode|a85decode|decodebytes)\b|\bbase64\s+(?:-d|--decode|-D)\b|\bcodecs\.decode\s*\(|\bbytes\.fromhex\s*\(/
+
+/** Hosts often used to collect stolen data. */
+export const COLLECTION_HOST =
+  /\b(?:webhook\.site|requestbin\.(?:com|net)|pipedream\.net|[\w-]+\.ngrok(?:-free)?\.(?:io|app|dev)|transfer\.sh|pastebin\.com|paste\.ee|hastebin\.com|discord(?:app)?\.com\/api\/webhooks|api\.telegram\.org|burpcollaborator\.net|oast\.(?:fun|me|pro|live|site|online)|interact\.sh|[\w-]+\.trycloudflare\.com|hooks\.slack\.com)\b/i
