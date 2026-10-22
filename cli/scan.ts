@@ -50,11 +50,14 @@ const USAGE = [
 const PLUGIN_PARTS = new Set(['.claude-plugin', 'skills', 'commands', 'agents', 'hooks', 'output-styles'])
 
 /**
- * What makes a folder a plugin, skill or marketplace, as the scan's context
- * reads it: one of these files, or a file somewhere in one of these folders.
- * An empty folder or a link by one of these names makes nothing.
+ * What makes a folder a plugin, skill or marketplace, counted as the scan's
+ * context counts it: one of these files, read through a link that lands on a
+ * file inside the folder; a marketplace manifest that is a plain file; or a
+ * plain file somewhere beneath one of these plain folders. An empty folder,
+ * or a link that leads out of the folder, makes nothing.
  */
-const CANDIDATE_FILES = ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', 'SKILL.md', 'hooks/hooks.json', '.mcp.json']
+const CANDIDATE_FILES = ['.claude-plugin/plugin.json', 'SKILL.md', 'hooks/hooks.json', '.mcp.json']
+const MARKETPLACE_FILE = '.claude-plugin/marketplace.json'
 const CANDIDATE_FOLDERS = ['skills', 'commands', 'agents', 'output-styles']
 
 /** What a macOS archive adds beside the folder it packed. */
@@ -182,7 +185,12 @@ async function candidateIn(root: string): Promise<{ root: string; shown: string 
 }
 
 async function isCandidate(dir: string): Promise<boolean> {
-  for (const file of CANDIDATE_FILES) if ((await fs.lstat(`${dir}/${file}`).catch(() => undefined))?.isFile() === true) return true
+  const real = await fs.realpath(dir)
+  for (const file of CANDIDATE_FILES) {
+    const landed = await fs.realpath(`${dir}/${file}`).catch(() => undefined)
+    if (landed !== undefined && landed.startsWith(`${real}/`) && (await fs.stat(landed)).isFile()) return true
+  }
+  if ((await fs.lstat(`${dir}/${MARKETPLACE_FILE}`).catch(() => undefined))?.isFile() === true) return true
   for (const folder of CANDIDATE_FOLDERS) if (await holdsFile(`${dir}/${folder}`)) return true
   return false
 }
