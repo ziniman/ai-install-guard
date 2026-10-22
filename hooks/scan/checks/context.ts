@@ -44,8 +44,10 @@ export type CandidateKind = 'plugin' | 'skill' | 'marketplace' | 'folder'
 export type ModuleUse = { name: string; file: string; line: number; detail?: string }
 
 export type ModuleInfo = {
-  /** The module hooks.json names. */
+  /** The module hooks.json names, resolved from the root. */
   entry: string
+  /** As hooks.json spells it (`./register.tsx`), which is how the validator names it. */
+  declaredAs: string
   /** It and every plugin file it imports. */
   files: string[]
   events: ModuleUse[]
@@ -138,6 +140,12 @@ export function isDocPath(path: string): boolean {
 export function buildContext(tree: ScannedTree): ScanContext {
   const files = tree.inventory.entries.filter((entry): entry is InventoryFile => entry.kind === 'file')
   const paths = new Set(files.map(file => file.path))
+  // An in-folder link stands for the file it lands on: Claude Code follows it.
+  const aliases = new Map<string, string>()
+  for (const entry of tree.inventory.entries) {
+    if (entry.kind === 'link' && entry.isInside && entry.landsAt !== undefined && paths.has(entry.landsAt)) aliases.set(entry.path, entry.landsAt)
+  }
+  const realOf = (path: string): string | undefined => (paths.has(path) ? path : aliases.get(path))
   const texts = new Map<string, string>()
   const text = (path: string): string | undefined => {
     const cached = texts.get(path)
@@ -196,37 +204,40 @@ export function buildContext(tree: ScannedTree): ScanContext {
   // Classic hooks and hooks modules.
   const hookCommands: HookCommand[] = []
   const hookConfigErrors: { file: string; error: string }[] = []
-  const moduleEntries: string[] = []
+  const moduleEntries: { path: string; declaredAs: string }[] = []
   const hookFiles = new Set<string>(['hooks/hooks.json', ...manifestPaths(manifest, ['hooks'])])
   for (const file of hookFiles) {
-    if (!paths.has(file)) continue
-    assign(file, 'hooks-config')
-    const parsed = parseJson(text(file))
+    const real = realOf(file)
+    if (real === undefined) continue
+    assign(real, 'hooks-config')
+    const parsed = parseJson(text(real))
     if (!parsed.ok || !isRecord(parsed.value)) {
-      hookConfigErrors.push({ file, error: parsed.ok ? 'not a JSON object' : parsed.error })
+      hookConfigErrors.push({ file: real, error: parsed.ok ? 'not a JSON object' : parsed.error })
       continue
     }
-    collectHookCommands(parsed.value, file, text(file) ?? '', hookCommands)
+    collectHookCommands(parsed.value, real, text(real) ?? '', hookCommands)
     for (const entry of stringList(parsed.value.modules)) {
+      // Module paths are relative to where Claude Code reads hooks.json from.
       const resolved = joinPath(dirname(file), entry)
-      if (resolved !== undefined) moduleEntries.push(resolved)
+      if (resolved !== undefined) moduleEntries.push({ path: resolved, declaredAs: entry })
     }
   }
   if (manifest !== undefined && isRecord(manifest.hooks)) {
     collectHookCommands(manifest.hooks, manifestPath, text(manifestPath) ?? '', hookCommands)
   }
 
-  const modules = moduleEntries.map(entry => readModule(entry, paths, text))
+  const modules = moduleEntries.map(entry => readModule(entry.path, entry.declaredAs, realOf, text))
   for (const info of modules) for (const file of info.files) assign(file, 'module')
 
   // MCP servers.
   const mcpServers: McpServer[] = []
   const mcpFiles = new Set<string>(['.mcp.json', ...manifestPaths(manifest, ['mcpServers'])])
   for (const file of mcpFiles) {
-    if (!paths.has(file)) continue
-    assign(file, 'mcp-config')
-    const parsed = parseJson(text(file))
-    if (parsed.ok && isRecord(parsed.value)) collectMcpServers(parsed.value, file, text(file) ?? '', mcpServers)
+    const real = realOf(file)
+    if (real === undefined) continue
+    assign(real, 'mcp-config')
+    const parsed = parseJson(text(real))
+    if (parsed.ok && isRecord(parsed.value)) collectMcpServers(parsed.value, real, text(real) ?? '', mcpServers)
   }
   if (manifest !== undefined && isRecord(manifest.mcpServers)) {
     collectMcpServers({ mcpServers: manifest.mcpServers }, manifestPath, text(manifestPath) ?? '', mcpServers)
@@ -237,7 +248,10 @@ export function buildContext(tree: ScannedTree): ScanContext {
   const referenced = (haystack: string, role: FileRole, skipMarkdown: boolean): void => {
     for (const path of [...paths, ...linkPaths]) {
       if (skipMarkdown && isMarkdown(path)) continue
-      if (haystack.includes(path)) assign(path, role)
+      if (!haystack.includes(path)) continue
+      assign(path, role)
+      const real = aliases.get(path)
+      if (real !== undefined) assign(real, role)
     }
   }
   for (const hook of hookCommands) referenced(hook.command, 'hook-script', false)
@@ -293,23 +307,30 @@ export function isLive(role: FileRole): boolean {
   return role !== 'test' && role !== 'doc'
 }
 
-function readModule(entry: string, paths: ReadonlySet<string>, text: (path: string) => string | undefined): ModuleInfo {
-  const info: ModuleInfo = { entry, files: [], events: [], calls: [], envNames: [], urls: [] }
+function readModule(
+  entry: string,
+  declaredAs: string,
+  realOf: (path: string) => string | undefined,
+  text: (path: string) => string | undefined,
+): ModuleInfo {
+  const info: ModuleInfo = { entry, declaredAs, files: [], events: [], calls: [], envNames: [], urls: [] }
   const queue = [entry]
   const seen = new Set<string>()
   while (queue.length > 0) {
-    const file = resolveModuleFile(queue.shift() as string, paths)
+    const file = resolveModuleFile(queue.shift() as string, realOf)
     if (file === undefined || seen.has(file)) continue
     seen.add(file)
     info.files.push(file)
     const source = text(file) ?? ''
-    for (const match of findAll(source, /(?:import|export)\s[^'"]*?from\s*['"](\.{1,2}\/[^'"]+)['"]|import\s*['"](\.{1,2}\/[^'"]+)['"]/g, 200)) {
-      const spec = /['"](\.{1,2}\/[^'"]+)['"]/.exec(match.text)?.[1]
+    // `from './x'`, `import './x'`, `require('./x')`, `import('./x')`: each a short,
+    // linear pattern, so a module full of import tokens cannot stall the scan.
+    for (const match of findAll(source, /\b(?:from|import)\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]|\b(?:require|import)\s*\(\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]\s*\)/g, 500)) {
+      const spec = /['"](\.{1,2}\/[^'"\n]{1,300})['"]/.exec(match.text)?.[1]
       const target = spec === undefined ? undefined : joinPath(dirname(file), spec)
       if (target !== undefined) queue.push(target)
     }
-    for (const match of findAll(source, /\bon\s*\(\s*(['"`])([^'"`]+)\1(\s*,\s*\{[^}]*\})?/g, 200)) {
-      const parts = /\(\s*(['"`])([^'"`]+)\1(?:\s*,\s*(\{[^}]*\}))?/.exec(match.text)
+    for (const match of findAll(source, /\bon\s*\(\s*(['"`])([^'"`\n]{1,200})\1(\s*,\s*\{[^}]{0,500}\})?/g, 200)) {
+      const parts = /\(\s*(['"`])([^'"`\n]{1,200})\1(?:\s*,\s*(\{[^}]{0,500}\}))?/.exec(match.text)
       if (parts?.[2] !== undefined) {
         info.events.push({ name: parts[2], file, line: match.line, detail: parts[3]?.replace(/\s+/g, ' ') })
       }
@@ -317,8 +338,8 @@ function readModule(entry: string, paths: ReadonlySet<string>, text: (path: stri
     for (const match of findAll(source, /\$\s*\.\s*([A-Za-z_]+)\s*\.\s*([A-Za-z_]+)/g, 500)) {
       info.calls.push({ name: match.text.replace(/[\s$]/g, '').replace(/^\./, ''), file, line: match.line })
     }
-    for (const match of findAll(source, /\$\s*\.\s*env\s*\.\s*(?:get|set)\s*\(\s*(['"`])([^'"`]+)\1/g, 100)) {
-      const name = /(['"`])([^'"`]+)\1/.exec(match.text)?.[2]
+    for (const match of findAll(source, /\$\s*\.\s*env\s*\.\s*(?:get|set)\s*\(\s*(['"`])([^'"`\n]{1,200})\1/g, 100)) {
+      const name = /(['"`])([^'"`\n]{1,200})\1/.exec(match.text)?.[2]
       if (name !== undefined) info.envNames.push({ name, file, line: match.line })
     }
     for (const match of findAll(source, /https?:\/\/[^\s'"`)<>]+/g, 100)) {
@@ -330,13 +351,19 @@ function readModule(entry: string, paths: ReadonlySet<string>, text: (path: stri
 
 const MODULE_SUFFIXES = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', '/index.ts', '/index.tsx', '/index.js']
 
-function resolveModuleFile(path: string, paths: ReadonlySet<string>): string | undefined {
+function resolveModuleFile(path: string, realOf: (path: string) => string | undefined): string | undefined {
   for (const suffix of MODULE_SUFFIXES) {
-    if (paths.has(path + suffix)) return path + suffix
+    const real = realOf(path + suffix)
+    if (real !== undefined) return real
   }
   // `./x.js` written for a `./x.ts` source.
   const stripped = path.replace(/\.(js|jsx|mjs|cjs)$/, '')
-  return stripped === path ? undefined : MODULE_SUFFIXES.map(suffix => stripped + suffix).find(candidate => paths.has(candidate))
+  if (stripped === path) return undefined
+  for (const suffix of MODULE_SUFFIXES) {
+    const real = realOf(stripped + suffix)
+    if (real !== undefined) return real
+  }
+  return undefined
 }
 
 function collectHookCommands(config: Record<string, unknown>, file: string, raw: string, out: HookCommand[]): void {

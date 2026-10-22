@@ -88,6 +88,7 @@ const EXECUTABLE: ReadonlySet<Magic> = new Set(['elf', 'mach-o', 'pe', 'wasm'])
 const ARCHIVE: ReadonlySet<Magic> = new Set(['zip', 'gzip', 'bzip2', 'xz', '7z', 'rar', 'zstd', 'tar'])
 const IMAGE_EXTENSIONS: Record<string, Magic> = { png: 'png', jpg: 'jpeg', jpeg: 'jpeg', gif: 'gif', webp: 'webp' }
 const NATIVE_EXTENSIONS = new Set(['so', 'dylib', 'dll', 'node', 'exe', 'o', 'a', 'pyc', 'pyo', 'class', 'jar', 'wasm'])
+const TEXT_EXTENSIONS = new Set(['md', 'mdx', 'txt', 'json', 'jsonc', 'yaml', 'yml', 'toml', 'ini', 'env', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'py', 'sh', 'bash', 'zsh', 'rb', 'html', 'css', 'svg', 'xml', 'csv'])
 const ARCHIVE_EXTENSIONS = new Set(['zip', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'zst', 'tar', 'jar', 'whl', 'docx', 'xlsx', 'pptx', 'skill'])
 
 export function magicOf(bytes: Uint8Array): Magic | undefined {
@@ -155,6 +156,9 @@ function filesCheck(ctx: ScanContext): CheckResult {
       evidence.push({ file: file.path, excerpt: `named .${ext} but is ${magic === undefined ? (file.isText ? 'text' : 'not an image') : magic}`, status: cap('fail') })
       continue
     }
+    if (!file.isText && TEXT_EXTENSIONS.has(ext)) {
+      evidence.push({ file: file.path, excerpt: `named .${ext} but holds NUL bytes, which hide its text from text tools`, status: cap('warn') })
+    }
     if (file.size > LARGE_FILE) {
       evidence.push({ file: file.path, excerpt: `${(file.size / LARGE_FILE).toFixed(1)} MB: large for a plugin file`, status: cap('warn') })
     }
@@ -207,10 +211,15 @@ function linksCheck(ctx: ScanContext): CheckResult {
 
 function describeLink(link: InventoryLink, ctx: ScanContext): Evidence {
   // A link in a test folder that nothing names is only reported.
-  const climbsOut = link.target.startsWith('/') || /^[A-Za-z]:[\\/]/.test(link.target) || joinPath(dirname(link.path), link.target) === undefined
+  const isAbsolute = link.target.startsWith('/') || /^[A-Za-z]:[\\/]/.test(link.target)
+  const climbsOut = !isAbsolute && joinPath(dirname(link.path), link.target) === undefined
   const role = ctx.roleOf(link.path)
   const live = role !== 'other' || !isTestPath(link.path)
-  if (climbsOut || (link.landsAt !== undefined && !link.isInside)) {
+  if (isAbsolute && link.isInside) {
+    // It lands inside here, but an absolute path lands somewhere else on every other machine.
+    return { file: link.path, excerpt: `absolute link to ${link.target}: where it leads depends on the machine`, status: live ? 'warn' : 'info' }
+  }
+  if (isAbsolute || climbsOut || (link.landsAt !== undefined && !link.isInside)) {
     return { file: link.path, excerpt: `links outside the folder to ${link.target}`, status: live ? 'fail' : 'info' }
   }
   if (link.landsAt === undefined) {

@@ -32,7 +32,7 @@ const SCANNER_ADDRESS: readonly RegExp[] = [
 const READ_VERB = /\b(?:cat|read|open|print|show|copy|upload|send|include|paste|output|display|load|attach|collect)\b/i
 
 const REMOTE_INSTRUCTIONS =
-  /\b(?:fetch|download|read|load|get|curl|retrieve|visit|open)\b[^\n]{0,80}?https?:\/\/\S+[^\n]{0,80}?\b(?:follow|execute|run|apply|obey|use|do)\b[^\n]{0,30}?\b(?:instructions?|steps|commands?|directions|it|them)\b|\bfollow\s+(?:the\s+)?(?:instructions?|steps|directions)\s+(?:at|from|in|on)\s+https?:\/\//i
+  /\b(?:fetch|download|read|load|get|curl|retrieve|visit|open)\b[^\n]{0,80}?https?:\/\/\S{1,500}[^\n]{0,80}?\b(?:follow|execute|run|apply|obey|use|do)\b[^\n]{0,30}?\b(?:instructions?|steps|commands?|directions|it|them)\b|\bfollow\s+(?:the\s+)?(?:instructions?|steps|directions)\s+(?:at|from|in|on)\s+https?:\/\//i
 
 /** Claude Code's own commands, which a skill or command should not shadow. */
 const BUILT_IN_COMMANDS = new Set([
@@ -64,7 +64,7 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
         injection.push({ file: path, line: match.line, excerpt: `${match.excerpt}${hidden}`, status: cap(reachesOut ? 'fail' : 'warn') })
       }
     }
-    for (const comment of findAll(text, /<!--[\s\S]*?-->/g, 10)) {
+    for (const comment of findAll(text, /<!--[\s\S]{0,5000}?-->/g, 10)) {
       if (comment.text.length > 40 && /\b(?:run|execute|send|call|use|read|write|ignore|always|never|must)\b/i.test(comment.text)) {
         injection.push({ file: path, line: comment.line, excerpt: `instructions inside an HTML comment, hidden when rendered: ${comment.excerpt}`, status: cap('warn') })
       }
@@ -146,12 +146,11 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
 }
 
 function judgeTool(tool: string): { status: Status; why: string } | undefined {
-  const compact = tool.replace(/\s+/g, '')
-  const bash = /^Bash(?:\((.*)\))?$/i.exec(compact)
+  const bash = /^Bash\s*(?:\(([\s\S]*)\))?$/i.exec(tool.trim())
   if (bash === null) return undefined
-  const pattern = bash[1]
+  const pattern = bash[1]?.trim()
   if (pattern === undefined) return { status: 'warn', why: 'any shell command, no pattern' }
-  if (/^\*+(?::\*+)?$/.test(pattern) || pattern === '') return { status: 'fail', why: 'a wildcard: any shell command' }
+  if (/^\*+\s*(?::\s*\*+)?$/.test(pattern) || pattern === '') return { status: 'fail', why: 'a wildcard: any shell command' }
   if (/^(?:sh|bash|zsh|dash|fish|python[23]?|node|deno|bun|perl|ruby|php|eval|exec|env|xargs|curl|wget|nc|ssh|sudo)(?:[:\s]|$)/i.test(pattern)) {
     return { status: 'fail', why: 'an interpreter or network tool: any command through it' }
   }
@@ -167,12 +166,17 @@ function frontmatter(text: string): Record<string, string> {
     const pair = /^([A-Za-z][\w-]*)\s*:\s*(.*)$/.exec(line)
     if (pair !== null) {
       lastKey = pair[1] as string
-      out[lastKey] = (pair[2] as string).trim()
+      out[lastKey] = unquote((pair[2] as string).trim())
     } else if (lastKey !== undefined && /^\s+-\s+/.test(line)) {
-      out[lastKey] = `${out[lastKey] ?? ''}${out[lastKey] ? ', ' : ''}${line.replace(/^\s+-\s+/, '').trim()}`
+      out[lastKey] = `${out[lastKey] ?? ''}${out[lastKey] ? ', ' : ''}${unquote(line.replace(/^\s+-\s+/, '').trim())}`
     }
   }
   return out
+}
+
+/** YAML's surrounding quotes, removed: `"help"` → `help`. */
+function unquote(value: string): string {
+  return /^(["']).*\1$/.test(value) ? value.slice(1, -1) : value
 }
 
 /** `Bash(git:*), Read` or `[Bash, Read]` → the tool names, keeping each pattern whole. */

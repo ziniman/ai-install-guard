@@ -240,8 +240,8 @@ function explanationsOf(ctx: ScanContext): string {
 /** Adds what Claude Code's own validator saw and the source scan missed. */
 function withValidator(info: ModuleInfo, validator: ValidatorReport | undefined): ModuleInfo {
   if (validator?.ran !== true) return info
-  const entryName = info.entry.split('/').pop() ?? info.entry
-  const report = validator.modules.find(item => item.module.endsWith(entryName))
+  const normalize = (path: string): string => path.replace(/^\.\//, '')
+  const report = validator.modules.find(item => normalize(item.module) === normalize(info.declaredAs))
   if (report === undefined) return info
   const known = new Set([...info.events.map(use => use.name), ...info.calls.map(use => use.name)])
   const extra = (names: string[]): ModuleUse[] =>

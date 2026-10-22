@@ -232,7 +232,8 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
         }
       }
     }
-    for (const match of findAll(text, /[ \t]{300,}\S|(?:\r?\n[ \t]*){80,}\S/g, 1)) found.push({ match, what: 'long run of whitespace pushing text out of view' })
+    const padding = whitespacePadding(text)
+    if (padding !== undefined) found.push({ match: padding, what: 'long run of whitespace pushing text out of view' })
     if (!isMarkdown(path)) {
       const dense = denseLine(text)
       if (dense !== undefined) found.push({ match: dense, what: 'a long line of random-looking text' })
@@ -242,8 +243,9 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
   }
   for (const path of ctx.prompts) {
     const text = ctx.text(path) ?? ''
-    for (const match of findAll(text, /[ \t]{300,}\S|(?:\r?\n[ \t]*){80,}\S/g, 1)) {
-      evidence.push({ file: path, line: match.line, excerpt: 'long run of whitespace pushing text out of view', status: capFor(ctx.roleOf(path))('warn') })
+    const padding = whitespacePadding(text)
+    if (padding !== undefined) {
+      evidence.push({ file: path, line: padding.line, excerpt: 'long run of whitespace pushing text out of view', status: capFor(ctx.roleOf(path))('warn') })
     }
   }
   return row(
@@ -255,6 +257,53 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
     },
     evidence,
   )
+}
+
+/**
+ * The first run of 300+ spaces or tabs, or 80+ blank lines, that is followed
+ * by more text: padding that pushes content out of view. One linear pass, so
+ * a file of nothing but spaces cannot stall the scan.
+ */
+export function whitespacePadding(text: string): Match | undefined {
+  let line = 1
+  let spaces = 0
+  let blankLines = 0
+  let runStart = -1
+  let runLine = 1
+  let lineHasText = false
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i)
+    if (code === 32 || code === 9) {
+      if (spaces === 0 && blankLines === 0) {
+        runStart = i
+        runLine = line
+      }
+      spaces += 1
+    } else if (code === 10) {
+      if (!lineHasText) {
+        if (blankLines === 0 && spaces === 0) {
+          runStart = i
+          runLine = line
+        }
+        blankLines += 1
+      } else {
+        blankLines = 1
+        runStart = i
+        runLine = line + 1
+      }
+      spaces = 0
+      lineHasText = false
+      line += 1
+    } else if (code !== 13) {
+      if (spaces >= 300 || blankLines >= 80) {
+        return { index: runStart, line: runLine, text: '', excerpt: '' }
+      }
+      spaces = 0
+      blankLines = 0
+      lineHasText = true
+    }
+  }
+  return undefined
 }
 
 /**

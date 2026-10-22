@@ -10,7 +10,7 @@ export const NETWORK_CODE =
 
 /** Downloading code and running it, or decoding text and running it. */
 export const DOWNLOAD_AND_RUN =
-  /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\b|\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:python[23]?|node|perl|ruby|php)\b|\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)|\bsource\s+<\(\s*(?:curl|wget)|\bbase64\s+(?:-d|--decode|-D)\b[^\n|]*\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da)?sh\b|\bpython[23]?\s+-c\s+["'][^"'\n]*urllib|\beval\s+["']?\$\(\s*(?:curl|wget|echo|base64)/
+  /\b(?:curl|wget)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\b|\b(?:curl|wget)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:python[23]?|node|perl|ruby|php)\b|\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)|\bsource\s+<\(\s*(?:curl|wget)|\bbase64\s+(?:-d|--decode|-D)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da)?sh\b|\bpython[23]?\s+-c\s+["'][^"'\n]{0,500}urllib|\beval\s+["']?\$\(\s*(?:curl|wget|echo|base64)/
 
 /** Fetching and running a package that is not pinned to a version. */
 export const UNPINNED_RUNNER = /\b(?:npx|bunx|pnpx)\s+(?:-y\b|--yes\b)|\b(?:uvx|pipx\s+run)\s+(?!\S+(?:==|@)\d)/
@@ -43,7 +43,7 @@ export const WRITE_SHELL =
 
 /** Writing a file from JavaScript or Python. */
 export const WRITE_CODE =
-  /\b(?:writeFile|appendFile|createWriteStream|writeFileSync|appendFileSync|copyFile|copyFileSync|renameSync|symlinkSync|cpSync)\s*\(|\bBun\.write\s*\(|\bDeno\.writeTextFile\s*\(|\$\s*\.\s*fs\s*\.\s*write\b|\bopen\s*\([^)\n]*['"](?:w|a|x|r\+|w\+|a\+)b?['"]|\.write_(?:text|bytes)\s*\(|\bshutil\.(?:copy\w*|move)\s*\(|\bos\.(?:rename|replace|symlink)\s*\(/
+  /\b(?:writeFile|appendFile|createWriteStream|writeFileSync|appendFileSync|copyFile|copyFileSync|renameSync|symlinkSync|cpSync)\s*\(|\bBun\.write\s*\(|\bDeno\.writeTextFile\s*\(|\$\s*\.\s*fs\s*\.\s*write\b|\bopen\s*\([^)\n]{0,300}['"](?:w|a|x|r\+|w\+|a\+)b?['"]|\.write_(?:text|bytes)\s*\(|\bshutil\.(?:copy\w*|move)\s*\(|\bos\.(?:rename|replace|symlink)\s*\(/
 
 /** Running programs from code. */
 export const PROCESS_CODE =
@@ -57,7 +57,7 @@ export const CODE_FROM_TEXT = /\beval\s*\(|\bnew\s+Function\s*\(|\bvm\.(?:runIn\
 export const PYTHON_CODE_FROM_TEXT = /(?:^|[^.\w])(?:exec|eval|compile)\s*\(|\b__import__\s*\(|\b(?:pickle|marshal|dill|cloudpickle)\.loads?\s*\(/
 
 /** Decoding text into bytes or code. */
-export const DECODE = /\batob\s*\(|\bBuffer\.from\s*\([^)\n]*['"](?:base64|hex)['"]|\bbase64\.(?:b64decode|b32decode|a85decode|decodebytes)\b|\bbase64\s+(?:-d|--decode|-D)\b|\bcodecs\.decode\s*\(|\bbytes\.fromhex\s*\(/
+export const DECODE = /\batob\s*\(|\bBuffer\.from\s*\([^)\n]{0,300}['"](?:base64|hex)['"]|\bbase64\.(?:b64decode|b32decode|a85decode|decodebytes)\b|\bbase64\s+(?:-d|--decode|-D)\b|\bcodecs\.decode\s*\(|\bbytes\.fromhex\s*\(/
 
 /** Hosts often used to collect stolen data. */
 export const COLLECTION_HOST =

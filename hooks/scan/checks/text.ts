@@ -20,9 +20,13 @@ export function findAll(text: string, pattern: RegExp, limit = 20): Match[] {
     const index = found.index ?? 0
     const line = lineAt(starts, index)
     const lineStart = starts[line - 1] as number
-    const lineEnd = text.indexOf('\n', lineStart)
-    const lineText = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd)
-    matches.push({ index, line, text: found[0], excerpt: excerpt(lineText, index - lineStart, found[0].length) })
+    const lineEnd = line < starts.length ? (starts[line] as number) - 1 : text.length
+    // Only a window around the match is copied, so a match on a huge line stays cheap.
+    const from = Math.max(lineStart, index - EXCERPT_WIDTH)
+    const to = Math.min(lineEnd, index + found[0].length + EXCERPT_WIDTH)
+    const window = text.slice(from, to)
+    const cut = excerpt(window, index - from, found[0].length)
+    matches.push({ index, line, text: found[0], excerpt: `${from > lineStart && !cut.startsWith('…') ? '…' : ''}${cut}${to < lineEnd && !cut.endsWith('…') ? '…' : ''}` })
     if (matches.length >= limit) break
     if (found[0].length === 0) global.lastIndex += 1
   }
