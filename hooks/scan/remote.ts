@@ -56,11 +56,11 @@ const FETCH_LIMIT_BLOCKS = Math.ceil(MAX_FETCH_BYTES / 512)
  * Where there is no `sh` (Windows), the fetch is bounded by its time alone.
  */
 async function boundedFetch(host: Host, args: readonly string[]): Promise<RunResult> {
-  const capped = await host
-    .run(['sh', '-c', `ulimit -f ${FETCH_LIMIT_BLOCKS} && exec git "$@"`, 'sh', ...args], { timeoutMs: FETCH_TIMEOUT_MS, env: GIT_ENV })
-    .catch(() => undefined)
-  if (capped !== undefined && capped.exitCode !== 127) return capped
-  return git(host, args, FETCH_TIMEOUT_MS)
+  // Whether there is a shell to set the limit is asked first, so a capped
+  // fetch that fails or times out is never run again without its cap.
+  const shell = await host.run(['sh', '-c', 'exit 0'], { timeoutMs: 10_000 }).catch(() => undefined)
+  if (shell === undefined || shell.exitCode !== 0) return git(host, args, FETCH_TIMEOUT_MS)
+  return host.run(['sh', '-c', `ulimit -f ${FETCH_LIMIT_BLOCKS} && exec git "$@"`, 'sh', ...args], { timeoutMs: FETCH_TIMEOUT_MS, env: GIT_ENV })
 }
 
 /** No prompts for credentials, and no Git LFS downloads during checkout. */
@@ -233,9 +233,12 @@ export async function fetchPinned(host: Host, spec: RemoteSpec, onStage?: (stage
       'fetch', '--depth', '1', '--no-tags', '--no-recurse-submodules', '-q', spec.url, pinned.sha,
     ])
     if (fetched.exitCode !== 0) {
-      // git exits 128 when it gives up on its own; anything else with nothing
-      // said is the size limit stopping it.
-      if (fetched.exitCode !== 128 && fetched.stderr.trim() === '') throw new Error(`the commit weighs more than ${MAX_FETCH_BYTES / 1024 / 1024} MB, too much to scan`)
+      // The size limit stops git's index-pack as it writes the pack; git then
+      // says so and gives up. A fetch that stops without a word is likely it too.
+      if (/index-pack failed|unpack-objects failed|file size limit exceeded/i.test(fetched.stderr)) {
+        throw new Error(`the commit weighs more than ${MAX_FETCH_BYTES / 1024 / 1024} MB, too much to scan`)
+      }
+      if (fetched.stderr.trim() === '') throw new Error(`the fetch stopped without a message; the commit may weigh more than ${MAX_FETCH_BYTES / 1024 / 1024} MB`)
       throw failure(fetched, `could not fetch ${pinned.sha}`)
     }
     const counted = await must(git(host, ['-C', work, 'count-objects', '-v'], 60_000, ISOLATED_ENV), 'could not measure the fetch')

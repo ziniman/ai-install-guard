@@ -35,10 +35,10 @@ const KINDS: readonly { match: RegExp; kind: Kind }[] = [
 const KIND_OF = { get: (name: string): Kind | undefined => KINDS.find(entry => entry.match.test(name))?.kind }
 
 const JS_CALLS =
-  /(?<![\w$.])(?:execFileSync|execFile|spawnSync|spawn|execSync|exec|fork)\s*\(\s*(?:(["'`])([^"'`\n]{1,200})|([A-Za-z_$][\w$.]{0,80}))|\b(?:child_process|childProcess|cp)\.(execFileSync|execFile|spawnSync|spawn|execSync|exec|fork)\s*\(\s*(?:(["'`])([^"'`\n]{1,200})|([A-Za-z_$][\w$.]{0,80}))|\bBun\.spawn(?:Sync)?\s*\(\s*\[\s*(["'`])([^"'`\n]{1,200})|\bnew\s+Deno\.Command\s*\(\s*(["'`])([^"'`\n]{1,200})/g
+  /(?<![\w$.])(?:execFileSync|execFile|spawnSync|spawn|execSync|exec|fork)\s*\(\s*(?:(["'`])([^"'`\n]{1,200})|([A-Za-z_$][\w$.]{0,80}))|\b(?:child_process|childProcess|cp)\.(execFileSync|execFile|spawnSync|spawn|execSync|exec|fork)\s*\(\s*(?:(["'`])([^"'`\n]{1,200})|([A-Za-z_$][\w$.]{0,80}))|\bBun\.spawn(?:Sync)?\s*\(\s*\[\s*(["'`])([^"'`\n]{1,200})|\bnew\s+Deno\.Command\s*\(\s*(["'`])([^"'`\n]{1,200})|\bDeno\.run\s*\(\s*\{\s*cmd\s*:\s*\[\s*(["'`])([^"'`\n]{1,200})/g
 
 const PY_CALLS =
-  /\bsubprocess\.(?:run|call|Popen|check_output|check_call|getoutput|getstatusoutput)\s*\(\s*(?:\[\s*[rbfu]?(["'])([^"'\n]{1,200})|\[\s*([A-Za-z_][\w.]{0,80})|[rbfu]?(["'])([^"'\n]{1,200})|([A-Za-z_][\w.]{0,80}))|\bos\.(?:system|popen)\s*\(\s*[rbfu]?(["'])([^"'\n]{1,200})|\bpty\.spawn\s*\(\s*(?:\[\s*)?[rbfu]?(["'])([^"'\n]{1,200})/g
+  /\bsubprocess\.(?:run|call|Popen|check_output|check_call|getoutput|getstatusoutput)\s*\(\s*(?:\[\s*[rbfu]?(["'])([^"'\n]{1,200})|\[\s*([A-Za-z_][\w.]{0,80})|[rbfu]?(["'])([^"'\n]{1,200})|([A-Za-z_][\w.]{0,80}))|\bos\.(?:system|popen)\s*\(\s*[rbfu]?(["'])([^"'\n]{1,200})|\bpty\.spawn\s*\(\s*(?:\[\s*)?[rbfu]?(["'])([^"'\n]{1,200})|\bos\.(?:spawn|exec)[a-z]{0,4}\s*\(\s*(?:os\.P_\w+\s*,\s*)?(?:[rbfu]?(["'])([^"'\n]{1,200})|([A-Za-z_][\w.]{0,80}))/g
 
 /** The programs a file starts, from its calls; `keep` drops matches in comments. */
 export function programsIn(path: string, text: string, language: 'js' | 'python' | 'shell' | 'other', keep: (index: number) => boolean): ProgramUse[] {
@@ -70,7 +70,13 @@ export function programsIn(path: string, text: string, language: 'js' | 'python'
         const call = /(\w+)\s*\(\s*\[?\s*[rbfu]?["'`]?$/.exec(match[0].slice(0, match[0].length - literal.length))?.[1] ?? ''
         const listForm = /\(\s*\[/.test(match[0])
         const isLine = !listForm && (/^(?:execSync|exec|system|popen|getoutput|getstatusoutput)$/.test(call) || match[0].startsWith('subprocess.'))
-        const raw = (isLine ? literal.trim().split(/\s+/)[0] : literal.split('${')[0]) ?? ''
+        const raw = (isLine ? literal.trim().split(/\s+/)[0] : literal) ?? ''
+        // A name built while it runs (`${tool}`, f"{tool}") is a program chosen at run time.
+        const fString = /[^\w]f["']$|^f["']/.test(match[0].slice(0, match[0].length - literal.length).slice(-2))
+        if (raw.includes('${') || (fString && raw.includes('{'))) {
+          uses.push({ name: raw.slice(0, 60), file: path, dynamic: true })
+          continue
+        }
         const name = normalise(raw)
         if (name !== '') uses.push({ name, file: path, dynamic: false })
       } else if (variable !== undefined) {

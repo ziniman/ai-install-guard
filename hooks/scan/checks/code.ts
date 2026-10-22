@@ -235,7 +235,9 @@ function execCheck(ctx: ScanContext): CheckResult {
     if (isLive(file.role)) {
       const keep = (index: number) => !['comment', 'regex', 'trailing-comment'].includes(file.kindAt(index))
       uses.push(...programsIn(file.path, file.text, file.language, keep))
-      for (const pattern of [CODE_FROM_TEXT, PYTHON_CODE_FROM_TEXT, SHELL_EVAL]) buildsCode += findAll(file.text, pattern, 50, keep).length
+      // The same language rules as the evidence, each place counted once.
+      const fromText = file.language === 'js' ? [CODE_FROM_TEXT] : file.language === 'python' ? [PYTHON_CODE_FROM_TEXT] : file.language === 'shell' ? [SHELL_EVAL] : [CODE_FROM_TEXT, PYTHON_CODE_FROM_TEXT, SHELL_EVAL]
+      buildsCode += new Set(fromText.flatMap(pattern => findAll(file.text, pattern, 50, keep).map(match => match.line))).size
       downloads += findAll(file.text, DOWNLOAD_AND_RUN, 50, keep).length
     }
   }
@@ -246,10 +248,16 @@ function execCheck(ctx: ScanContext): CheckResult {
       title: 'Running programs and building code at run time',
       advice:
         'Check that each program fits what it says it does. Shells, compilers and programs chosen while it runs can do anything, so look at those first. Inside a mod any of this is a red flag: a mod reaches your machine only through Claude Code.',
-      summary: describePrograms(uses, { buildsCode, downloads }),
+      summary: summaryOrFallback(describePrograms(uses, { buildsCode, downloads }), evidence),
     },
     evidence,
   )
+}
+
+/** A row that found something but could not name it still says so in words. */
+function summaryOrFallback(summary: string[], evidence: readonly Evidence[]): string[] {
+  if (summary.length > 0 || !evidence.some(item => item.status === 'warn' || item.status === 'fail')) return summary
+  return ['Starts other programs; which ones could not be read from the code']
 }
 
 function obfuscationCheck(ctx: ScanContext): CheckResult {
@@ -430,7 +438,8 @@ function credentialsCheck(ctx: ScanContext): CheckResult {
     evidence.push(...paths, ...names)
     if (!isLive(file.role)) continue
     for (const match of active(file, CREDENTIAL_PATH, 20)) places.add(match.text.trim().replace(/\/$/, ''))
-    for (const match of active(file, SECRET_ENV, 20)) secrets.add(secretName(match))
+    // A dump of the whole environment (JSON.stringify(process.env), printenv) is every secret at once.
+    for (const match of active(file, SECRET_ENV, 20)) secrets.add(/process\.env|os\.environ|printenv|\benv\b/.test(match.text) ? 'all your environment variables' : secretName(match))
     if (paths.length + names.length > 0) {
       files.add(file.path)
       if (sends) sending.add(file.path)
