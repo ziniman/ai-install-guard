@@ -4,7 +4,11 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
-## Unreleased
+## v0.2.0 &nbsp;·&nbsp; 2026-10-22
+
+**`outsideLookups`** - Harder to fool: each package runner's own options are read (`-p` is a package to npx but a Python version to uvx), so `--with`, `--with-requirements` and file arguments no longer hide the main package; Python extras such as `httpx[cli]` are looked up; an advisory OSV answers with an empty or malformed record stays unresolved and a package with no usable answer is reported as not looked up; up to 300 advisories are read for malware instead of 30; every marketplace name is compared; and one scan asks for the official list and each advisory once, however many plugins it lists
+
+**`provenance`** - A GitHub request that fails late is noted where it belongs and no longer hides the warnings earlier requests found; a listed plugin's worse finding now brings its own reason to the marketplace's row
 
 **`checks`** - A right-to-left plugin is no longer told Do not install just for defining a direction mark as a constant: a bidirectional control that is the whole of a one-line string, with nothing after it on its line but `;`, `,` or a comment, is a warning that names the escape to write instead, since it cannot reorder any code. Anywhere else, in a language the tokenizer does not know, and for tag characters, it still fails, and a file full of such constants cannot crowd out a real one
 
