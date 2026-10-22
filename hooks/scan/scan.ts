@@ -15,7 +15,7 @@ import type { Host } from './host'
 import { treeHash } from './hash'
 import { ScanError, takeInventory, type Inventory, type InventoryEntry, type ScannedTree } from './inventory'
 import { githubProvenance } from './github'
-import { outsideLookups } from './lookups'
+import { newLookupCache, outsideLookups, type LookupCache } from './lookups'
 import { fetchPinned, type PinnedSource, type RemoteSpec } from './remote'
 import { decide, type Verdict } from './verdict'
 
@@ -37,6 +37,8 @@ export type ScanOptions = {
   validate?: boolean
   /** The outside lookups (OSV, the official plugin list): off unless turned on. */
   lookups?: boolean
+  /** Shared by one scan's lookups, so a marketplace and its plugins ask once. */
+  lookupCache?: LookupCache
   /** Told each stage as it starts, for progress in the pane. */
   onStage?: (stage: string) => Promise<void> | void
   /**
@@ -52,6 +54,7 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
   // Progress is a courtesy: a failure to show it never fails the scan.
   const options: ScanOptions = {
     ...rawOptions,
+    ...(rawOptions.lookups === true && rawOptions.lookupCache === undefined ? { lookupCache: newLookupCache() } : {}),
     onStage: async stage => {
       try {
         await rawOptions.onStage?.(stage)
@@ -147,7 +150,7 @@ async function checksFor(host: Host, ctx: ScanContext, options: ScanOptions): Pr
     ...modChecks(ctx, validator),
     ...hookChecks(ctx),
     ...mcpChecks(ctx),
-    ...(options.lookups === true ? await outsideLookups(host, ctx) : []),
+    ...(options.lookups === true ? await outsideLookups(host, ctx, options.lookupCache) : []),
     ...promptChecks(ctx),
     ...codeChecks(ctx),
     ...secretChecks(ctx),
@@ -186,8 +189,13 @@ export async function scanRemote(host: Host, target: string, spec: RemoteSpec, o
     if (report.verdict.kind === 'unverified') return { ...report, source: fetched.source }
     // What GitHub says about where it came from, then the badge, judged again
     // with the source's own rows counted.
-    // Progress is a courtesy here too: a failure to show it never fails the scan.
-    await Promise.resolve(options.onStage?.('reading the repository history')).catch(() => undefined)
+    // Progress is a courtesy here too: a failure to show it, thrown or
+    // rejected, never fails the scan.
+    try {
+      await options.onStage?.('reading the repository history')
+    } catch {
+      // ignored on purpose
+    }
     const history = await githubProvenance(host, fetched.source)
     const results = withBadgeClaim(sortResults([...fetched.results, ...history, ...report.results]), report.badgeClaim, { sha: fetched.source.sha, treeHash: report.inventory?.treeHash })
     return { ...report, source: fetched.source, results, verdict: decide(results) }
@@ -248,10 +256,11 @@ async function subTree(tree: ScannedTree, prefix: string): Promise<ScannedTree |
   }
 }
 
-/** A nested plugin's rows, with every place named from the marketplace root. */
+/** A nested plugin's rows, with every place and its summary named from the marketplace root. */
 function prefixed(results: readonly CheckResult[], prefix: string): CheckResult[] {
   return results.map(result => ({
     ...result,
+    ...(result.summary === undefined ? {} : { summary: result.summary.map((line, index) => (index === 0 ? `${prefix}: ${line}` : line)) }),
     evidence: result.evidence.map(item =>
       item.file === '-' || item.file === '' ? { ...item, excerpt: `${prefix}: ${item.excerpt}` } : { ...item, file: `${prefix}/${item.file}` },
     ),
@@ -281,8 +290,14 @@ export function mergeResults(base: readonly CheckResult[], extra: readonly Check
       const kept = existing.evidence[at] as Evidence
       if (rankOf(item.status ?? result.status) > rankOf(kept.status ?? existing.status)) existing.evidence[at] = item
     }
-    // A pass on one side and a note on the other stay a pass; anything worse wins.
-    if (rankOf(result.status) > rankOf(existing.status)) existing.status = result.status
+    // A pass on one side and a note on the other stay a pass; anything worse
+    // wins, and brings its own summary, so the reason shown is the worst one.
+    if (rankOf(result.status) > rankOf(existing.status)) {
+      existing.status = result.status
+      if (result.summary !== undefined) existing.summary = result.summary
+    } else if (existing.summary === undefined && result.summary !== undefined) {
+      existing.summary = result.summary
+    }
     if (order[result.severity] > order[existing.severity]) existing.severity = result.severity
     existing.evidence.sort((a, b) => rankOf(b.status ?? existing.status) - rankOf(a.status ?? existing.status))
   }

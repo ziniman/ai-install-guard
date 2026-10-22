@@ -108,9 +108,20 @@ async function lookups(host: Host, path: string, source: PinnedSource, now: numb
   const info = repoAnswer.body
   const owner = isJson(info.owner) ? info.owner : {}
   const login = typeof owner.login === 'string' ? owner.login : undefined
-  const ownerAnswer = login === undefined ? undefined : await api(host, `/users/${encodeURIComponent(login)}`)
+  // After the repository itself, a request that fails is noted where it
+  // belongs and the rest still count: a late failure never hides a warning.
+  const notChecked: string[] = []
+  const attempt = async <T>(what: string, run: () => Promise<T>): Promise<T | undefined> => {
+    try {
+      return await run()
+    } catch (error) {
+      notChecked.push(`${what}: ${error instanceof LookupError ? error.message : error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    }
+  }
+  const ownerAnswer = login === undefined ? undefined : await attempt('its owner', () => api(host, `/users/${encodeURIComponent(login)}`))
   const ownerInfo = ownerAnswer !== undefined && ownerAnswer.status === 200 && isJson(ownerAnswer.body) ? ownerAnswer.body : {}
-  const people = await contributors(host, path)
+  const people = await attempt('its contributors', () => contributors(host, path))
 
   const repoDays = age(info.created_at, now)
   const ownerDays = age(ownerInfo.created_at, now)
@@ -132,6 +143,7 @@ async function lookups(host: Host, path: string, source: PinnedSource, now: numb
   note(`${stars ?? '?'} stars, ${forks ?? '?'} forks, ${people ?? '?'} contributor${people === 1 ? '' : 's'}`)
   if (pushedDays !== undefined) note(`last pushed ${spoken(pushedDays)}`)
   if (info.archived === true) note('archived: it gets no more fixes')
+  for (const what of notChecked) note(`not checked, ${safeLine(what)}`)
   if (info.fork === true) {
     const parent = isJson(info.parent) && typeof info.parent.full_name === 'string' ? safeLine(info.parent.full_name) : 'another repository'
     note(`a fork of ${parent}: compare it with the original`)
@@ -147,6 +159,8 @@ async function lookups(host: Host, path: string, source: PinnedSource, now: numb
       : `${repoDays === undefined ? 'A repository' : `Created ${spoken(repoDays)}`} by the ${who}${ownerDays === undefined ? '' : ` (on GitHub since ${spoken(ownerDays)})`}`,
     `${stars ?? '?'} stars, ${forks ?? '?'} forks, ${people ?? '?'} contributor${people === 1 ? '' : 's'}${pushedDays === undefined ? '' : `; last pushed ${spoken(pushedDays)}`}`,
   ]
+  // A part that could not be read is said in the summary too, not only below it.
+  if (notChecked.length > 0) summary.push(`Not checked: ${notChecked.map(safeLine).join('; ')}`)
   const repository = row(
     {
       id: 'provenance.repository',
@@ -161,8 +175,11 @@ async function lookups(host: Host, path: string, source: PinnedSource, now: numb
 
   // The scanned commit: signed, and part of the repository's own history.
   const commitEvidence: Evidence[] = []
-  const commit = await api(host, `${path}/commits/${source.sha}`)
-  if (commit.status === 200 && isJson(commit.body) && isJson(commit.body.commit)) {
+  const commitTried = await attempt('the commit', () => api(host, `${path}/commits/${source.sha}`))
+  const commit = commitTried ?? { status: 0, body: undefined, headers: {} }
+  if (commitTried === undefined) {
+    commitEvidence.push({ file: '-', excerpt: `not checked: ${safeLine(notChecked.at(-1) ?? 'the request failed')}`, status: 'info' })
+  } else if (commit.status === 200 && isJson(commit.body) && isJson(commit.body.commit)) {
     const verification = isJson(commit.body.commit.verification) ? commit.body.commit.verification : {}
     const committer = isJson(commit.body.commit.committer) ? commit.body.commit.committer : {}
     const committedDays = age(committer.date, now)
@@ -174,18 +191,18 @@ async function lookups(host: Host, path: string, source: PinnedSource, now: numb
     if (committedDays !== undefined) commitEvidence.push({ file: '-', excerpt: `committed ${spoken(committedDays)}`, status: 'info' })
   } else if (commit.status === 404 || commit.status === 422) {
     commitEvidence.push({ file: '-', excerpt: 'GitHub does not show this commit in this repository', status: 'warn' })
-  } else {
+  } else if (commitTried !== undefined) {
     commitEvidence.push({ file: '-', excerpt: `not checked: GitHub answered ${commit.status}`, status: 'info' })
   }
   // A commit named by id could come from a fork in the same network (an
   // "impostor commit"); one reached through a branch or tag cannot.
   const defaultBranch = typeof info.default_branch === 'string' ? info.default_branch : undefined
   if (source.refKind === 'commit' && defaultBranch !== undefined && commit.status === 200) {
-    const compared = await api(host, `${path}/compare/${encodeURIComponent(defaultBranch)}...${source.sha}`)
+    const compared = (await attempt('the default branch', () => api(host, `${path}/compare/${encodeURIComponent(defaultBranch)}...${source.sha}`))) ?? { status: 0, body: undefined, headers: {} }
     const status = isJson(compared.body) && typeof compared.body.status === 'string' ? compared.body.status : undefined
     if (status === 'behind' || status === 'identical') commitEvidence.push({ file: '-', excerpt: `part of the default branch ${safeLine(defaultBranch)}`, status: 'info' })
     else if (status !== undefined) commitEvidence.push({ file: '-', excerpt: `not on the default branch ${safeLine(defaultBranch)}: it may come from another branch or from a fork`, status: 'warn' })
-    else commitEvidence.push({ file: '-', excerpt: `whether it is on the default branch was not checked: GitHub answered ${compared.status}`, status: 'info' })
+    else commitEvidence.push({ file: '-', excerpt: `whether it is on the default branch was not checked: ${compared.status === 0 ? safeLine(notChecked.at(-1) ?? 'the request failed') : `GitHub answered ${compared.status}`}`, status: 'info' })
   }
   const commitRow = row(
     {

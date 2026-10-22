@@ -594,3 +594,13 @@ describe('progress never fails a remote scan', () => {
     expect(report.verdict.kind).toBe('safe')
   })
 })
+
+describe('a progress update that throws outright', () => {
+  test('never fails a remote scan', async () => {
+    const onStage = (stage: string) => {
+      if (stage === 'reading the repository history') throw new Error('pane gone')
+    }
+    const report = await scanRemote(gitHost(fixture('clean-plugin')), 'acme/notes', { url: URL_ }, { validate: false, onStage })
+    expect(report.verdict.kind).toBe('safe')
+  })
+})

@@ -214,6 +214,7 @@ describe('zip archives', () => {
     'an absolute path': [[{ name: '/tmp/escaped.txt', data: 'x' }], /could land outside/],
     'a Windows drive path': [[{ name: 'C:/escaped.txt', data: 'x' }], /could land outside/],
     'a backslash in a name': [[{ name: 'a\\..\\escaped.txt', data: 'x' }], /could land outside/],
+    'a colon in a name (a hidden stream on Windows)': [[{ name: 'notes.txt', data: 'x' }, { name: 'notes.txt:hidden', data: 'payload' }], /could land outside/],
     'the same name twice': [[{ name: 'a.txt', data: 'x' }, { name: 'a.txt', data: 'y' }], /listed more than once/],
     'a file beneath a link': [[{ name: 'skills', data: '/etc', mode: 0o120777 }, { name: 'skills/x.md', data: 'x' }], /beneath skills, which is a link/],
     'a special file': [[{ name: 'pipe', data: '', mode: 0o010644 }], /special file/],
@@ -302,5 +303,33 @@ describe('the command line', () => {
     assert.doesNotMatch(run('--details', target).stdout, hidden)
     assert.doesNotMatch(run('--json', target).stdout, hidden)
     assert.match(run('--details', target).stdout, /ignore all previous instructions/)
+  })
+})
+
+describe('the Node host reads only what it listed', () => {
+  // The host is built from its source here, as the bundle exports nothing.
+  let nodeHost
+  before(async () => {
+    const esbuild = createRequire(import.meta.url)('esbuild')
+    const built = esbuild.buildSync({ entryPoints: [path.join(REPO, 'cli', 'node-host.ts')], bundle: true, platform: 'node', format: 'esm', write: false })
+    const file = path.join(work, 'node-host.mjs')
+    fs.writeFileSync(file, built.outputFiles[0].text)
+    nodeHost = (await import(file)).nodeHost
+  })
+
+  test('a folder swapped for a link after it was listed is not read through', async () => {
+    const root = fs.mkdtempSync(path.join(work, 'swap.'))
+    const outside = fs.mkdtempSync(path.join(work, 'outside.'))
+    fs.mkdirSync(path.join(root, 'docs'))
+    fs.writeFileSync(path.join(root, 'docs', 'notes.md'), 'inside')
+    fs.writeFileSync(path.join(outside, 'notes.md'), 'a private file')
+    const host = nodeHost()
+    await host.list(root)
+    await host.list(path.join(root, 'docs'))
+    assert.equal(Buffer.from(await host.readBytes(path.join(root, 'docs', 'notes.md'))).toString(), 'inside')
+
+    fs.rmSync(path.join(root, 'docs'), { recursive: true })
+    fs.symlinkSync(outside, path.join(root, 'docs'))
+    await assert.rejects(host.readBytes(path.join(root, 'docs', 'notes.md')), /no longer inside the folder that was listed/)
   })
 })

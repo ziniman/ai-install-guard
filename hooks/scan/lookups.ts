@@ -7,13 +7,15 @@
 
 import { isRecord, parseJson, type ScanContext } from './checks/context'
 import { capEvidence, row, type CheckResult, type Evidence } from './checks/types'
-import type { Host } from './host'
+import type { FetchResult, Host } from './host'
 import { safeLine } from './safe-text'
 
 export const OSV_BATCH = 'https://api.osv.dev/v1/querybatch'
 export const OSV_VULN = 'https://api.osv.dev/v1/vulns/'
 /** How many advisories' details are read to tell malware from a bug. */
-const MAX_DETAILS = 30
+const MAX_DETAILS = 300
+/** How many of a candidate's plugin names are compared with the official list. */
+const MAX_NAMES = 2000
 export const OFFICIAL_MARKETPLACE = 'https://raw.githubusercontent.com/anthropics/claude-plugins-official/main/.claude-plugin/marketplace.json'
 /** OSV takes up to 1,000 queries a request; past this many, the rest are reported as not checked. */
 const BATCH = 1000
@@ -21,9 +23,19 @@ const MAX_QUERIES = 3000
 
 type Package = { ecosystem: 'npm' | 'PyPI'; name: string; version?: string; file: string; via?: string }
 
-export async function outsideLookups(host: Host, ctx: ScanContext): Promise<CheckResult[]> {
+/**
+ * What one scan has already asked: a marketplace scan runs the lookups once
+ * for itself and once for each plugin it lists, and these are the same.
+ */
+export type LookupCache = { official?: Promise<FetchResult>; details: Map<string, Promise<FetchResult | undefined>> }
+
+export function newLookupCache(): LookupCache {
+  return { details: new Map() }
+}
+
+export async function outsideLookups(host: Host, ctx: ScanContext, cache: LookupCache = newLookupCache()): Promise<CheckResult[]> {
   if (host.fetch === undefined) return []
-  return [await osvCheck(host, ctx), ...(await namesCheck(host, ctx))]
+  return [await osvCheck(host, ctx, cache), ...(await namesCheck(host, ctx, cache))]
 }
 
 function failedRow(id: string, title: string, reason: string): CheckResult {
@@ -41,12 +53,24 @@ function failedRow(id: string, title: string, reason: string): CheckResult {
 
 const EXACT = /^\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/
 
-/** Runner options that take the next word as a value; `true` when that value is a package. */
-const RUNNER_OPTIONS: Record<string, boolean> = {
-  '-p': true, '--package': true, '--from': true, '--with': true, '-w': true, '--spec': true,
-  '-c': false, '--call': false, '--node-options': false, '--registry': false, '--cache': false, '--prefix': false, '--userconfig': false, '--workspace': false,
-  '--python': false, '-i': false, '--index-url': false, '--extra-index-url': false, '--index': false, '--default-index': false, '--find-links': false, '-f': false, '--pip-args': false,
+/**
+ * What a runner's options do with the word after them: name the package
+ * (`package`), add an extra one beside it (`extra`), or take some other
+ * value (`value`). Each runner has its own: `-p` names the package to npx
+ * but the Python version to uvx. An option not listed takes no value.
+ */
+type OptionRole = 'package' | 'extra' | 'value'
+const NPM_OPTIONS: Record<string, OptionRole> = {
+  '-p': 'package', '--package': 'package',
+  '-c': 'value', '--call': 'value', '-w': 'value', '--workspace': 'value', '--registry': 'value', '--cache': 'value', '--userconfig': 'value', '--prefix': 'value', '--node-options': 'value', '--shell': 'value',
 }
+const UV_OPTIONS: Record<string, OptionRole> = {
+  '--from': 'package', '--with': 'extra', '-w': 'extra',
+  '--with-requirements': 'value', '--with-editable': 'value', '-p': 'value', '--python': 'value', '-i': 'value', '--index-url': 'value', '--extra-index-url': 'value', '--index': 'value', '--default-index': 'value',
+  '-f': 'value', '--find-links': 'value', '--constraints': 'value', '--overrides': 'value', '--cache-dir': 'value', '--directory': 'value', '--project': 'value', '--config-file': 'value', '--env-file': 'value',
+  '--keyring-provider': 'value', '--resolution': 'value', '--prerelease': 'value', '--exclude-newer': 'value', '--python-preference': 'value', '--python-platform': 'value', '--color': 'value',
+}
+const PIPX_OPTIONS: Record<string, OptionRole> = { '--spec': 'package', '--python': 'value', '--index-url': 'value', '--pip-args': 'value' }
 
 /** The packages a candidate installs or runs: its MCP servers' and its manifests'. */
 export function packagesOf(ctx: ScanContext): Package[] {
@@ -56,7 +80,9 @@ export function packagesOf(ctx: ScanContext): Package[] {
   }
   const addSpec = (spec: string, python: boolean, file: string, via: string) => {
     if (python) {
-      const [name, version] = spec.split(/==|@/)
+      // Extras (httpx[cli]) name optional parts of the same package.
+      const [rawName, version] = spec.split(/==|@/)
+      const name = rawName?.replace(/\[[^\]]{0,200}\]$/, '')
       if (name !== undefined && /^[A-Za-z0-9._-]{1,100}$/.test(name)) add({ ecosystem: 'PyPI', name, version: version !== undefined && EXACT.test(version) ? version : undefined, file, via })
       return
     }
@@ -74,26 +100,32 @@ export function packagesOf(ctx: ScanContext): Package[] {
     const start = runner !== -1 ? runner + 1 : exec !== -1 ? exec + 2 : pipx !== -1 ? pipx + 2 : -1
     if (start === -1) continue
     const python = runner !== -1 ? base(words[runner]) === 'uvx' : pipx !== -1
-    // Options with values are skipped; those that name a package (--from,
-    // --package, --with, --spec) name the package, and the word after them
-    // is then only the command to run.
+    const options = pipx !== -1 ? PIPX_OPTIONS : python ? UV_OPTIONS : NPM_OPTIONS
+    // Options with values are skipped. One that names the package makes the
+    // word after the options only the command to run; one that adds an extra
+    // package leaves the main package to come.
     let named = false
     for (let index = start; index < words.length; index += 1) {
       const word = words[index] as string
       if (word === '--') continue
       if (word.startsWith('-')) {
         const [flag, inline] = word.split('=', 2) as [string, string | undefined]
-        const isPackage = RUNNER_OPTIONS[flag]
-        if (isPackage === undefined) continue
+        const role = options[flag]
+        if (role === undefined) continue
         const value = inline ?? words[index + 1]
         if (inline === undefined) index += 1
-        if (isPackage && value !== undefined) {
+        if (value !== undefined && role !== 'value') {
           addSpec(value, python, server.file, server.name)
-          named = true
+          if (role === 'package') named = true
         }
         continue
       }
-      if (!named) addSpec(word, python, server.file, server.name)
+      // A path or a git or URL spec (./server.js, github:me/tool) is what
+      // runs, and it is no registry package: nothing after it is one either.
+      // A scoped npm name (@scope/name) is a name, and so is one that merely
+      // ends like a file.
+      const isLocalOrGit = /^(?:\.{1,2}[\\/]|[\\/~])|^[a-z][\w+.-]*:/i.test(word) || (/[\\/]/.test(word) && !/^@[\w.-]+\/[\w.-]+(?:@[^\\/\s]*)?$/.test(word))
+      if (!named && !isLocalOrGit) addSpec(word, python, server.file, server.name)
       break
     }
   }
@@ -125,7 +157,7 @@ export function packagesOf(ctx: ScanContext): Package[] {
   return out
 }
 
-async function osvCheck(host: Host, ctx: ScanContext): Promise<CheckResult> {
+async function osvCheck(host: Host, ctx: ScanContext, cache: LookupCache): Promise<CheckResult> {
   const found = packagesOf(ctx)
   const packages = found.slice(0, MAX_QUERIES)
   const base = { id: 'provenance.packages', group: 'provenance' as const, title: 'Known malicious or vulnerable packages' }
@@ -158,7 +190,14 @@ async function osvCheck(host: Host, ctx: ScanContext): Promise<CheckResult> {
       continue
     }
     for (const entry of results) {
-      ids.push(isRecord(entry) && Array.isArray(entry.vulns) ? entry.vulns.map(vuln => (isRecord(vuln) && typeof vuln.id === 'string' ? vuln.id : '')).filter(id => /^[A-Z][\w.-]{2,60}$/.test(id)) : [])
+      // OSV answers {} for a package with no advisories; anything that is not
+      // an object is no answer, and that package counts as not looked up.
+      if (!isRecord(entry)) {
+        ids.push(undefined)
+        failure ??= 'OSV gave no usable answer for some packages'
+        continue
+      }
+      ids.push(Array.isArray(entry.vulns) ? entry.vulns.map(vuln => (isRecord(vuln) && typeof vuln.id === 'string' ? vuln.id : '')).filter(id => /^[A-Z][\w.-]{2,60}$/.test(id)) : [])
     }
   }
   const unchecked = ids.filter(list => list === undefined).length
@@ -170,13 +209,21 @@ async function osvCheck(host: Host, ctx: ScanContext): Promise<CheckResult> {
   const harmful = new Set(all.filter(id => id.startsWith('MAL-')))
   const resolved = new Set(harmful)
   const wanted = all.filter(id => !id.startsWith('MAL-')).slice(0, MAX_DETAILS)
-  for (let start = 0; start < wanted.length; start += 6) {
+  for (let start = 0; start < wanted.length; start += 8) {
     await Promise.all(
-      wanted.slice(start, start + 6).map(async id => {
+      wanted.slice(start, start + 8).map(async id => {
         try {
-          const answer = await fetch(`${OSV_VULN}${encodeURIComponent(id)}`)
+          let pending = cache.details.get(id)
+          if (pending === undefined) {
+            pending = fetch(`${OSV_VULN}${encodeURIComponent(id)}`).catch(() => undefined)
+            cache.details.set(id, pending)
+          }
+          const answer = await pending
+          if (answer === undefined) return
           const parsed = parseJson(answer.text)
-          if (!answer.ok || !parsed.ok || !isRecord(parsed.value)) return
+          // Only the advisory's own record counts as read: an empty or other
+          // answer leaves it unresolved.
+          if (!answer.ok || !parsed.ok || !isRecord(parsed.value) || parsed.value.id !== id) return
           const details = parsed.value
           const cwes = isRecord(details.database_specific) && Array.isArray(details.database_specific.cwe_ids) ? details.database_specific.cwe_ids : []
           if (cwes.includes('CWE-506') || (typeof details.summary === 'string' && /\bmalware\b|\bmalicious\b/i.test(details.summary))) harmful.add(id)
@@ -256,18 +303,22 @@ function folded(name: string): string {
   return name.toLowerCase().replace(/0/g, 'o').replace(/[1|]/g, 'l').replace(/3/g, 'e').replace(/5/g, 's').replace(/[^a-z0-9]/g, '')
 }
 
-async function namesCheck(host: Host, ctx: ScanContext): Promise<CheckResult[]> {
+async function namesCheck(host: Host, ctx: ScanContext, cache: LookupCache): Promise<CheckResult[]> {
   const names = new Set<string>()
   if (typeof ctx.manifest?.name === 'string') names.add(ctx.manifest.name)
   const market = parseJson(ctx.text('.claude-plugin/marketplace.json'))
   if (market.ok && isRecord(market.value) && Array.isArray(market.value.plugins)) {
-    for (const plugin of market.value.plugins.slice(0, 200)) if (isRecord(plugin) && typeof plugin.name === 'string') names.add(plugin.name)
+    for (const plugin of market.value.plugins) if (isRecord(plugin) && typeof plugin.name === 'string') names.add(plugin.name)
   }
+  // A bounded amount of work, whatever the file holds; the rest is reported.
+  const all = [...names]
+  const compared = all.slice(0, MAX_NAMES)
   if (names.size === 0) return []
   const title = 'Names like official plugins'
   let official: string[]
   try {
-    const answer = await (host.fetch as NonNullable<Host['fetch']>)(OFFICIAL_MARKETPLACE)
+    cache.official ??= (host.fetch as NonNullable<Host['fetch']>)(OFFICIAL_MARKETPLACE)
+    const answer = await cache.official
     const parsed = parseJson(answer.text)
     if (!answer.ok || !parsed.ok || !isRecord(parsed.value) || !Array.isArray(parsed.value.plugins)) return [failedRow('provenance.names', title, `the official list answered ${answer.status}`)]
     official = parsed.value.plugins.map(plugin => (isRecord(plugin) && typeof plugin.name === 'string' ? plugin.name : '')).filter(name => name !== '')
@@ -275,19 +326,27 @@ async function namesCheck(host: Host, ctx: ScanContext): Promise<CheckResult[]> 
     return [failedRow('provenance.names', title, `could not reach the official list: ${error instanceof Error ? error.message : String(error)}`)]
   }
   const evidence: Evidence[] = []
-  for (const name of names) {
+  const near: string[] = []
+  // Said first, so no cap on the evidence can drop it.
+  const skipped = all.length - compared.length
+  if (skipped > 0) evidence.push({ file: '-', excerpt: `${skipped} more names were not compared`, status: 'warn' })
+  for (const name of compared) {
     if (official.includes(name)) {
       evidence.push({ file: '-', excerpt: `${safeLine(name)} has the same name as an official plugin: make sure this is that plugin, from its own source`, status: 'info' })
       continue
     }
     const mine = folded(name)
-    const near = official.find(other => {
+    const match = official.find(other => {
       const theirs = folded(other)
       if (theirs === mine) return true
       const limit = Math.min(mine.length, theirs.length) >= 8 ? 2 : Math.min(mine.length, theirs.length) >= 5 ? 1 : 0
       return limit > 0 && distance(mine, theirs, limit) <= limit
     })
-    if (near !== undefined) evidence.push({ file: '-', excerpt: `${safeLine(name)} looks like the official plugin ${safeLine(near)}`, status: 'warn' })
+    if (match !== undefined) {
+      const excerpt = `${safeLine(name)} looks like the official plugin ${safeLine(match)}`
+      near.push(excerpt)
+      evidence.push({ file: '-', excerpt, status: 'warn' })
+    }
   }
   return [
     row(
@@ -296,9 +355,13 @@ async function namesCheck(host: Host, ctx: ScanContext): Promise<CheckResult[]> 
         group: 'provenance',
         title,
         advice: "A name one letter away from an official plugin's is a common way to be installed by mistake. Check the publisher before you trust it.",
+        // A look-alike only from a real comparison; names left uncompared are said apart.
         summary: (() => {
-          const near = evidence.filter(item => item.status === 'warn').map(item => item.excerpt)
-          return near.length === 0 ? undefined : [`Its name looks like an official plugin's: ${near.slice(0, 3).join('; ')}${near.length > 3 ? ` and ${near.length - 3} more` : ''}`]
+          // The headline carries both, since it is all a collapsed row or a verdict reason shows.
+          const unchecked = skipped > 0 ? `${skipped} more names were not compared with the official list` : undefined
+          if (near.length === 0) return unchecked === undefined ? undefined : [unchecked]
+          const found = `Its name looks like an official plugin's: ${near.slice(0, 3).join('; ')}${near.length > 3 ? ` and ${near.length - 3} more` : ''}`
+          return [unchecked === undefined ? found : `${found}; ${unchecked}`]
         })(),
       },
       capEvidence(evidence, 20),

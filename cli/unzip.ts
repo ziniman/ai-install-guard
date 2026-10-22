@@ -189,7 +189,9 @@ function nameOf(raw: Buffer): string {
 /**
  * A relative path with plain parts: no drive or leading slash, no `.` or `..`,
  * no empty part, no backslash (a separator on Windows, a name character
- * elsewhere, so it would land in different places) and no control character.
+ * elsewhere, so it would land in different places), no colon (on Windows,
+ * `name:stream` writes a hidden stream the scan cannot list) and no control
+ * character.
  */
 function safePath(name: string): string {
   const trimmed = name.endsWith('/') ? name.slice(0, -1) : name
@@ -197,7 +199,7 @@ function safePath(name: string): string {
   const bad =
     trimmed === '' ||
     /^[A-Za-z]:/.test(trimmed) ||
-    /[\\\x00-\x1f\x7f]/.test(trimmed) ||
+    /[\\:\x00-\x1f\x7f]/.test(trimmed) ||
     parts.some(part => part === '' || part === '.' || part === '..')
   if (bad) throw new ZipError(`the archive holds the path "${safeLine(name)}", which could land outside the folder it is unpacked into`)
   return trimmed
