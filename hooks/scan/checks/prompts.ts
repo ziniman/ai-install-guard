@@ -104,11 +104,21 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     for (const match of findAll(text, REMOTE_INSTRUCTIONS, 3)) {
       remote.push({ file: path, line: match.line, excerpt: match.excerpt, status: cap('warn') })
     }
-    // Telling the model to download and run code, or run an unpinned package.
+    // Telling the model to download and run code fails; a sentence warning
+    // against it ("never run curl | sh") is still a warning, since negation
+    // is easy to fake ("don't hesitate to run ...").
     for (const match of findAll(text, DOWNLOAD_AND_RUN, 3)) {
-      remote.push({ file: path, line: match.line, excerpt: `tells the model to download and run code: ${match.excerpt}`, status: cap('fail') })
+      const warnsAgainst = isNegated(text, match.index)
+      remote.push({
+        file: path,
+        line: match.line,
+        excerpt: `${warnsAgainst ? 'mentions' : 'tells the model to'} download and run code: ${match.excerpt}`,
+        status: cap(warnsAgainst ? 'warn' : 'fail'),
+      })
     }
-    for (const match of findAll(text, UNPINNED_RUNNER, 3)) {
+    // An unpinned package runner counts only as a command (in a code span or
+    // block), not prose about one ("npx is a package runner").
+    for (const match of findAll(text, UNPINNED_RUNNER, 3, index => inCodeSpan(text, index))) {
       remote.push({ file: path, line: match.line, excerpt: `tells the model to run an unpinned package: ${match.excerpt}`, status: cap('warn') })
     }
 
@@ -182,6 +192,21 @@ const SHELL_WIDE = new Set([
   'npx', 'bunx', 'pnpx', 'uvx', 'pipx', 'npm', 'pnpm', 'yarn', 'uv',
   'curl', 'wget', 'nc', 'ncat', 'netcat', 'socat', 'ssh', 'scp', 'sftp', 'telnet',
 ])
+
+/** Whether a negation (never, don't, do not, avoid) sits right before `index`. */
+function isNegated(text: string, index: number): boolean {
+  const before = text.slice(Math.max(0, index - 40), index).split(/[.!?\n]/).pop() ?? ''
+  return /\b(?:never|not|don['’]t|do not|avoid|instead of)\b(?:\W+\w+){0,3}\W*$/i.test(before)
+}
+
+/** Whether `index` falls inside a Markdown code span or fenced block. */
+function inCodeSpan(text: string, index: number): boolean {
+  const fences = (text.slice(0, index).match(/^[ \t]*(?:```|~~~)/gm) ?? []).length
+  if (fences % 2 === 1) return true
+  const lineStart = text.lastIndexOf('\n', index - 1) + 1
+  const ticks = (text.slice(lineStart, index).match(/`/g) ?? []).length
+  return ticks % 2 === 1 || /^[ \t]*\$\s/.test(text.slice(lineStart, index))
+}
 
 function judgeTool(tool: string): { status: Status; why: string } | undefined {
   const bash = /^Bash\s*(?:\(([\s\S]*)\))?$/i.exec(tool.trim())

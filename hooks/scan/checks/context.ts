@@ -94,7 +94,7 @@ export type ScanContext = {
    * The interpreter a hook or server runs a file with (`sh hooks/x.js` runs
    * it as shell), which decides how it is read whatever its extension says.
    */
-  interpreters: Map<string, 'js' | 'python' | 'shell'>
+  interpreters: Map<string, 'js' | 'python' | 'shell' | 'other'>
   hookConfigErrors: { file: string; error: string }[]
   mcpServers: McpServer[]
   /** Markdown the model reads: skills, commands, agents, output styles. */
@@ -298,10 +298,24 @@ export function buildContext(tree: ScannedTree): ScanContext {
   // `hooks//run.sh`, `"hooks/run.sh"` and `cd hooks && sh run.sh` all name
   // hooks/run.sh: paths are compared with quotes and doubled slashes
   // removed, and a bare file name counts when one file has it.
+  const nameIndexes = new Map<string, { normalized: string; words: Set<string> }>()
+  const indexOf = (haystack: string): { normalized: string; words: Set<string> } => {
+    const cached = nameIndexes.get(haystack)
+    if (cached !== undefined) return cached
+    const normalized = haystack.replace(/["'`]/g, ' ').replace(/\/{2,}/g, '/')
+    const words = new Set(normalized.split(/[\s;&|()<>=,]+/).map(word => word.split('/').pop() ?? word))
+    const index = { normalized, words }
+    nameIndexes.set(haystack, index)
+    return index
+  }
   const namedIn = (haystack: string, path: string): boolean => {
-    const normalized = haystack.replace(/["']/g, ' ').replace(/\/{2,}/g, '/')
-    if (normalized.includes(path)) return true
-    const words = new Set(normalized.split(/[\s;&|()<>=]+/).map(word => word.split('/').pop() ?? word))
+    const { normalized, words } = indexOf(haystack)
+    // The full path, as a whole: openapi.md does not name api.md.
+    for (let at = normalized.indexOf(path); at !== -1; at = normalized.indexOf(path, at + 1)) {
+      const before = normalized[at - 1]
+      const after = normalized[at + path.length]
+      if ((before === undefined || !/[\w.-]/.test(before)) && (after === undefined || !/[\w-]/.test(after))) return true
+    }
     return words.has(basename(path)) && nameCount.get(basename(path)) === 1
   }
   const referenced = (haystack: string, role: FileRole, skipMarkdown: boolean): void => {
@@ -317,10 +331,15 @@ export function buildContext(tree: ScannedTree): ScanContext {
   const nameCount = new Map<string, number>()
   for (const path of [...paths, ...linkPaths]) nameCount.set(basename(path), (nameCount.get(basename(path)) ?? 0) + 1)
   const hookScripts = new Set<string>()
-  const interpreters = new Map<string, 'js' | 'python' | 'shell'>()
+  const interpreters = new Map<string, 'js' | 'python' | 'shell' | 'other'>()
+  // Run by two interpreters, a file is read as no language at all: no
+  // comment is trusted, so neither reading can hide what the other runs.
   const noteInterpreter = (command: string, path: string): void => {
     const language = interpreterNaming(command, path)
-    if (language !== undefined) interpreters.set(aliases.get(path) ?? path, language)
+    if (language === undefined) return
+    const real = aliases.get(path) ?? path
+    const known = interpreters.get(real)
+    interpreters.set(real, known === undefined || known === language ? language : 'other')
   }
   for (const hook of hookCommands) {
     referenced(hook.command, 'hook-script', false)
@@ -337,10 +356,16 @@ export function buildContext(tree: ScannedTree): ScanContext {
   }
   // Markdown a prompt tells the model to read is a prompt too, however it is
   // named (a skill's own README): followed until nothing new is named.
+  const promptSet = new Set(prompts)
   for (let index = 0; index < prompts.length; index += 1) {
     const body = text(prompts[index] as string) ?? ''
-    for (const path of paths) {
-      if (isMarkdown(path) && !prompts.includes(path) && namedIn(body, path)) prompts.push(path)
+    for (const path of [...paths, ...linkPaths]) {
+      if (!isMarkdown(path) || !namedIn(body, path)) continue
+      const real = aliases.get(path) ?? path
+      if (paths.has(real) && !promptSet.has(real)) {
+        promptSet.add(real)
+        prompts.push(real)
+      }
     }
   }
   for (const path of prompts) assign(path, 'prompt')
@@ -412,11 +437,24 @@ function interpreterNaming(command: string, path: string): 'js' | 'python' | 'sh
   const normalized = command.replace(/["']/g, ' ').replace(/\/{2,}/g, '/')
   const at = normalized.includes(path) ? normalized.indexOf(path) : normalized.indexOf(basename(path))
   if (at === -1) return undefined
-  const words = normalized.slice(0, at).trim().split(/\s+/).filter(word => !word.startsWith('-') && !word.includes('='))
-  const program = basename(words[words.length - 1] ?? '').toLowerCase()
-  if (/^(?:sh|bash|zsh|dash|ksh|fish|source|\.)$/.test(program)) return 'shell'
-  if (/^(?:node|deno|bun|tsx|ts-node)$/.test(program)) return 'js'
-  if (/^python\d*(?:\.\d+)?$/.test(program)) return 'python'
+  const languageOfWord = (word: string): 'js' | 'python' | 'shell' | undefined => {
+    const program = basename(word).toLowerCase()
+    if (/^(?:sh|bash|zsh|dash|ksh|fish|source|\.)$/.test(program)) return 'shell'
+    if (/^(?:node|deno|bun|tsx|ts-node)$/.test(program)) return 'js'
+    if (/^python\d*(?:\.\d+)?$/.test(program)) return 'python'
+    return undefined
+  }
+  // `cat x.js | sh` pipes the file into an interpreter.
+  const piped = /^[^;&|]*\|\s*(\S+)/.exec(normalized.slice(at + path.length))?.[1]
+  if (piped !== undefined && languageOfWord(piped) !== undefined) return languageOfWord(piped)
+  // Otherwise the nearest interpreter before it in the same command, past
+  // options and their values (`bash -o pipefail x.js` is bash).
+  const before = normalized.slice(0, at).split(/[;&|]/).pop() ?? ''
+  const words = before.trim().split(/\s+/).reverse()
+  for (const word of words) {
+    const language = languageOfWord(word)
+    if (language !== undefined) return language
+  }
   return undefined
 }
 
