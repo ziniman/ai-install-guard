@@ -179,8 +179,9 @@ function frontmatter(text: string): Record<string, string> {
     if (pair !== null) {
       lastKey = pair[1] as string
       out[lastKey] = unquote((pair[2] as string).trim())
-    } else if (lastKey !== undefined && /^\s+-\s+/.test(line)) {
-      out[lastKey] = `${out[lastKey] ?? ''}${out[lastKey] ? ', ' : ''}${unquote(line.replace(/^\s+-\s+/, '').trim())}`
+    } else if (lastKey !== undefined && /^[ \t]*-[ \t]+/.test(line)) {
+      // A YAML list item, indented or at column 0 under its key.
+      out[lastKey] = `${out[lastKey] ?? ''}${out[lastKey] ? ', ' : ''}${unquote(line.replace(/^[ \t]*-[ \t]+/, '').trim())}`
     }
   }
   return out

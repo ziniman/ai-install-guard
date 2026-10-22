@@ -25,11 +25,17 @@ export async function runValidator(host: Host, root: string): Promise<ValidatorR
     .run(['claude', 'plugin', 'validate', '--json', root], { timeoutMs: TIMEOUT_MS })
     .catch((error: unknown) => ({ exitCode: -1, stdout: '', stderr: error instanceof Error ? error.message : String(error) }))
   const parsed = parseJson(result.stdout)
-  if (!parsed.ok || !isRecord(parsed.value)) {
+  // Only a report shaped like one counts: an error object is not a pass.
+  const isReport = parsed.ok && isRecord(parsed.value) && typeof parsed.value.success === 'boolean' && ('manifest' in parsed.value || 'contents' in parsed.value)
+  if (!isReport || !parsed.ok || !isRecord(parsed.value)) {
     const reason = result.stderr.trim().split('\n')[0] ?? ''
     return { ran: false, reason: reason === '' ? `exit code ${result.exitCode}` : reason.slice(0, 200) }
   }
-  return parseValidatorReport(parsed.value)
+  const report = parseValidatorReport(parsed.value)
+  if (report.ran && parsed.value.success === false && report.errors.length === 0) {
+    report.errors.push({ file: '-', message: `claude plugin validate failed (exit code ${result.exitCode})` })
+  }
+  return report
 }
 
 export function parseValidatorReport(report: Record<string, unknown>): ValidatorReport {

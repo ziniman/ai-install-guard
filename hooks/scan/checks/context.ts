@@ -1,5 +1,5 @@
 import type { InventoryFile, ScannedTree } from '../inventory'
-import { basename, dirname, extension, findAll, joinPath, lineOf } from './text'
+import { basename, dirname, extension, findAll, joinPath, lineOf, spanKinds, type Match } from './text'
 
 /**
  * What a file is to Claude Code, which decides how much a finding in it
@@ -362,7 +362,7 @@ function localImports(path: string, source: string, realOf: (path: string) => st
     const spec = /['"](\.{1,2}\/[^'"\n]{1,300})['"]/.exec(match.text)?.[1]
     if (spec !== undefined) add(spec, MODULE_SUFFIXES)
   }
-  for (const match of findAll(source, /^\s*from\s+(\.+)([\w.]*)\s+import\s+([\w, ]+)/gm, 200)) {
+  for (const match of findAll(source, /^[ \t]*from[ \t]+(\.+)([\w.]*)[ \t]+import[ \t]+([\w, ]+)/gm, 200)) {
     const parts = /from\s+(\.+)([\w.]*)\s+import\s+([\w, ]+)/.exec(match.text)
     if (parts === null) continue
     const up = '../'.repeat(Math.max(0, (parts[1] as string).length - 1))
@@ -404,14 +404,24 @@ function readModule(
       const target = spec === undefined ? undefined : joinPath(dirname(file), spec)
       if (target !== undefined) queue.push(target)
     }
-    for (const match of findAll(source, /\bon\s*\(\s*(['"`])([^'"`\n]{1,200})\1(\s*,\s*\{[^}]{0,500}\})?/g, 200)) {
+    // A whole-line comment that names `$.process.run` runs nothing. Strings
+    // still count: a template literal's `${...}` holds code.
+    const kindAt = spanKinds(source, 'js')
+    const inCode = (match: Match): boolean => kindAt(match.index) !== 'comment'
+    for (const match of findAll(source, /\bon\s*\(\s*(['"`])([^'"`\n]{1,200})\1(\s*,\s*\{[^}]{0,500}\})?/g, 10_000).filter(inCode)) {
       const parts = /\(\s*(['"`])([^'"`\n]{1,200})\1(?:\s*,\s*(\{[^}]{0,500}\}))?/.exec(match.text)
       if (parts?.[2] !== undefined) {
         info.events.push({ name: parts[2], file, line: match.line, detail: parts[3]?.replace(/\s+/g, ' ') })
       }
     }
-    for (const match of findAll(source, /\$\s*\.\s*([A-Za-z_]+)\s*\.\s*([A-Za-z_]+)/g, 500)) {
-      info.calls.push({ name: match.text.replace(/[\s$]/g, '').replace(/^\./, ''), file, line: match.line })
+    // `$.noun.method`, `$.noun?.method`, `$['noun'].method`, and a bare `$.noun`
+    // (kept in a variable and called later), which counts as every method of it.
+    for (const match of findAll(source, DOLLAR_CALL, 10_000).filter(inCode)) {
+      const parts = DOLLAR_PARTS.exec(match.text)
+      const noun = parts?.[1] ?? parts?.[2]
+      const method = parts?.[3] ?? parts?.[4]
+      if (noun === undefined) continue
+      info.calls.push({ name: method === undefined ? `${noun}.*` : `${noun}.${method}`, file, line: match.line })
     }
     for (const match of findAll(source, /\$\s*\.\s*env\s*\.\s*(?:get|set)\s*\(\s*(['"`])([^'"`\n]{1,200})\1/g, 100)) {
       const name = /(['"`])([^'"`\n]{1,200})\1/.exec(match.text)?.[2]
@@ -423,6 +433,10 @@ function readModule(
   }
   return info
 }
+
+/** A use of a noun on `$`, with the method when one follows. */
+const DOLLAR_CALL = /\$\s*(?:\?\.\s*|\.\s*)?(?:\.\s*[A-Za-z_]\w{0,40}|\[\s*['"`][A-Za-z_]\w{0,40}['"`]\s*\])(?:\s*(?:\?\.|\.)\s*[A-Za-z_]\w{0,40}|\s*\[\s*['"`][A-Za-z_]\w{0,40}['"`]\s*\])?/g
+const DOLLAR_PARTS = /\$\s*(?:\?\.\s*|\.\s*)?(?:\.?\s*([A-Za-z_]\w{0,40})|\[\s*['"`]([A-Za-z_]\w{0,40})['"`]\s*\])(?:\s*(?:\?\.|\.)\s*([A-Za-z_]\w{0,40})|\s*\[\s*['"`]([A-Za-z_]\w{0,40})['"`]\s*\])?/
 
 const MODULE_SUFFIXES = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', '/index.ts', '/index.tsx', '/index.js']
 

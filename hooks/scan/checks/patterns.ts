@@ -39,7 +39,7 @@ export const CLAUDE_LOAD_DIR = /\.claude\/(?:skills|plugins|agents|commands|hook
 
 /** Writing a file from a shell command: a redirect, tee, cp, mv and the like. */
 export const WRITE_SHELL =
-  /(?:^|[\s;&|(])(?:\d?>>?|&>>?)\s*["']?(?!\/dev\/null)[~$\/.\w]|\btee\s+(?:-a\s+)?["']?[~$\/.\w]|(?:^|[\s;&|])(?:cp|mv|install|ln|rsync)\s+\S|\bsed\s+-i\b/
+  /(?<![<>=!-])(?:\d?>>?|&>>?)(?!&)\s*["']?(?!\/dev\/null)[~$\/.\w]|\btee\s+(?:-a\s+)?["']?[~$\/.\w]|(?:^|[\s;&|])(?:cp|mv|install|ln|rsync)\s+\S|\bsed\s+-i\b/
 
 /** Writing a file from JavaScript or Python. */
 export const WRITE_CODE =

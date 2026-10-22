@@ -67,11 +67,15 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
     const text = ctx.text(file.path)
     if (text === undefined) continue
     const kindAt = spanKinds(text, languageOf(file.path, text))
-    const isInert = (match: Match): boolean => kindAt(match.index) === 'comment' || kindAt(match.index) === 'regex'
-    const found = (match: Match, what: string): Evidence =>
-      isInert(match)
-        ? { file: file.path, line: match.line, excerpt: `${what}: ${match.excerpt} (in a comment)`, status: 'info' }
-        : { file: file.path, line: match.line, excerpt: `${what}: ${what === 'reads secret environment variables' ? secretName(match) : match.excerpt}`, status: 'fail' }
+    const isInert = (match: Match): boolean => ['comment', 'regex', 'trailing-comment'].includes(kindAt(match.index))
+    const found = (match: Match, what: string): Evidence => {
+      const shown = `${what}: ${what === 'reads secret environment variables' ? secretName(match) : match.excerpt}`
+      const kind = kindAt(match.index)
+      if (kind === 'comment' || kind === 'regex') return { file: file.path, line: match.line, excerpt: `${shown} (in a comment)`, status: 'info' }
+      // After code on the same line, a comment may be hiding a command: a warning at least.
+      if (kind === 'trailing-comment') return { file: file.path, line: match.line, excerpt: `${shown} (in a comment after code)`, status: 'warn' }
+      return { file: file.path, line: match.line, excerpt: shown, status: 'fail' }
+    }
     const live = (pattern: RegExp): boolean => findAll(text, pattern, 10_000).some(match => !isInert(match))
     // Live matches first, so comments cannot crowd out a real command.
     const matches = (pattern: RegExp): Match[] => {

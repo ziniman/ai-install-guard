@@ -92,9 +92,16 @@ function codeFiles(ctx: ScanContext): CodeFile[] {
  */
 function judged(file: CodeFile, match: Match, status: Status, excerpt: string): Evidence {
   const kind = file.kindAt(match.index)
-  const inert = kind === 'comment' || kind === 'regex'
-  const capped = isLive(file.role) && !inert ? status : 'info'
-  return { file: file.path, line: match.line, excerpt: inert ? `${excerpt} (in a ${kind === 'regex' ? 'pattern' : 'comment'})` : excerpt, status: capped }
+  if (!isLive(file.role)) return { file: file.path, line: match.line, excerpt, status: 'info' }
+  if (kind === 'comment' || kind === 'regex') {
+    return { file: file.path, line: match.line, excerpt: `${excerpt} (in a ${kind === 'regex' ? 'pattern' : 'comment'})`, status: 'info' }
+  }
+  if (kind === 'trailing-comment') {
+    // A comment after code on the same line is a classic place to hide a
+    // command, so it can lower a failure to a warning, never further.
+    return { file: file.path, line: match.line, excerpt: `${excerpt} (in a comment after code)`, status: status === 'fail' ? 'warn' : status }
+  }
+  return { file: file.path, line: match.line, excerpt, status }
 }
 
 /** Matches of `pattern` in the file's code and strings, not its comments or patterns. */
@@ -115,7 +122,7 @@ function evidenceFor(file: CodeFile, pattern: RegExp, status: Status, describe: 
   const all = findAll(file.text, pattern, 10_000)
   const isInert = (match: Match): boolean => {
     const kind = file.kindAt(match.index)
-    return kind === 'comment' || kind === 'regex'
+    return kind === 'comment' || kind === 'regex' || kind === 'trailing-comment'
   }
   const live = all.filter(match => !isInert(match)).slice(0, limit)
   const inert = all.filter(isInert).slice(0, 2)
@@ -140,7 +147,7 @@ const TAGS = /[\u{e0000}-\u{e007f}]+/gu
 const VARIATION_SUPPLEMENT = /[\u{e0100}-\u{e01ef}]{2,}/gu
 const BIDI = /[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/g
 const ZERO_WIDTH = /[\u200b-\u200d\u2060-\u2064\u180e\u00ad\u034f\u115f\u1160\u3164\uffa0]|(?!^)\ufeff/g
-const ANSI = /\u001b\[[0-9;?]*[A-Za-z]|\u001b\][^\u0007]*\u0007/g
+const ANSI = /\u001b\[[0-9;?]{0,40}[A-Za-z]|\u001b\][^\u0007\u001b]{0,1000}\u0007/g
 
 function hiddenCheck(ctx: ScanContext): CheckResult {
   const evidence: Evidence[] = []
@@ -231,7 +238,7 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
     const decodes = active(file, DECODE, 1).length > 0
     const level: Status = runs && decodes ? 'fail' : 'warn'
     const found: { match: Match; what: string }[] = []
-    const split: { line: number; what: string }[] = []
+    const split: { line: number; what: string; status: Status }[] = []
     const liveFirst = (pattern: RegExp): Match[] => {
       const all = findAll(text, pattern, 10_000)
       const isInert = (match: Match): boolean => file.kindAt(match.index) === 'comment' || file.kindAt(match.index) === 'regex'
@@ -241,14 +248,23 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
     for (const match of liveFirst(/\b(?:[0-9a-fA-F]{2}){100,}\b/g)) found.push({ match, what: `${match.text.length}-character hex blob` })
     for (const match of liveFirst(/String\.fromCharCode\s*\(\s*(?:\d+\s*,\s*){8,}|\bchr\s*\(\s*\d+\s*\)\s*\+\s*chr\s*\(/g)) found.push({ match, what: `text built from character codes: ${match.excerpt}` })
     for (const match of liveFirst(/(?:\\x[0-9a-fA-F]{2}){16,}|(?:\\u00[0-9a-fA-F]{2}){12,}/g)) found.push({ match, what: 'long run of escaped bytes' })
-    const joined = text.replace(/(['"`])[ \t]*\+[ \t]*\1/g, '')
+    // Adjacent literals joined, whatever their quotes: "child" + '_process'.
+    const joined = text.replace(/(['"`])[ \t]*\+[ \t]*(['"`])/g, '')
     if (joined !== text) {
       // A dangerous name that only appears once adjacent strings are joined
-      // was split to hide it. Joining only happens in code, never a comment.
+      // was split to hide it. Joining keeps lines intact, so each join is
+      // judged where its `+` sits: one inside a comment or pattern is only
+      // reported, like any other mention there.
+      const joins = findAll(text, /(['"`])[ \t]*\+[ \t]*(['"`])/g, 10_000)
+      const liveJoinLines = new Set(joins.filter(join => !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(join.index + join.text.indexOf('+')))).map(join => join.line))
       const before = new Set(findAll(text, SPLIT_NAMES, 10_000).map(match => `${match.line}:${match.text}`))
       for (const match of findAll(joined, SPLIT_NAMES, 10_000)) {
+        if (!liveJoinLines.has(match.line)) continue
         if (!before.has(`${match.line}:${match.text}`)) {
-          split.push({ line: match.line, what: `a name split across strings to hide it: ${match.text}` })
+          // A split name is a warning; once joined, if the code runs programs or
+          // builds code (require("child" + '_process').exec), it fails.
+          const runsJoined = [PROCESS_CODE, PYTHON_PROCESS, CODE_FROM_TEXT, SHELL_EVAL, PYTHON_CODE_FROM_TEXT].some(pattern => pattern.test(joined))
+          split.push({ line: match.line, what: `a name split across strings to hide it: ${match.text}`, status: runsJoined ? 'fail' : level })
           break
         }
       }
@@ -260,7 +276,7 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
       if (dense !== undefined) found.push({ match: dense, what: 'a long line of random-looking text' })
     }
     for (const item of found) evidence.push(judged(file, item.match, level, item.what))
-    for (const item of split) evidence.push({ file: path, line: item.line, excerpt: item.what, status: isLive(file.role) ? level : 'info' })
+    for (const item of split) evidence.push({ file: path, line: item.line, excerpt: item.what, status: isLive(file.role) ? item.status : 'info' })
   }
   for (const path of ctx.prompts) {
     const text = ctx.text(path) ?? ''
@@ -430,10 +446,10 @@ function registriesCheck(ctx: ScanContext): CheckResult {
     const text = ctx.text(file.path)
     if (text === undefined) continue
     let pattern: RegExp | undefined
-    if (/^\.npmrc$/.test(name)) pattern = /^\s*(?:@[\w-]+:)?registry\s*=\s*(?!https:\/\/registry\.npmjs\.org\/?\s*$).+$/m
-    else if (name === '.yarnrc.yml' || name === '.yarnrc') pattern = /npmRegistryServer|^\s*registry\s+/m
-    else if (name === 'pip.conf' || /^requirements.*\.txt$/.test(name)) pattern = /--(?:extra-)?index-url\b|^\s*-i\s+https?:|^\s*index-url\s*=/m
-    else if (name === 'pyproject.toml' || name === 'uv.toml' || name === 'bunfig.toml') pattern = /\bindex-url\b|\[\[tool\.uv\.index\]\]|^\s*registry\s*=/m
+    if (/^\.npmrc$/.test(name)) pattern = /^[ \t]*(?:@[\w-]+:)?registry[ \t]*=[ \t]*(?!https:\/\/registry\.npmjs\.org\/?[ \t]*$).+$/m
+    else if (name === '.yarnrc.yml' || name === '.yarnrc') pattern = /npmRegistryServer|^[ \t]*registry[ \t]+/m
+    else if (name === 'pip.conf' || /^requirements.*\.txt$/.test(name)) pattern = /--(?:extra-)?index-url\b|^[ \t]*-i[ \t]+https?:|^[ \t]*index-url[ \t]*=/m
+    else if (name === 'pyproject.toml' || name === 'uv.toml' || name === 'bunfig.toml') pattern = /\bindex-url\b|\[\[tool\.uv\.index\]\]|^[ \t]*registry[ \t]*=/m
     if (pattern === undefined) continue
     const match = findFirst(text, pattern)
     if (match !== undefined) evidence.push({ file: file.path, line: match.line, excerpt: match.excerpt, status: capFor(ctx.roleOf(file.path))('warn') })
@@ -455,14 +471,19 @@ function domainsCheck(ctx: ScanContext): CheckResult {
   const configFiles = new Set(ctx.mcpServers.map(server => server.file))
   for (const file of codeFiles(ctx)) {
     if (!isLive(file.role) && !configFiles.has(file.path)) continue
-    for (const match of active(file, /\b(?:https?|wss?|ftp):\/\/(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+)/g, 200)) {
-      const host = (/\/\/(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+)/.exec(match.text)?.[1] ?? '').toLowerCase()
-      if (host === '' || /^(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|example\.(?:com|org|net))$/.test(host)) continue
+    for (const match of active(file, /\b(?:https?|wss?|ftp):\/\/[^\s'"`<>)]{1,500}/g, 200)) {
+      // The host is what follows any user-info: in https://a.com@b.site/ it is b.site.
+      const authority = /\/\/([^/?#]{0,300})/.exec(match.text)?.[1] ?? ''
+      const hasUserInfo = authority.includes('@')
+      const host = (/(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+)/.exec(authority.slice(authority.lastIndexOf('@') + 1))?.[1] ?? '').toLowerCase()
+      if (host === '') continue
+      if (hasUserInfo) evidence.push(judged(file, match, 'warn', `an address whose real host hides after "@": ${host}`))
+      if (/^(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|example\.(?:com|org|net))$/.test(host)) continue
       if (!hosts.has(host)) hosts.set(host, { file: file.path, line: match.line })
       if (/^\d{1,3}(?:\.\d{1,3}){3}$|^\[/.test(host)) {
         evidence.push(judged(file, match, 'warn', `talks to a raw IP address: ${host}`))
       }
-      if (COLLECTION_HOST.test(match.excerpt)) {
+      if (COLLECTION_HOST.test(`${host}${match.text.slice(match.text.indexOf(host) + host.length)}`)) {
         evidence.push(judged(file, match, 'warn', `talks to a host often used to collect data: ${host}`))
       }
     }

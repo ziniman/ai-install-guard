@@ -223,10 +223,16 @@ function proseOf(markdown: string): string {
 }
 
 function callCapability(name: string): Capability {
-  const known = CALLS[name]
-  if (known !== undefined) return known
+  if (name.endsWith('.*')) {
+    // The noun kept whole, its methods called later: judged by its riskiest one.
+    const noun = name.slice(0, -2)
+    const methods = Object.entries(CALLS).filter(([key]) => key.startsWith(`${noun}.`)).map(([, value]) => value)
+    const worst = methods.find(item => item.risk === 'high') ?? methods.find(item => item.risk === 'medium') ?? methods[0]
+    if (worst !== undefined) return { risk: worst.risk, plain: `keeps $.${noun} to call later: ${worst.plain}` }
+  }
+  if (Object.hasOwn(CALLS, name)) return CALLS[name] as Capability
   const noun = name.split('.')[0] ?? ''
-  return NOUNS[noun] ?? { risk: 'low', plain: 'a call this scanner does not know' }
+  return Object.hasOwn(NOUNS, noun) ? (NOUNS[noun] as Capability) : { risk: 'low', plain: 'a call this scanner does not know' }
 }
 
 function eventCapability(use: ModuleUse): Capability {
@@ -236,10 +242,9 @@ function eventCapability(use: ModuleUse): Capability {
     if (SENSITIVE_COMMANDS.has(command)) return { risk: 'high', plain: `intercepts /${command}` }
     return { risk: 'low', plain: `answers /${command}` }
   }
-  const known = EVENTS[use.name]
-  if (known !== undefined) return known
+  if (Object.hasOwn(EVENTS, use.name)) return EVENTS[use.name] as Capability
   const namespace = use.name.split('.')[0] ?? ''
-  return NAMESPACES[namespace] ?? { risk: 'low', plain: 'an event this scanner does not know' }
+  return Object.hasOwn(NAMESPACES, namespace) ? (NAMESPACES[namespace] as Capability) : { risk: 'low', plain: 'an event this scanner does not know' }
 }
 
 /** Lowercased names the README or description spells out, such as `process.run`. */

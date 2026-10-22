@@ -104,7 +104,13 @@ export function extension(path: string): string {
   return dot <= 0 ? '' : name.slice(dot + 1).toLowerCase()
 }
 
-export type SpanKind = 'code' | 'string' | 'comment' | 'regex'
+/**
+ * `comment` is a comment that fills its line from the start; `trailing-comment`
+ * starts after code on its line. The tokenizer can be fooled, and a comment
+ * hiding a command is a classic trick, so only a whole-line comment is fully
+ * trusted to be inert.
+ */
+export type SpanKind = 'code' | 'string' | 'comment' | 'trailing-comment' | 'regex'
 
 /**
  * What each character of a source file is: code, inside a string, a
@@ -118,8 +124,14 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
   const STRING = 1
   const COMMENT = 2
   const REGEX = 3
+  const TRAILING = 4
   const mark = (from: number, to: number, kind: number): void => {
     kinds.fill(kind, from, Math.min(to, text.length))
+  }
+  /** A comment starting at `at` fills its line when only blanks precede it. */
+  const commentKind = (at: number): number => {
+    const lineStart = text.lastIndexOf('\n', at - 1) + 1
+    return /^[ \t]*$/.test(text.slice(lineStart, at)) ? COMMENT : TRAILING
   }
   let i = 0
   let lastSignificant = ''
@@ -130,21 +142,24 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
     if (language === 'js' && char === '/' && next === '/') {
       const end = text.indexOf('\n', i)
       const stop = end === -1 ? text.length : end
-      mark(i, stop, COMMENT)
+      mark(i, stop, commentKind(i))
       i = stop
       continue
     }
     if (language === 'js' && char === '/' && next === '*') {
       const end = text.indexOf('*/', i + 2)
       const stop = end === -1 ? text.length : end + 2
-      mark(i, stop, COMMENT)
+      mark(i, stop, commentKind(i))
       i = stop
       continue
     }
-    if ((language === 'python' || language === 'shell') && char === '#' && (language === 'python' || i === 0 || /\s/.test(text[i - 1] as string))) {
+    // In shell, `#` starts a comment only at the start of a word: after an
+    // unescaped blank (`echo \ #` keeps the `#` in the word) or a line start.
+    const isShellComment = language === 'shell' && (i === 0 || (/\s/.test(text[i - 1] as string) && text[i - 2] !== '\\'))
+    if (char === '#' && (language === 'python' || isShellComment)) {
       const end = text.indexOf('\n', i)
       const stop = end === -1 ? text.length : end
-      mark(i, stop, COMMENT)
+      mark(i, stop, commentKind(i))
       i = stop
       continue
     }
@@ -186,10 +201,14 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
       // Only a literal with an escape inside counts as a pattern: real
       // patterns nearly always have one, and code dressed up as a regex by
       // stray slashes rarely does, so it stays code.
-      if (text[j] === '/' && text.slice(i + 1, j).includes('\\')) {
+      if (text[j] === '/') {
+        // The literal is skipped as one unit either way, so a `/*` inside it
+        // never opens a comment. Only one with an escape counts as a pattern;
+        // without one, what it holds is judged as code.
+        const isPattern = text.slice(i + 1, j).includes('\\')
         j += 1
         while (j < text.length && /[a-z]/i.test(text[j] as string)) j += 1
-        mark(i, j, REGEX)
+        mark(i, j, isPattern ? REGEX : CODE)
         i = j
         lastSignificant = '/'
         continue
@@ -210,7 +229,7 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
     }
     i += 1
   }
-  return index => (['code', 'string', 'comment', 'regex'] as const)[kinds[index] ?? CODE] as SpanKind
+  return index => (['code', 'string', 'comment', 'regex', 'trailing-comment'] as const)[kinds[index] ?? CODE] as SpanKind
 }
 
 function regexCanStart(lastSignificant: string, lastWord: string): boolean {

@@ -151,7 +151,7 @@ function filesCheck(ctx: ScanContext): CheckResult {
       })
       continue
     }
-    const expectedImage = IMAGE_EXTENSIONS[ext]
+    const expectedImage = Object.hasOwn(IMAGE_EXTENSIONS, ext) ? IMAGE_EXTENSIONS[ext] : undefined
     if (expectedImage !== undefined && magic !== expectedImage) {
       evidence.push({ file: file.path, excerpt: `named .${ext} but is ${magic === undefined ? (file.isText ? 'text' : 'not an image') : magic}`, status: cap('fail') })
       continue
