@@ -4,7 +4,8 @@ export type VerdictKind = 'safe' | 'caution' | 'reject' | 'unverified'
 
 export const RECOMMENDATION: Record<VerdictKind, string> = {
   safe: 'Safe to install',
-  caution: 'Install with caution',
+  // Not a lesser "safe": powerful access worth knowing about before you install.
+  caution: 'Review what it can do',
   reject: 'Do not install',
   unverified: 'Could not verify',
 }
@@ -20,7 +21,7 @@ export type Verdict = {
 }
 
 /**
- * Any FAIL: do not install. Else any WARN: install with caution. Else safe.
+ * Any FAIL: do not install. Else any WARN: review what it can do. Else safe.
  * A scan that could not finish is "could not verify" whatever it found.
  * Rows only ever add to this: nothing a row says can lower another row.
  */

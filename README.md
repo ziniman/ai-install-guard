@@ -34,7 +34,7 @@ Company security platforms such as AIR, Pluto and Neo watch a whole fleet of age
 
 1. **Fetch without running.** The candidate is fetched at an exact commit into a folder the guard owns. Nothing is installed, built or run.
 2. **Check every file.** Deterministic checks read the hooks, MCP servers, mod code, skills, scripts, images and manifest.
-3. **Show a verdict.** A pane shows **Safe to install**, **Install with caution**, **Do not install** or **Could not verify**, a PASS / WARN / FAIL list with file and line evidence, and two buttons: **Install** and **Reject**.
+3. **Show a verdict.** A pane shows **Safe to install**, **Review what it can do**, **Do not install** or **Could not verify**, a PASS / WARN / FAIL list with file and line evidence, and two buttons: **Install** and **Reject**.
 4. **Install only what was scanned.** Install is pinned to the scanned commit and content hash. If the source changed since the scan, it is scanned again first.
 
 Approvals are remembered by commit and content hash, so the same version is never scanned twice, and an update is reviewed as a diff: anything new since the version you approved is listed and flagged. An optional model review can add warnings but can never clear a failure, so a README that says "this plugin is safe" changes nothing.
@@ -70,7 +70,7 @@ Approvals are remembered by commit and content hash, so the same version is neve
 | `/guard scan --ref <ref> --path <folder> <repository>` | Scan a branch, tag or full commit id (the default branch otherwise), and a folder inside the repository |
 | `/guard scan --details …` | Any of the above, and print the full report with every finding and its advice |
 | `/guard report` | Reopen the last report |
-| `/guard badge` | A README badge for the last scan, when it was Safe to install or Install with caution (see [Review badge](#review-badge)) |
+| `/guard badge` | A README badge for the last scan, when it was Safe to install or Review what it can do (see [Review badge](#review-badge)) |
 | `/guard list` | Your approved and rejected versions, newest first |
 | `/guard forget <name>` | Forget decisions about a name, so it is judged again |
 
@@ -107,7 +107,7 @@ If you publish a plugin, mod, skill or MCP server, you can show that it was scan
 [![AI Install Guard: Safe to install at 4ac6edc](https://img.shields.io/badge/AI_Install_Guard-safe_to_install_%C2%B7_4ac6edc-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned at commit 4ac6edc…, sha256:…")
 ```
 
-The badge says two things: the verdict (green for **Safe to install**, yellow for **Install with caution**) and the exact version that was scanned, the commit or, for a local folder, the tree hash. Hovering over it shows the full commit and tree hash. There is no badge for **Do not install** or **Could not verify**.
+The badge says two things: the verdict (green for **Safe to install**, yellow for **Review what it can do**) and the exact version that was scanned, the commit or, for a local folder, the tree hash. Hovering over it shows the full commit and tree hash. There is no badge for **Do not install** or **Could not verify**.
 
 A badge is a picture anyone can paste, so the guard never trusts one:
 
