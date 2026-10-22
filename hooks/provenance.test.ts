@@ -439,3 +439,15 @@ describe('lookups, PR #11 review fixes', () => {
     expect(results[0]?.summary?.at(-1)).toBe('Not checked: its contributors: could not reach GitHub: reset by peer')
   })
 })
+
+describe('lookups, PR #11 review round two', () => {
+  test('a look-alike and names left uncompared are both in the headline, and the count survives the cap', async () => {
+    const plugins = Array.from({ length: 2100 }, (_, index) => ({ name: index < 30 ? `code-reveiw-${index}` : `plugin-${index}`, source: `./p${index}` }))
+    const ctx = buildContext(await takeInventory(memoryHost('/p', { ...fixture('clean-plugin'), '.claude-plugin/marketplace.json': b64(JSON.stringify({ name: 'm', owner: { name: 'o' }, plugins })) }), '/p'))
+    const official = { plugins: Array.from({ length: 30 }, (_, index) => ({ name: `code-review-${index}` })) }
+    const results = await outsideLookups(netHost(url => (url === OFFICIAL_MARKETPLACE ? json(official) : json({ results: [] }))), ctx)
+    const row = results.find(result => result.id === 'provenance.names')
+    expect(row?.summary?.[0]).toContain('; 101 more names were not compared with the official list')
+    expect(row?.evidence.map(item => item.excerpt)).toContain('101 more names were not compared')
+  })
+})

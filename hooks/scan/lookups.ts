@@ -327,6 +327,7 @@ async function namesCheck(host: Host, ctx: ScanContext, cache: LookupCache): Pro
   }
   const evidence: Evidence[] = []
   const near: string[] = []
+  // Said first, so no cap on the evidence can drop it.
   for (const name of compared) {
     if (official.includes(name)) {
       evidence.push({ file: '-', excerpt: `${safeLine(name)} has the same name as an official plugin: make sure this is that plugin, from its own source`, status: 'info' })
@@ -356,9 +357,11 @@ async function namesCheck(host: Host, ctx: ScanContext, cache: LookupCache): Pro
         advice: "A name one letter away from an official plugin's is a common way to be installed by mistake. Check the publisher before you trust it.",
         // A look-alike only from a real comparison; names left uncompared are said apart.
         summary: (() => {
-          const lines = near.length === 0 ? [] : [`Its name looks like an official plugin's: ${near.slice(0, 3).join('; ')}${near.length > 3 ? ` and ${near.length - 3} more` : ''}`]
-          if (skipped > 0) lines.push(`${skipped} more names were not compared with the official list`)
-          return lines.length === 0 ? undefined : lines
+          // The headline carries both, since it is all a collapsed row or a verdict reason shows.
+          const unchecked = skipped > 0 ? `${skipped} more names were not compared with the official list` : undefined
+          if (near.length === 0) return unchecked === undefined ? undefined : [unchecked]
+          const found = `Its name looks like an official plugin's: ${near.slice(0, 3).join('; ')}${near.length > 3 ? ` and ${near.length - 3} more` : ''}`
+          return [unchecked === undefined ? found : `${found}; ${unchecked}`]
         })(),
       },
       capEvidence(evidence, 20),
