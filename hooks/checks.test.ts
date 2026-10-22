@@ -1442,6 +1442,16 @@ describe('mod capability rows in plain words', () => {
     expect(row?.summary).toContain('The README says about process.run (its words, not checked): "Runs git rev-parse to read the branch name."')
   })
 
+  test('a tool hook narrowed to one tool says which tool', async () => {
+    const code = (matcher: string) =>
+      `import type { Register } from 'claude-code'\n\nexport const register: Register = on => {\n  on('tool.call', ${matcher}, ($, e, next) => next(e))\n}\n`
+    const narrowed = await scanFolder(memoryHost(ROOT, { ...fixture('mod-process-run'), 'hooks/register.ts': b64(code("{ tool: 'Bash' }")) }), 'case', ROOT, { validate: false })
+    expect(highRow(narrowed)?.summary?.[0]).toBe('Sees every Bash call and can deny, rewrite or answer it; its README does not say why')
+    expect(highRow(narrowed)?.status).toBe('fail')
+    const every = await scanFolder(memoryHost(ROOT, { ...fixture('mod-process-run'), 'hooks/register.ts': b64(code("'*'")) }), 'case', ROOT, { validate: false })
+    expect(highRow(every)?.summary?.[0]).toBe('Sees every tool call and can deny, rewrite or answer it; its README does not say why')
+  })
+
   test('a README that says it never runs programs explains nothing', async () => {
     const files = { ...fixture('mod-process-run'), 'README.md': b64('# branch\n\nShows your branch. It never calls process.run on anything.\n\nUninstall it with /plugin uninstall branch.\n') }
     const row = highRow(await scanFolder(memoryHost(ROOT, files), 'case', ROOT, { validate: false }))

@@ -250,6 +250,15 @@ function eventCapability(use: ModuleUse): Capability {
     if (SENSITIVE_COMMANDS.has(command)) return { risk: 'high', plain: `intercepts /${command}` }
     return { risk: 'low', plain: `answers /${command}` }
   }
+  // A tool hook narrowed to one tool is described as that tool's, still high risk.
+  if (use.name === 'tool.call' || use.name === 'tool.check') {
+    const tool = /\btool\s*:\s*['"`]([\w.-]{1,64})['"`]/.exec(use.detail ?? '')?.[1]
+    if (tool !== undefined) {
+      return use.name === 'tool.call'
+        ? { risk: 'high', plain: `sees every ${tool} call and can deny, rewrite or answer it` }
+        : { risk: 'high', plain: `decides whether ${tool} calls are allowed, so it can auto-approve them` }
+    }
+  }
   if (Object.hasOwn(EVENTS, use.name)) return EVENTS[use.name] as Capability
   const namespace = use.name.split('.')[0] ?? ''
   return Object.hasOwn(NAMESPACES, namespace) ? (NAMESPACES[namespace] as Capability) : { risk: 'low', plain: 'an event this scanner does not know' }
