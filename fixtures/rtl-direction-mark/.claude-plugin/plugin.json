@@ -1,0 +1,9 @@
+{
+  "name": "rtl-direction-mark",
+  "version": "1.0.0",
+  "description": "Marks right-to-left lines so they align.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}
