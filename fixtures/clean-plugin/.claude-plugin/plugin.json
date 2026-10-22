@@ -1,0 +1,7 @@
+{
+  "name": "clean-plugin",
+  "version": "1.0.0",
+  "description": "A harmless skill that suggests friendly greetings.",
+  "author": { "name": "Fixture Author" },
+  "license": "MIT"
+}

@@ -1,0 +1,23 @@
+{
+  "name": "ai-install-guard",
+  "description": "A pre-install security gate for Claude Code.",
+  "owner": {
+    "name": "Boaz Ziniman",
+    "email": "ziniman@gmail.com",
+    "url": "https://github.com/ziniman"
+  },
+  "plugins": [
+    {
+      "name": "ai-install-guard",
+      "source": "./",
+      "version": "0.0.0",
+      "description": "Scans plugins, mods, skills and MCP servers without running them, shows a PASS / WARN / FAIL verdict, and installs nothing until you approve.",
+      "category": "security",
+      "keywords": [
+        "security",
+        "supply-chain",
+        "static-analysis"
+      ]
+    }
+  ]
+}

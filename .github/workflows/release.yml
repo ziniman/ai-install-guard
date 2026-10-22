@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+  pull-requests: read
+
+jobs:
+  release:
+    # Only main is released, also when the workflow is started by hand.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Check what is already released
+        id: check
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$VERSION" = "0.0.0" ]; then
+            echo "Version is the unreleased placeholder (0.0.0), nothing to release." >> "$GITHUB_STEP_SUMMARY"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          # A release is always built from the commit on main that set its
+          # version (the PR's merge commit), even when a later push retries
+          # it, so the npm package and the tag name the same files.
+          # Walk back along main while package.json's version field holds
+          # this version; the oldest such commit is the one that set it.
+          RELEASE_SHA=$GITHUB_SHA
+          for c in $(git rev-list --first-parent "$GITHUB_SHA"); do
+            v=$( (git show "$c:package.json" 2>/dev/null || true) \
+              | node -p "try { JSON.parse(require('fs').readFileSync(0, 'utf8')).version } catch { '' }")
+            [ "$v" = "$VERSION" ] || break
+            RELEASE_SHA=$c
+          done
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          if out=$(npm view "$NAME@$VERSION" version 2>&1); then
+            echo "$NAME@$VERSION is already on npm." >> "$GITHUB_STEP_SUMMARY"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif grep -q E404 <<< "$out"; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$out"
+            echo "::error::Could not check npm for $NAME@$VERSION. Re-run this workflow once the registry is reachable."
+            exit 1
+          fi
+
+      # Auth via npm trusted publishing (OIDC), so no NPM_TOKEN secret and no 2FA prompt.
+      - name: Check out the commit that set the version
+        if: steps.check.outputs.release == 'true'
+        run: git checkout --detach "${{ steps.check.outputs.sha }}"
+
+      - name: Publish to npm
+        if: steps.check.outputs.publish == 'true'
+        run: |
+          npm publish
+          echo "Published ai-install-guard@${{ steps.check.outputs.version }} to npm." >> "$GITHUB_STEP_SUMMARY"
+
+      # Runs whether or not this run published, so a re-run repairs a release
+      # whose earlier attempt published to npm but failed here.
+      - name: Create tag and GitHub release if missing
+        if: steps.check.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+            exit 0
+          fi
+          RELEASE_SHA="${{ steps.check.outputs.sha }}"
+          PR_TITLE=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/pulls" --jq '.[0].title // empty')
+          TITLE="$TAG${PR_TITLE:+ - $PR_TITLE}"
+          awk -v head="## $TAG " 'index($0, head) == 1 { f = 1; next } f && /^---/ { exit } f { print }' CHANGELOG.md > notes.md
+          # An existing tag keeps the commit it already names; a new one marks the release commit.
+          TARGET=()
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            TARGET=(--target "$RELEASE_SHA")
+          fi
+          if [ -s notes.md ]; then
+            gh release create "$TAG" "${TARGET[@]}" --title "$TITLE" --notes-file notes.md
+          else
+            gh release create "$TAG" "${TARGET[@]}" --title "$TITLE" --generate-notes
+          fi
+          echo "Created release $TAG at ${RELEASE_SHA:0:7}." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,48 @@
+{
+  "name": "ai-install-guard",
+  "version": "0.0.0",
+  "description": "A pre-install security gate for Claude Code: scans plugins, mods, skills and MCP servers without running them, and installs nothing until you approve.",
+  "scripts": {
+    "build:fixtures": "node scripts/build-fixtures.js",
+    "sync:versions": "node scripts/sync-versions.js",
+    "validate": "claude plugin validate --strict .",
+    "typecheck": "tsc -p .",
+    "test": "claude plugin test .",
+    "check": "npm run validate && npm run typecheck && npm test",
+    "version": "node scripts/sync-versions.js && git add .claude-plugin/"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "security",
+    "supply-chain",
+    "static-analysis",
+    "plugins",
+    "skills",
+    "mcp"
+  ],
+  "files": [
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "hooks/",
+    "!hooks/**/*.test.ts",
+    "!hooks/test-support/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "author": "Boaz Ziniman <ziniman@gmail.com> (https://github.com/ziniman)",
+  "homepage": "https://github.com/ziniman/ai-install-guard",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ziniman/ai-install-guard.git"
+  },
+  "bugs": "https://github.com/ziniman/ai-install-guard/issues",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
