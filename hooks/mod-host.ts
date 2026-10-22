@@ -27,5 +27,6 @@ export function modHost($: EngineInterface): Host {
       throw new Error(`could not read the link ${path}`)
     },
     run: (argv, options) => $.process.run(argv, options),
+    fetch: (url, init) => $.http.fetch(url, init),
   }
 }

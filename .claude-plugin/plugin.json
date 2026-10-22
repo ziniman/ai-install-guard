@@ -19,5 +19,13 @@
     "skills",
     "mcp",
     "mods"
-  ]
+  ],
+  "userConfig": {
+    "outsideLookups": {
+      "type": "boolean",
+      "title": "Outside lookups",
+      "description": "Check the packages a plugin uses against OSV, and its name against Anthropic's official plugins. Sends package and plugin names to those services. Off by default.",
+      "default": false
+    }
+  }
 }

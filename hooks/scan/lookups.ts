@@ -1,0 +1,239 @@
+// Lookups outside the machine, off unless you turn on `outsideLookups`:
+// packages checked against OSV (Google's open vulnerability database, which
+// also lists packages published to steal or harm), and plugin names against
+// Anthropic's official marketplace, to catch a name made to look like one of
+// its plugins. Each sends names to that service, so it is your choice. A
+// lookup that fails is noted and never fails the scan.
+
+import { isRecord, parseJson, type ScanContext } from './checks/context'
+import { capEvidence, row, type CheckResult, type Evidence } from './checks/types'
+import type { Host } from './host'
+import { safeLine } from './safe-text'
+
+export const OSV_BATCH = 'https://api.osv.dev/v1/querybatch'
+export const OSV_VULN = 'https://api.osv.dev/v1/vulns/'
+/** How many advisories' details are read to tell malware from a bug. */
+const MAX_DETAILS = 30
+export const OFFICIAL_MARKETPLACE = 'https://raw.githubusercontent.com/anthropics/claude-plugins-official/main/.claude-plugin/marketplace.json'
+const MAX_QUERIES = 200
+
+type Package = { ecosystem: 'npm' | 'PyPI'; name: string; version?: string; file: string; via?: string }
+
+export async function outsideLookups(host: Host, ctx: ScanContext): Promise<CheckResult[]> {
+  if (host.fetch === undefined) return []
+  return [await osvCheck(host, ctx), ...(await namesCheck(host, ctx))]
+}
+
+function failedRow(id: string, title: string, reason: string): CheckResult {
+  return {
+    id,
+    group: 'provenance',
+    title,
+    status: 'info',
+    severity: 'none',
+    evidence: [{ file: '-', excerpt: `not checked: ${safeLine(reason)}`, status: 'info' }],
+    advice: 'The lookup did not answer, so this part was not checked.',
+    summary: [`Not checked: ${safeLine(reason)}`],
+  }
+}
+
+const EXACT = /^\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/
+
+/** The packages a candidate installs or runs: its MCP servers' and its manifests'. */
+export function packagesOf(ctx: ScanContext): Package[] {
+  const out: Package[] = []
+  const add = (pkg: Package) => {
+    if (!out.some(item => item.ecosystem === pkg.ecosystem && item.name === pkg.name && item.version === pkg.version)) out.push(pkg)
+  }
+  for (const server of ctx.mcpServers) {
+    const words = [server.command ?? '', ...server.args].join(' ').split(/\s+/).filter(word => word !== '')
+    const runner = words.findIndex(word => /^(?:npx|bunx|pnpx|uvx)$/.test(word.split(/[\\/]/).pop() ?? ''))
+    const exec = words.findIndex((word, index) => /^(?:npm|pnpm|yarn|bun)$/.test(word.split(/[\\/]/).pop() ?? '') && /^(?:exec|dlx|x)$/.test(words[index + 1] ?? ''))
+    const pipx = words.findIndex((word, index) => /^pipx$/.test(word.split(/[\\/]/).pop() ?? '') && words[index + 1] === 'run')
+    const start = runner !== -1 ? runner + 1 : exec !== -1 ? exec + 2 : pipx !== -1 ? pipx + 2 : -1
+    if (start === -1) continue
+    const python = runner !== -1 ? /^uvx$/.test(words[runner]?.split(/[\\/]/).pop() ?? '') : pipx !== -1
+    const spec = words.slice(start).find(word => !word.startsWith('-'))
+    if (spec === undefined) continue
+    if (python) {
+      const [name, version] = spec.split(/==|@/)
+      if (name !== undefined && /^[A-Za-z0-9._-]{1,100}$/.test(name)) add({ ecosystem: 'PyPI', name, version: version !== undefined && EXACT.test(version) ? version : undefined, file: server.file, via: server.name })
+    } else {
+      const at = spec.lastIndexOf('@')
+      const name = at > 0 ? spec.slice(0, at) : spec
+      const version = at > 0 ? spec.slice(at + 1) : undefined
+      if (/^(?:@[\w.-]+\/)?[\w.-]{1,100}$/.test(name)) add({ ecosystem: 'npm', name, version: version !== undefined && EXACT.test(version) ? version : undefined, file: server.file, via: server.name })
+    }
+  }
+  for (const file of ctx.files) {
+    const base = file.path.split('/').pop() ?? ''
+    if (base === 'package.json') {
+      const parsed = parseJson(ctx.text(file.path))
+      if (!parsed.ok || !isRecord(parsed.value)) continue
+      const dir = file.path.slice(0, -'package.json'.length)
+      const lock = parseJson(ctx.text(`${dir}package-lock.json`))
+      const locked = lock.ok && isRecord(lock.value) && isRecord(lock.value.packages) ? lock.value.packages : {}
+      for (const section of ['dependencies', 'optionalDependencies']) {
+        const deps = parsed.value[section]
+        if (!isRecord(deps)) continue
+        for (const [name, spec] of Object.entries(deps)) {
+          const fromLock = isRecord(locked[`node_modules/${name}`]) ? (locked[`node_modules/${name}`] as Record<string, unknown>).version : undefined
+          const version = typeof spec === 'string' && EXACT.test(spec) ? spec : typeof fromLock === 'string' && EXACT.test(fromLock) ? fromLock : undefined
+          if (version !== undefined) add({ ecosystem: 'npm', name, version, file: file.path })
+        }
+      }
+    } else if (/^requirements(?:[-.\w]*)?\.txt$/.test(base)) {
+      for (const line of (ctx.text(file.path) ?? '').split('\n')) {
+        const pin = /^\s*([A-Za-z0-9._-]{1,100})(?:\[[^\]]*\])?\s*==\s*([\w.+!-]{1,50})\s*(?:[#;].*)?$/.exec(line)
+        if (pin !== null) add({ ecosystem: 'PyPI', name: pin[1] as string, version: pin[2] as string, file: file.path })
+      }
+    }
+  }
+  return out.slice(0, MAX_QUERIES)
+}
+
+async function osvCheck(host: Host, ctx: ScanContext): Promise<CheckResult> {
+  const packages = packagesOf(ctx)
+  const base = { id: 'provenance.packages', group: 'provenance' as const, title: 'Known malicious or vulnerable packages' }
+  if (packages.length === 0) return row({ ...base, advice: 'No packages to look up.' }, [])
+  let results: unknown
+  try {
+    const answer = await (host.fetch as NonNullable<Host['fetch']>)(OSV_BATCH, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ queries: packages.map(pkg => ({ package: { name: pkg.name, ecosystem: pkg.ecosystem }, ...(pkg.version === undefined ? {} : { version: pkg.version }) })) }),
+    })
+    if (!answer.ok) return failedRow(base.id, base.title, `OSV answered ${answer.status}`)
+    const parsed = parseJson(answer.text)
+    results = parsed.ok && isRecord(parsed.value) ? parsed.value.results : undefined
+  } catch (error) {
+    return failedRow(base.id, base.title, `could not reach OSV: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (!Array.isArray(results)) return failedRow(base.id, base.title, 'OSV gave an answer this guard cannot read')
+  const idsOf = (index: number): string[] => {
+    const entry = results[index]
+    return isRecord(entry) && Array.isArray(entry.vulns) ? entry.vulns.map(vuln => (isRecord(vuln) && typeof vuln.id === 'string' ? vuln.id : '')).filter(id => /^[A-Z][\w.-]{2,60}$/.test(id)) : []
+  }
+  // Malware is often filed as an ordinary advisory (GHSA) marked CWE-506, so
+  // each id's details are read; MAL- ids are malware by definition.
+  const wanted = [...new Set(packages.flatMap((_, index) => idsOf(index)).filter(id => !id.startsWith('MAL-')))].slice(0, MAX_DETAILS)
+  const harmful = new Set(packages.flatMap((_, index) => idsOf(index)).filter(id => id.startsWith('MAL-')))
+  for (let start = 0; start < wanted.length; start += 6) {
+    await Promise.all(
+      wanted.slice(start, start + 6).map(async id => {
+        try {
+          const answer = await (host.fetch as NonNullable<Host['fetch']>)(`${OSV_VULN}${encodeURIComponent(id)}`)
+          const parsed = parseJson(answer.text)
+          if (!answer.ok || !parsed.ok || !isRecord(parsed.value)) return
+          const details = parsed.value
+          const cwes = isRecord(details.database_specific) && Array.isArray(details.database_specific.cwe_ids) ? details.database_specific.cwe_ids : []
+          if (cwes.includes('CWE-506') || (typeof details.summary === 'string' && /\bmalware\b|\bmalicious\b/i.test(details.summary))) harmful.add(id)
+        } catch {
+          // Without its details an advisory counts as a vulnerability.
+        }
+      }),
+    )
+  }
+  const evidence: Evidence[] = []
+  const malicious: string[] = []
+  const vulnerable: string[] = []
+  packages.forEach((pkg, index) => {
+    const ids = idsOf(index)
+    const label = `${pkg.name}${pkg.version === undefined ? '' : `@${pkg.version}`} (${pkg.ecosystem})`
+    const lead = pkg.via === undefined ? '' : `${pkg.via}: `
+    const bad = ids.filter(id => harmful.has(id))
+    if (bad.length > 0) {
+      malicious.push(label)
+      evidence.push({ file: pkg.file, excerpt: `${lead}${label} is listed as malware: ${bad.slice(0, 3).join(', ')}`, status: 'fail' })
+    } else if (pkg.version !== undefined && ids.length > 0) {
+      // Without a version every advisory ever filed would match, so only a
+      // pinned version's advisories count.
+      vulnerable.push(label)
+      evidence.push({ file: pkg.file, excerpt: `${lead}${label} has ${ids.length} known vulnerabilit${ids.length === 1 ? 'y' : 'ies'}: ${ids.slice(0, 4).join(', ')}${ids.length > 4 ? ' and more' : ''}`, status: 'warn' })
+    }
+  })
+  const summary =
+    malicious.length > 0
+      ? [`Uses a package listed as malware: ${malicious.slice(0, 3).join(', ')}`, `Checked ${packages.length} package${packages.length === 1 ? '' : 's'} against OSV`]
+      : vulnerable.length > 0
+        ? [`${vulnerable.length} package${vulnerable.length === 1 ? ' has' : 's have'} known vulnerabilities: ${vulnerable.slice(0, 3).join(', ')}`, `Checked ${packages.length} package${packages.length === 1 ? '' : 's'} against OSV`]
+        : undefined
+  return row(
+    {
+      ...base,
+      advice: 'A package OSV lists as malware was published to do harm: do not install. A known vulnerability may or may not be reachable from this plugin; a newer version usually fixes it.',
+      summary,
+    },
+    capEvidence(evidence, 20),
+  )
+}
+
+/** Edit distance, stopping once it passes `limit`. */
+function distance(a: string, b: string, limit: number): number {
+  if (Math.abs(a.length - b.length) > limit) return limit + 1
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index)
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i]
+    let best = i
+    for (let j = 1; j <= b.length; j += 1) {
+      const value = Math.min((previous[j] as number) + 1, (current[j - 1] as number) + 1, (previous[j - 1] as number) + (a[i - 1] === b[j - 1] ? 0 : 1))
+      current.push(value)
+      best = Math.min(best, value)
+    }
+    if (best > limit) return limit + 1
+    previous = current
+  }
+  return previous[b.length] as number
+}
+
+/** A name with look-alike characters folded: 0 to o, 1 to l, separators dropped. */
+function folded(name: string): string {
+  return name.toLowerCase().replace(/0/g, 'o').replace(/[1|]/g, 'l').replace(/3/g, 'e').replace(/5/g, 's').replace(/[^a-z0-9]/g, '')
+}
+
+async function namesCheck(host: Host, ctx: ScanContext): Promise<CheckResult[]> {
+  const names = new Set<string>()
+  if (typeof ctx.manifest?.name === 'string') names.add(ctx.manifest.name)
+  const market = parseJson(ctx.text('.claude-plugin/marketplace.json'))
+  if (market.ok && isRecord(market.value) && Array.isArray(market.value.plugins)) {
+    for (const plugin of market.value.plugins.slice(0, 200)) if (isRecord(plugin) && typeof plugin.name === 'string') names.add(plugin.name)
+  }
+  if (names.size === 0) return []
+  const title = 'Names like official plugins'
+  let official: string[]
+  try {
+    const answer = await (host.fetch as NonNullable<Host['fetch']>)(OFFICIAL_MARKETPLACE)
+    const parsed = parseJson(answer.text)
+    if (!answer.ok || !parsed.ok || !isRecord(parsed.value) || !Array.isArray(parsed.value.plugins)) return [failedRow('provenance.names', title, `the official list answered ${answer.status}`)]
+    official = parsed.value.plugins.map(plugin => (isRecord(plugin) && typeof plugin.name === 'string' ? plugin.name : '')).filter(name => name !== '')
+  } catch (error) {
+    return [failedRow('provenance.names', title, `could not reach the official list: ${error instanceof Error ? error.message : String(error)}`)]
+  }
+  const evidence: Evidence[] = []
+  for (const name of names) {
+    if (official.includes(name)) {
+      evidence.push({ file: '-', excerpt: `${safeLine(name)} has the same name as an official plugin: make sure this is that plugin, from its own source`, status: 'info' })
+      continue
+    }
+    const mine = folded(name)
+    const near = official.find(other => {
+      const theirs = folded(other)
+      if (theirs === mine) return true
+      const limit = Math.min(mine.length, theirs.length) >= 8 ? 2 : Math.min(mine.length, theirs.length) >= 5 ? 1 : 0
+      return limit > 0 && distance(mine, theirs, limit) <= limit
+    })
+    if (near !== undefined) evidence.push({ file: '-', excerpt: `${safeLine(name)} looks like the official plugin ${safeLine(near)}`, status: 'warn' })
+  }
+  return [
+    row(
+      {
+        id: 'provenance.names',
+        group: 'provenance',
+        title,
+        advice: "A name one letter away from an official plugin's is a common way to be installed by mistake. Check the publisher before you trust it.",
+        summary: evidence.some(item => item.status === 'warn') ? [`Its name looks like an official plugin's: ${evidence.filter(item => item.status === 'warn').map(item => item.excerpt).join('; ')}`] : undefined,
+      },
+      capEvidence(evidence, 20),
+    ),
+  ]
+}

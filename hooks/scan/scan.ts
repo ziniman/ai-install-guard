@@ -14,6 +14,8 @@ import { runValidator } from './checks/validator'
 import type { Host } from './host'
 import { treeHash } from './hash'
 import { ScanError, takeInventory, type Inventory, type InventoryEntry, type ScannedTree } from './inventory'
+import { githubProvenance } from './github'
+import { outsideLookups } from './lookups'
 import { fetchPinned, type PinnedSource, type RemoteSpec } from './remote'
 import { decide, type Verdict } from './verdict'
 
@@ -33,6 +35,8 @@ export type ScanReport = {
 export type ScanOptions = {
   /** Run `claude plugin validate` on the candidate (on by default). */
   validate?: boolean
+  /** The outside lookups (OSV, the official plugin list): off unless turned on. */
+  lookups?: boolean
   /** Told each stage as it starts, for progress in the pane. */
   onStage?: (stage: string) => Promise<void> | void
   /**
@@ -143,6 +147,7 @@ async function checksFor(host: Host, ctx: ScanContext, options: ScanOptions): Pr
     ...modChecks(ctx, validator),
     ...hookChecks(ctx),
     ...mcpChecks(ctx),
+    ...(options.lookups === true ? await outsideLookups(host, ctx) : []),
     ...promptChecks(ctx),
     ...codeChecks(ctx),
     ...secretChecks(ctx),
@@ -179,8 +184,11 @@ export async function scanRemote(host: Host, target: string, spec: RemoteSpec, o
   try {
     const report = await scanFolder(host, target, fetched.root, options)
     if (report.verdict.kind === 'unverified') return { ...report, source: fetched.source }
-    // The badge is judged again with the source's own rows counted.
-    const results = withBadgeClaim(sortResults([...fetched.results, ...report.results]), report.badgeClaim, { sha: fetched.source.sha, treeHash: report.inventory?.treeHash })
+    // What GitHub says about where it came from, then the badge, judged again
+    // with the source's own rows counted.
+    await options.onStage?.('reading the repository history')
+    const history = await githubProvenance(host, fetched.source)
+    const results = withBadgeClaim(sortResults([...fetched.results, ...history, ...report.results]), report.badgeClaim, { sha: fetched.source.sha, treeHash: report.inventory?.treeHash })
     return { ...report, source: fetched.source, results, verdict: decide(results) }
   } finally {
     await fetched.cleanup().catch(() => undefined)
