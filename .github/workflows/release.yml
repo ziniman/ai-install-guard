@@ -16,6 +16,8 @@ permissions:
 
 jobs:
   release:
+    # Only main is released, also when the workflow is started by hand.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +27,7 @@ jobs:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Check whether this version is already published
+      - name: Check what is already released
         id: check
         run: |
           NAME=$(node -p "require('./package.json').name")
@@ -33,9 +35,13 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           if [ "$VERSION" = "0.0.0" ]; then
             echo "Version is the unreleased placeholder (0.0.0), nothing to release." >> "$GITHUB_STEP_SUMMARY"
+            echo "release=false" >> "$GITHUB_OUTPUT"
             echo "publish=false" >> "$GITHUB_OUTPUT"
-          elif out=$(npm view "$NAME@$VERSION" version 2>&1); then
-            echo "$NAME@$VERSION is already on npm, nothing to release." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          if out=$(npm view "$NAME@$VERSION" version 2>&1); then
+            echo "$NAME@$VERSION is already on npm." >> "$GITHUB_STEP_SUMMARY"
             echo "publish=false" >> "$GITHUB_OUTPUT"
           elif grep -q E404 <<< "$out"; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
@@ -48,10 +54,14 @@ jobs:
       # Auth via npm trusted publishing (OIDC), so no NPM_TOKEN secret and no 2FA prompt.
       - name: Publish to npm
         if: steps.check.outputs.publish == 'true'
-        run: npm publish
+        run: |
+          npm publish
+          echo "Published ai-install-guard@${{ steps.check.outputs.version }} to npm." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create tag and GitHub release
-        if: steps.check.outputs.publish == 'true'
+      # Runs whether or not this run published, so a re-run repairs a release
+      # whose earlier attempt published to npm but failed here.
+      - name: Create tag and GitHub release if missing
+        if: steps.check.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.check.outputs.version }}
@@ -64,9 +74,14 @@ jobs:
           PR_TITLE=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].title // empty')
           TITLE="$TAG${PR_TITLE:+ - $PR_TITLE}"
           awk -v head="## $TAG " 'index($0, head) == 1 { f = 1; next } f && /^---/ { exit } f { print }' CHANGELOG.md > notes.md
-          if [ -s notes.md ]; then
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "$TITLE" --notes-file notes.md
-          else
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "$TITLE" --generate-notes
+          # An existing tag keeps the commit it already names; a new one marks this commit.
+          TARGET=()
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            TARGET=(--target "$GITHUB_SHA")
           fi
-          echo "Published ai-install-guard@$VERSION and created release $TAG." >> "$GITHUB_STEP_SUMMARY"
+          if [ -s notes.md ]; then
+            gh release create "$TAG" "${TARGET[@]}" --title "$TITLE" --notes-file notes.md
+          else
+            gh release create "$TAG" "${TARGET[@]}" --title "$TITLE" --generate-notes
+          fi
+          echo "Created release $TAG." >> "$GITHUB_STEP_SUMMARY"

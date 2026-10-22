@@ -56,11 +56,13 @@ jobs:
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
-          BASE_VERSION=$(git show "origin/${{ github.base_ref }}:package.json" | node -p "JSON.parse(require('fs').readFileSync(0)).version")
           if [ "$VERSION" = "0.0.0" ]; then
             echo "Version is the unreleased placeholder (0.0.0). Merging will not publish." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # Empty when the base branch has no package.json yet.
+          BASE_VERSION=$( (git show "origin/${{ github.base_ref }}:package.json" 2>/dev/null || true) \
+            | node -p "try { JSON.parse(require('fs').readFileSync(0, 'utf8')).version } catch { '' }")
           if [ "$VERSION" = "$BASE_VERSION" ]; then
             echo "Version unchanged ($VERSION). Merging will not publish." >> "$GITHUB_STEP_SUMMARY"
             exit 0
