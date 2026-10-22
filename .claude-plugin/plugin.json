@@ -10,6 +10,7 @@
   "homepage": "https://github.com/ziniman/ai-install-guard",
   "repository": "https://github.com/ziniman/ai-install-guard",
   "license": "Apache-2.0",
+  "types": "./types/index.d.ts",
   "keywords": [
     "security",
     "supply-chain",

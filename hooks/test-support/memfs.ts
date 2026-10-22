@@ -189,3 +189,54 @@ export function typed(command: string, args: string) {
     presentation: { isFullscreen: false, columns: 100 },
   }
 }
+
+/** What the plugin asked of the interface during a test. */
+export type UiRecord = {
+  opened: string[]
+  closed: string[]
+  toasts: string[]
+  statuses: (string | undefined)[]
+  copied: string[]
+}
+
+/**
+ * Answers the engine's `ui.open`, `ui.close`, `ui.toast`, `ui.status` and
+ * `ui.copy` beneath the plugin, recording each. With `placed: false` no
+ * surface takes the pane, as in a headless run.
+ */
+export function serveUi(on: On, options: { placed?: boolean } = {}): UiRecord {
+  const record: UiRecord = { opened: [], closed: [], toasts: [], statuses: [], copied: [] }
+  on('ui.open', ($, e) => {
+    record.opened.push(e.id)
+    return { value: options.placed === false ? { isPlaced: false, reason: 'no-surface' } : { isPlaced: true } }
+  })
+  on('ui.close', ($, e) => {
+    record.closed.push(e.id)
+    return { value: undefined }
+  })
+  on('ui.toast', ($, e) => {
+    record.toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.status', ($, e) => {
+    record.statuses.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.copy', ($, e) => {
+    record.copied.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  return record
+}
+
+/** The props a surface hands a pane's draw. */
+export function paneProps(bodyColumns = 100) {
+  return {
+    title: 'AI Install Guard',
+    isFocused: true,
+    bodyColumns,
+    placement: 'dock' as const,
+    scroll: { offset: 0, bodyRows: 40 },
+    view: {},
+  }
+}
