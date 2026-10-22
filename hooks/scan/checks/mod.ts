@@ -1,4 +1,6 @@
-import type { ModuleInfo, ModuleUse, ScanContext } from './context'
+import { isLive, type ModuleInfo, type ModuleUse, type ScanContext } from './context'
+import { describePrograms, type ProgramUse } from './programs'
+import { spanKinds } from './text'
 import { row, type CheckResult, type Evidence, type Status } from './types'
 import type { ValidatorReport } from './validator'
 
@@ -128,6 +130,24 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
     return false
   }
 
+  // The README's own words for a call, to show beside it: quoted from the
+  // candidate, so marked as its words and never trusted.
+  const source = readmeSource(ctx)
+  const quoteFor = (name: string): string | undefined => {
+    if (!isExplained(name)) return undefined
+    const escaped = name.replace(/\./g, '\\.')
+    const mention = new RegExp(`(?<![\\w.$])${escaped}(?![\\w])`, 'i')
+    for (const line of source.split('\n')) {
+      if (!mention.test(line)) continue
+      // A table row: the cells that are not the call's own name.
+      const cells = line.trim().startsWith('|') ? line.split('|').map(cell => cell.trim()).filter(cell => cell !== '' && !/^:?-+:?$/.test(cell)) : [line]
+      const words = (cells.filter(cell => !mention.test(cell)).join(' ') || line).replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim()
+      if (words === '') continue
+      return words.length > 220 ? `${words.slice(0, 219)}…` : words
+    }
+    return undefined
+  }
+
   const inventory: Evidence[] = uses.map(({ use, kind, capability }) => ({
     file: use.file,
     line: use.line > 0 ? use.line : undefined,
@@ -195,6 +215,7 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
         group: GROUP,
         title: 'High-risk capabilities',
         advice: 'Running programs, writing files, deciding tool permissions, judging other plugins or changing the system prompt is what a mod needs to take over a session. Install only if its purpose needs it and its README says why.',
+        summary: capabilitySummary(uses.filter(item => item.capability.risk === 'high'), isExplained, quoteFor, ctx, allCalls.has('fs.read') && allCalls.has('http.fetch')),
       },
       high,
       'fail',
@@ -205,6 +226,7 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
         group: GROUP,
         title: 'Network, environment and prompt access',
         advice: 'Check every address it talks to and every variable it reads against what it says it does.',
+        summary: capabilitySummary(uses.filter(item => item.capability.risk === 'medium'), isExplained, quoteFor, ctx, false),
       },
       medium,
     ),
@@ -289,3 +311,57 @@ function dedupe(uses: readonly ModuleUse[]): ModuleUse[] {
 }
 
 export type { Status }
+
+/** The README and description as written, for quoting; HTML comments left out. */
+function readmeSource(ctx: ScanContext): string {
+  const visible = (ctx.readme?.text ?? '').replace(/<!--[\s\S]{0,20000}?-->/g, ' ')
+  return [visible, typeof ctx.manifest?.description === 'string' ? ctx.manifest.description : ''].join('\n')
+}
+
+/**
+ * A capability row in plain words: what the mod can do, whether its README
+ * says why, the programs it starts when it runs any, and the README's own
+ * words for each, marked as the candidate's.
+ */
+function capabilitySummary(
+  uses: readonly { use: ModuleUse; kind: 'event' | 'call'; capability: Capability }[],
+  isExplained: (name: string) => boolean,
+  quoteFor: (name: string) => string | undefined,
+  ctx: ScanContext,
+  readsAndSends: boolean,
+): string[] | undefined {
+  const names = [...new Set(uses.map(item => item.use.name))]
+  if (names.length === 0) return undefined
+  const plain = [...new Set(uses.map(item => item.capability.plain))]
+  const told = names.every(isExplained)
+  const lines = [`${plain.join('; ').replace(/^./, char => char.toUpperCase())}${told ? '; its README says why' : '; its README does not say why'}`]
+  if (readsAndSends) lines.push('Reads files and sends requests, so it could send your files out')
+  if (names.some(name => /^process\.(?:run|spawn)$/.test(name))) {
+    const programs = programsOfModule(ctx)
+    const described = describePrograms(programs, { buildsCode: 0, downloads: 0 }).filter(line => !line.startsWith('In '))
+    lines.push(...(described.length > 0 ? described : ['Which programs it starts could not be read from its code']))
+  }
+  for (const name of names.slice(0, 3)) {
+    const quote = quoteFor(name)
+    if (quote !== undefined) lines.push(`The README says about ${name} (its words, not checked): "${quote}"`)
+  }
+  return lines
+}
+
+/** The programs a mod's live code starts with a literal name: `.run(['git', ...])`. */
+function programsOfModule(ctx: ScanContext): ProgramUse[] {
+  const uses: ProgramUse[] = []
+  for (const file of ctx.files) {
+    if (!/\.(?:[cm]?[jt]sx?)$/.test(file.path) || !isLive(ctx.roleOf(file.path))) continue
+    const text = ctx.text(file.path)
+    if (text === undefined) continue
+    const kindAt = spanKinds(text, 'js')
+    for (const match of text.matchAll(/\.(?:run|spawn)\s*\(\s*\[\s*(["'`])([^"'`\s]{1,100})\1/g)) {
+      const kind = kindAt(match.index ?? 0)
+      if (kind === 'comment' || kind === 'regex' || kind === 'trailing-comment') continue
+      uses.push({ name: (match[2] as string).split(/[\\/]/).pop()?.replace(/\.exe$/i, '').toLowerCase() ?? '', file: file.path, dynamic: false })
+      if (uses.length >= 500) return uses
+    }
+  }
+  return uses
+}

@@ -1419,3 +1419,31 @@ describe('badge claims, PR review round two', () => {
     expect(report.results.find(result => result.id === 'provenance.badge')).toBeUndefined()
   })
 })
+
+describe('mod capability rows in plain words', () => {
+  const b64 = (text: string) => ({ base64: btoa(text) })
+  const highRow = (report: ScanReport) => report.results.find(result => result.id === 'mod.high-risk')
+
+  test('what it can do, the programs it starts, and that its README does not say why', async () => {
+    const row = highRow(await scan('mod-process-run'))
+    expect(row?.summary?.[0]).toBe('Runs programs on your machine; its README does not say why')
+    expect(row?.summary).toContain('Starts git')
+  })
+
+  test("the README's own words, quoted and marked as its words", async () => {
+    const files = {
+      ...fixture('mod-process-run'),
+      'README.md': b64('# branch\n\nShows your branch.\n\n| Capability | Why |\n|---|---|\n| `process.run` | Runs `git rev-parse` to read the branch name. |\n\nUninstall it with /plugin uninstall branch.\n'),
+    }
+    const row = highRow(await scanFolder(memoryHost(ROOT, files), 'case', ROOT, { validate: false }))
+    expect(row?.summary?.[0]).toBe('Runs programs on your machine; its README says why')
+    expect(row?.summary).toContain('The README says about process.run (its words, not checked): "Runs git rev-parse to read the branch name."')
+  })
+
+  test('a README that says it never runs programs explains nothing', async () => {
+    const files = { ...fixture('mod-process-run'), 'README.md': b64('# branch\n\nShows your branch. It never calls process.run on anything.\n\nUninstall it with /plugin uninstall branch.\n') }
+    const row = highRow(await scanFolder(memoryHost(ROOT, files), 'case', ROOT, { validate: false }))
+    expect(row?.summary?.[0]).toBe('Runs programs on your machine; its README does not say why')
+    expect(row?.summary?.some(line => line.startsWith('The README says'))).toBe(false)
+  })
+})
