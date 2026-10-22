@@ -37,7 +37,9 @@ These are product requirements, not style preferences. A change that breaks one 
 - `hooks/*.test.ts`: tests, run by `claude plugin test .`. `pane.test.ts` mounts the pane on the terminal and desktop surfaces and drives its buttons. `Text` elements keep no `key`; find them by text, and key a `Box` or `Button` when a test needs to address it.
 - `hooks/test-support/`: `memfs.ts` serves fixtures to the engine's `fs.*` and `process.run` events; `fixtures.gen.ts` is generated.
 - `fixtures/<name>/`: inert sample plugins, one per rule, listed with the rule each trips in `fixtures/README.md`. Never installed, loaded or run. `hooks/checks.test.ts` holds the table of what each fixture must trip.
-- `scripts/`: `sync-versions.js` (release) and `build-fixtures.js` (tests).
+- `scripts/`: `sync-versions.js` (release), `build-fixtures.js` (tests) and `build-skill.js` (the chat skill).
+- `cli/`: the scanner outside Claude Code, for the chat skill. `node-host.ts` is a `Host` on `node:fs`, `node:child_process` (it starts only `git`, `sh`, `mktemp`, `rm` and PowerShell, never passes on an inherited `GIT_` variable, and fails a command whose output passes 4 MiB rather than cut it) and Node's `fetch`; `unzip.ts` unpacks a zip into a new folder (every path checked before a byte is written, links made last, the scanner's limits enforced); `scan.ts` is the command line, `scan.js <folder | zip | repository>`, exiting with the verdict. `scan.spec.mjs` runs the built script on the fixtures and on zips of them with `node:test` (`npm run test:skill`); it reads the fixture table from `hooks/checks.test.ts`, so keep its `{ fixture: '…', flags: […], verdict: '…' }` rows on one line each. It has its own `tsconfig.json`, with Node's types, which the mod never gets.
+- `skill/ai-install-guard/`: the Agent Skill for Claude chat. `SKILL.md` and `README.md` are source; `scripts/scan.js` (the esbuild bundle of `cli/scan.ts`) and `LICENSE` are build output and gitignored, and `npm run build:skill` zips the folder to `dist/ai-install-guard-skill.zip` with fixed times and no compression (each zlib deflates differently), so the same sources give the same zip on any machine. None of it ships in the npm package.
 
 ## The mod runtime
 
@@ -53,13 +55,15 @@ Hooks on `$` calls (`fs.read`, `process.run`, ...) answer `{ value }` or `{ deny
 
 ```sh
 npm run validate        # claude plugin validate --strict .
-npm run typecheck       # tsc -p . (needs .claude-plugin/types, see above)
+npm run typecheck       # tsc -p . (needs .claude-plugin/types, see above) and tsc -p cli
 npm test                # claude plugin test .
-npm run check           # all three
+npm run test:skill      # build the chat skill and run cli/scan.spec.mjs
+npm run check           # all four
 npm run build:fixtures  # regenerate hooks/test-support/fixtures.gen.ts after editing fixtures/
+npm run build:skill     # skill/ai-install-guard/scripts/scan.js and dist/ai-install-guard-skill.zip
 ```
 
-Run all three checks after every change and report their results.
+Run all four checks after every change and report their results. `npm ci --ignore-scripts` installs what the build needs (esbuild, Node's types) without running any package's install script.
 
 Try the mod in a real session:
 

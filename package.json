@@ -4,11 +4,13 @@
   "description": "A pre-install security gate for Claude Code: scans plugins, mods, skills and MCP servers without running them, and installs nothing until you approve.",
   "scripts": {
     "build:fixtures": "node scripts/build-fixtures.js",
+    "build:skill": "node scripts/build-skill.js",
     "sync:versions": "node scripts/sync-versions.js",
     "validate": "claude plugin validate --strict .",
-    "typecheck": "tsc -p .",
+    "typecheck": "tsc -p . && tsc -p cli",
     "test": "claude plugin test .",
-    "check": "npm run validate && npm run typecheck && npm test",
+    "test:skill": "node scripts/build-skill.js && node --test cli/scan.spec.mjs",
+    "check": "npm run validate && npm run typecheck && npm test && npm run test:skill",
     "version": "node scripts/sync-versions.js && git add .claude-plugin/"
   },
   "keywords": [
@@ -44,6 +46,8 @@
     "node": ">=18"
   },
   "devDependencies": {
+    "@types/node": "^20.19.43",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.3"
   }
 }
