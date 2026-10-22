@@ -188,7 +188,7 @@ function hiddenCheck(ctx: ScanContext): CheckResult {
       for (const match of findAll(text, BIDI, 3, lone)) {
         const status = cap('warn')
         if (status === 'warn') foundLone = true
-        const excerpt = `bidirectional control ${codePoints(match.text)} is all of a string: it cannot reorder code there, but the string looks empty; write it as ${escapeFor(match, text, language)}`
+        const excerpt = `bidirectional control ${codePoints(match.text)} is all of a string: it cannot reorder code there, but the string looks empty; write it as ${escapeFor(match, file.path, text, language)}`
         evidence.push({ file: file.path, line: match.line, excerpt, status })
       }
     }
@@ -240,9 +240,14 @@ function isLoneInString(text: string, index: number, kindAt: (index: number) => 
 }
 
 /** `'\u200f'` for a lone control, as its language writes the escape. */
-function escapeFor(match: Match, text: string, language: Language): string {
+function escapeFor(match: Match, path: string, text: string, language: Language): string {
   const hex = (match.text.codePointAt(0) as number).toString(16).padStart(4, '0')
-  return language === 'shell' ? `$'\\u${hex}'` : `${text[match.index - 1]}\\u${hex}${text[match.index - 1]}`
+  if (language !== 'shell') return `${text[match.index - 1]}\\u${hex}${text[match.index - 1]}`
+  // fish reads the escape bare. Other shells differ (sh has no such escape,
+  // and bash before 4.2 not in $'...'), but every printf takes octal bytes.
+  if ((interpreterOf(text) || extension(path)) === 'fish') return `\\u${hex}`
+  const octal = [...new TextEncoder().encode(match.text)].map(byte => `\\${byte.toString(8)}`).join('')
+  return `"$(printf '${octal}')"`
 }
 
 /** Tag characters U+E0020..U+E007E mirror printable ASCII. */

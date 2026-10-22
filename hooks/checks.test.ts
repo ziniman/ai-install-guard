@@ -1447,11 +1447,15 @@ describe('a bidirectional control that is all of a string', () => {
     expect((await hidden('skills/greet/marks.js', "export const RLM = '\u200f'"))?.status).toBe('warn')
   })
 
-  test('a shell script is told to write the escape the shell reads', async () => {
-    const row = await hidden('skills/greet/marks.sh', "#!/bin/bash\nRLM='\u200f'\n")
+  test('a shell script is told to write the escape its shell reads', async () => {
+    const bash = await hidden('skills/greet/marks.sh', "#!/bin/bash\nRLM='\u200f'\n")
+    const sh = await hidden('skills/greet/marks.sh', "#!/bin/sh\nRLM='\u200f'\n")
+    const fish = await hidden('skills/greet/marks.fish', "set RLM '\u200f'\n")
 
-    expect(row?.status).toBe('warn')
-    expect(row?.evidence[0]?.excerpt).toContain("write it as $'\\u200f'")
+    expect([bash?.status, sh?.status, fish?.status]).toEqual(['warn', 'warn', 'warn'])
+    expect(bash?.evidence[0]?.excerpt).toContain(`write it as "$(printf '\\342\\200\\217')"`)
+    expect(sh?.evidence[0]?.excerpt).toContain(`write it as "$(printf '\\342\\200\\217')"`)
+    expect(fish?.evidence[0]?.excerpt).toContain('write it as \\u200f')
   })
 
   test('code after it on the same line fails', async () => {
