@@ -4,6 +4,18 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.3.0 &nbsp;·&nbsp; 2026-10-23
+
+**`/plugin install`** - The guard now holds installs. `/plugin install <name>@<marketplace>` and `/plugin marketplace add <source>` are looked up (the repository, folder and commit Claude Code would install from), scanned at that commit and answered in the command's place, so nothing installs until you press Install in the pane. Install records your approval for that commit and tree hash, looks the plugin up once more, and runs your command again; a commit that moved since the scan is not installed. A version you already approved installs at once, a rejected one stays refused, and what the guard cannot pin (an npm package, a plugin no marketplace lists, a name two marketplaces share) is Could not verify, with Install anyway behind a second confirmation that lets that one command through once. The `/plugin` menu itself is not gated yet, and says so when it opens
+
+**`claude plugin`** - When Claude runs `claude plugin install`, `claude plugin update` or `claude plugin marketplace add` itself, including inside `sh -c`, `eval`, a here-document or a longer command line, the command is refused with a reason telling Claude the install waits for your decision, and the scan opens in the pane. Once you approve, the same command goes through. A command that builds itself while it runs, or pipes a script into a shell, and mentions such an install is held as Could not verify; every other command runs untouched
+
+**`/guard scan`** - The same scan and pane now serve `/guard scan` and the gates; a version approved through `/guard scan` counts when you install that same commit of that same folder
+
+**`checks`** - A mod's `tool.call` or `tool.check` hook narrowed to one tool is described as that tool's ("sees every Bash call"), still as high risk, instead of as every tool call
+
+---
+
 ## v0.2.0 &nbsp;·&nbsp; 2026-10-22
 
 **`outsideLookups`** - Harder to fool: each package runner's own options are read (`-p` is a package to npx but a Python version to uvx), so `--with`, `--with-requirements` and file arguments no longer hide the main package; Python extras such as `httpx[cli]` are looked up; an advisory OSV answers with an empty or malformed record stays unresolved and a package with no usable answer is reported as not looked up; up to 300 advisories are read for malware instead of 30; every marketplace name is compared; and one scan asks for the official list and each advisory once, however many plugins it lists
