@@ -118,7 +118,8 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     }
     // An unpinned package runner counts only as a command (in a code span or
     // block), not prose about one ("npx is a package runner").
-    for (const match of findAll(text, UNPINNED_RUNNER, 3, index => inCodeSpan(text, index))) {
+    const inCode = codeSpans(text)
+    for (const match of findAll(text, UNPINNED_RUNNER, 3, inCode)) {
       remote.push({ file: path, line: match.line, excerpt: `tells the model to run an unpinned package: ${match.excerpt}`, status: cap('warn') })
     }
 
@@ -193,19 +194,53 @@ const SHELL_WIDE = new Set([
   'curl', 'wget', 'nc', 'ncat', 'netcat', 'socat', 'ssh', 'scp', 'sftp', 'telnet',
 ])
 
-/** Whether a negation (never, don't, do not, avoid) sits right before `index`. */
+/**
+ * Whether the words right before `index` tell the reader not to run what
+ * follows: a negation on the verb itself ("never run", "do not use",
+ * "avoid piping"). "Don't hesitate to run" is an encouragement, not this.
+ */
 function isNegated(text: string, index: number): boolean {
   const before = text.slice(Math.max(0, index - 40), index).split(/[.!?\n]/).pop() ?? ''
-  return /\b(?:never|not|don['’]t|do not|avoid|instead of)\b(?:\W+\w+){0,3}\W*$/i.test(before)
+  return /\b(?:never|don['’]t|do not|avoid)\s+(?:ever\s+)?(?:run|running|execute|executing|use|using|pipe|piping|type|paste)\b\W*$/i.test(before)
 }
 
-/** Whether `index` falls inside a Markdown code span or fenced block. */
-function inCodeSpan(text: string, index: number): boolean {
-  const fences = (text.slice(0, index).match(/^[ \t]*(?:```|~~~)/gm) ?? []).length
-  if (fences % 2 === 1) return true
-  const lineStart = text.lastIndexOf('\n', index - 1) + 1
-  const ticks = (text.slice(lineStart, index).match(/`/g) ?? []).length
-  return ticks % 2 === 1 || /^[ \t]*\$\s/.test(text.slice(lineStart, index))
+/**
+ * A lookup for whether an index falls inside a Markdown code span or fenced
+ * block. Fences, line breaks and backticks are found once per text, so
+ * asking about many matches stays linear.
+ */
+function codeSpans(text: string): (index: number) => boolean {
+  const positions = (pattern: RegExp) => Array.from(text.matchAll(pattern), match => match.index ?? 0)
+  const fences = positions(/^[ \t]*(?:```|~~~)/gm)
+  const breaks = positions(/\n/g)
+  const ticks = positions(/`/g)
+  const prompts = new Map<number, boolean>()
+  return index => {
+    if (countBefore(fences, index) % 2 === 1) return true
+    const line = countBefore(breaks, index)
+    const lineStart = line === 0 ? 0 : (breaks[line - 1] as number) + 1
+    if ((countBefore(ticks, index) - countBefore(ticks, lineStart)) % 2 === 1) return true
+    let prompt = prompts.get(lineStart)
+    if (prompt === undefined) {
+      const shell = /[ \t]*\$\s/y
+      shell.lastIndex = lineStart
+      prompt = shell.test(text)
+      prompts.set(lineStart, prompt)
+    }
+    return prompt
+  }
+}
+
+/** How many of the sorted `positions` come before `index`. */
+function countBefore(positions: number[], index: number): number {
+  let low = 0
+  let high = positions.length
+  while (low < high) {
+    const mid = (low + high) >> 1
+    if ((positions[mid] as number) < index) low = mid + 1
+    else high = mid
+  }
+  return low
 }
 
 function judgeTool(tool: string): { status: Status; why: string } | undefined {
