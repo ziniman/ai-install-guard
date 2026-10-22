@@ -49,8 +49,13 @@ const USAGE = [
 /** Folders a plugin keeps at its top: a zip holding only one of them is the plugin itself, not a wrapper. */
 const PLUGIN_PARTS = new Set(['.claude-plugin', 'skills', 'commands', 'agents', 'hooks', 'output-styles'])
 
-/** What makes a folder a plugin, skill or marketplace, as the scan's context reads it. */
-const CANDIDATE_MARKS = ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', 'SKILL.md', 'hooks/hooks.json', '.mcp.json', 'skills', 'commands', 'agents', 'output-styles']
+/**
+ * What makes a folder a plugin, skill or marketplace, as the scan's context
+ * reads it: one of these files, or a file somewhere in one of these folders.
+ * An empty folder or a link by one of these names makes nothing.
+ */
+const CANDIDATE_FILES = ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', 'SKILL.md', 'hooks/hooks.json', '.mcp.json']
+const CANDIDATE_FOLDERS = ['skills', 'commands', 'agents', 'output-styles']
 
 /** What a macOS archive adds beside the folder it packed. */
 const ARCHIVE_LITTER = new Set(['__MACOSX', '.DS_Store'])
@@ -177,7 +182,18 @@ async function candidateIn(root: string): Promise<{ root: string; shown: string 
 }
 
 async function isCandidate(dir: string): Promise<boolean> {
-  for (const mark of CANDIDATE_MARKS) if ((await fs.lstat(`${dir}/${mark}`).catch(() => undefined)) !== undefined) return true
+  for (const file of CANDIDATE_FILES) if ((await fs.lstat(`${dir}/${file}`).catch(() => undefined))?.isFile() === true) return true
+  for (const folder of CANDIDATE_FOLDERS) if (await holdsFile(`${dir}/${folder}`)) return true
+  return false
+}
+
+/** Whether a plain folder holds a plain file at any depth, without following a link. */
+async function holdsFile(dir: string): Promise<boolean> {
+  if (!(await isPlainFolder(dir))) return false
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    if (entry.isFile()) return true
+    if (entry.isDirectory() && (await holdsFile(`${dir}/${entry.name}`))) return true
+  }
   return false
 }
 

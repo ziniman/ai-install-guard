@@ -151,6 +151,14 @@ describe('zip archives', () => {
     assert.deepEqual(flagged(report), ['prompts.injection:fail'])
   })
 
+  test('an empty folder or a link named like a plugin part does not hide the plugin beside it', () => {
+    const decoys = [{ name: 'commands/', mode: 0o040755 }, { name: '.mcp.json', data: '/dev/null', mode: 0o120777 }]
+    const { report } = scanJson(zipFile('decoy.zip', [...decoys, ...fixtureEntries('skill-injection', 'helper/')]))
+
+    assert.equal(report.target, 'decoy.zip/helper')
+    assert.deepEqual(flagged(report), ['prompts.injection:fail'])
+  })
+
   test('two plugins side by side: Could not verify until one is named', () => {
     const zip = zipFile('pair.zip', [...fixtureEntries('clean-plugin', 'one/'), ...fixtureEntries('curl-hook', 'two/')])
     const { status, report } = scanJson(zip)
