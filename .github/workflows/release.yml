@@ -42,6 +42,13 @@ jobs:
             exit 0
           fi
           echo "release=true" >> "$GITHUB_OUTPUT"
+          # A release is always built from the commit on main that set its
+          # version (the PR's merge commit), even when a later push retries
+          # it, so the npm package and the tag name the same files.
+          RELEASE_SHA=$(git log -s --first-parent --diff-merges=first-parent -n 1 --format=%H \
+            -G'"version"[[:space:]]*:' "$GITHUB_SHA" -- package.json)
+          RELEASE_SHA=${RELEASE_SHA:-$GITHUB_SHA}
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
           if out=$(npm view "$NAME@$VERSION" version 2>&1); then
             echo "$NAME@$VERSION is already on npm." >> "$GITHUB_STEP_SUMMARY"
             echo "publish=false" >> "$GITHUB_OUTPUT"
@@ -54,6 +61,10 @@ jobs:
           fi
 
       # Auth via npm trusted publishing (OIDC), so no NPM_TOKEN secret and no 2FA prompt.
+      - name: Check out the commit that set the version
+        if: steps.check.outputs.release == 'true'
+        run: git checkout --detach "${{ steps.check.outputs.sha }}"
+
       - name: Publish to npm
         if: steps.check.outputs.publish == 'true'
         run: |
@@ -73,11 +84,7 @@ jobs:
             echo "Release $TAG already exists."
             exit 0
           fi
-          # The commit on main that set this version (the PR's merge commit),
-          # so a release repaired by a later push still tags what was published.
-          RELEASE_SHA=$(git log -s --first-parent --diff-merges=first-parent -n 1 --format=%H \
-            -G'"version"[[:space:]]*:' "$GITHUB_SHA" -- package.json)
-          RELEASE_SHA=${RELEASE_SHA:-$GITHUB_SHA}
+          RELEASE_SHA="${{ steps.check.outputs.sha }}"
           PR_TITLE=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/pulls" --jq '.[0].title // empty')
           TITLE="$TAG${PR_TITLE:+ - $PR_TITLE}"
           awk -v head="## $TAG " 'index($0, head) == 1 { f = 1; next } f && /^---/ { exit } f { print }' CHANGELOG.md > notes.md

@@ -212,14 +212,21 @@ function looksLikeText(bytes: Uint8Array): boolean {
   return true
 }
 
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+/** Runs `fn` over `items`, `limit` at a time; after the first failure no worker starts another item. */
+export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length)
   let next = 0
+  let hasFailed = false
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
+    while (!hasFailed && next < items.length) {
       const index = next
       next += 1
-      results[index] = await fn(items[index] as T)
+      try {
+        results[index] = await fn(items[index] as T)
+      } catch (error) {
+        hasFailed = true
+        throw error
+      }
     }
   })
   await Promise.all(workers)

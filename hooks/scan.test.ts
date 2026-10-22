@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { splitArgs } from './register'
 import type { Host } from './scan/host'
-import { LIMITS, takeInventory } from './scan/inventory'
+import { LIMITS, mapLimit, takeInventory } from './scan/inventory'
 import { formatInventory } from './scan/report'
 import { safeLine, safeText } from './scan/safe-text'
 import { FIXTURES } from './test-support/fixtures.gen'
@@ -145,6 +145,20 @@ describe('inventory', () => {
 
     await expect(takeInventory(counting, '/links')).rejects.toThrow(/more than 500 symbolic links/)
     expect(readlinks).toBe(0)
+  })
+
+  test('after one item fails, no worker starts another', async () => {
+    const started: number[] = []
+    const items = Array.from({ length: 40 }, (_, i) => i)
+    const run = mapLimit(items, 8, async item => {
+      started.push(item)
+      if (item === 0) throw new Error('first item fails')
+      await Promise.resolve()
+      return item
+    })
+
+    await expect(run).rejects.toThrow('first item fails')
+    expect(started.length).toBeLessThanOrEqual(8)
   })
 
   test('folders count toward the entry limit', async () => {
