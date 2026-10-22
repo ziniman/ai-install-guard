@@ -4,6 +4,7 @@
   "description": "A pre-install security gate for Claude Code: scans plugins, mods, skills and MCP servers without running them, and installs nothing until you approve.",
   "scripts": {
     "build:fixtures": "node scripts/build-fixtures.js",
+    "build:skill": "node scripts/build-skill.js",
     "sync:versions": "node scripts/sync-versions.js",
     "validate": "claude plugin validate --strict .",
     "typecheck": "tsc -p . && tsc -p cli",
