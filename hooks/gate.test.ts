@@ -99,6 +99,14 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('claude plugin marketplace add https://github.com/acme/market').kind).toBe('install')
   })
 
+  test('a script handed to another program is read for installs', () => {
+    expect(readShellCommand(`busybox sh -c 'claude plugin install notes@acme; touch /tmp/marker'`)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('runs more than the install') })
+    expect(readShellCommand(`busybox sh -c 'claude plugin install notes@acme'`)).toMatchObject(install('notes', 'acme'))
+    expect(readShellCommand(`su -c 'claude plugin install notes@acme' me`).kind).toBe('unreadable')
+    expect(readShellCommand(`watch 'claude plugin install notes@acme'`).kind).toBe('unreadable')
+    expect(readShellCommand('git commit -m "Run claude plugin install notes@acme to try it"')).toEqual({ kind: 'pass', browse: false })
+  })
+
   test('substitutions, file writes and patterns are read, not trusted', () => {
     // An install inside a substitution runs before the command it sits in.
     expect(readShellCommand('true "$(claude plugin install notes@acme)"').kind).toBe('install')

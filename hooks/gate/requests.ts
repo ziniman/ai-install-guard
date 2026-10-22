@@ -141,8 +141,14 @@ const WRAPPERS: Record<string, Wrapper> = {
   setsid: {},
   chronic: {},
   unbuffer: {},
+  // Multi-call programs: the next word names the program they act as.
+  busybox: {},
+  toybox: {},
   xargs: { values: ['-I', '-i', '-n', '-P', '-L', '-l', '-s', '-d', '-E', '-e', '-a', '--max-args', '--max-procs', '--max-lines', '--max-chars', '--delimiter', '--eof', '--arg-file', '--replace'], fromInput: true },
 }
+
+/** Programs whose text arguments are messages and names, never commands: a commit message may quote an install. */
+const TEXT_ARGUMENTS = new Set(['git', 'gh'])
 
 /** How deep `sh -c "sh -c '…'"` is followed before the guard gives up reading it. */
 const MAX_DEPTH = 4
@@ -294,6 +300,13 @@ function collectInstalls(command: string, found: Reading[], depth: number): Coll
     if (reading !== undefined) {
       found.push(reading)
       continue
+    }
+    // Or run an argument as a script (`su -c '…'`, `watch '…'`): an install
+    // there is found, and the program around it counts as more than it.
+    if (!TEXT_ARGUMENTS.has(program)) {
+      for (const argument of words.slice(index + 1)) {
+        if (/\s/.test(argument)) out.unseen = collectInstalls(argument, found, depth + 1).unseen || out.unseen
+      }
     }
     out.others += 1
   }
