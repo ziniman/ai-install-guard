@@ -9,7 +9,7 @@ import { licenseCheck, qualityChecks } from './checks/quality'
 import { secretChecks } from './checks/secrets'
 import { structureChecks } from './checks/structure'
 import { joinPath } from './checks/text'
-import { GROUPS, rankOf, type CheckResult, type Evidence } from './checks/types'
+import { GROUPS, rankOf, row, type CheckResult, type Evidence } from './checks/types'
 import { runValidator } from './checks/validator'
 import type { Host } from './host'
 import { treeHash } from './hash'
@@ -85,7 +85,10 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
         results = mergeResults(results, [missingSourceRow(source.name, source.path)])
         continue
       }
-      results = mergeResults(results, prefixed(await checksFor(host, buildContext(nested), options), source.path))
+      // A listed plugin's own README badge is judged against its own rows.
+      const nestedCtx = buildContext(nested)
+      const nestedResults = withBadgeClaim(await checksFor(host, nestedCtx, options), badgeClaim(nestedCtx.readme), { treeHash: nested.inventory.treeHash })
+      results = mergeResults(results, prefixed(nestedResults, source.path))
     }
   } catch (error) {
     return { target, kind: ctx.kind, inventory: tree.inventory, results: [], verdict: decide([], `a check failed: ${reasonOf(error)}`) }
@@ -107,7 +110,7 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
     results = [...results, ...extra]
   }
   const claim = badgeClaim(ctx.readme)
-  results = withBadgeClaim(sortResults(results), claim)
+  results = withBadgeClaim(sortResults(results), claim, { treeHash: tree.inventory.treeHash })
   return { target, kind: ctx.kind, inventory: tree.inventory, results, verdict: decide(results), ...(claim === undefined ? {} : { badgeClaim: claim }) }
 }
 
@@ -116,10 +119,16 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
  * row is computed last, from the verdict the other rows give, so a badge can
  * add a warning and never lift a verdict.
  */
-export function withBadgeClaim(results: readonly CheckResult[], claim: BadgeClaim | undefined): CheckResult[] {
-  const rest = results.filter(result => result.id !== 'provenance.badge')
-  if (claim === undefined) return [...rest]
-  return sortResults([...rest, badgeRow(claim, decide(rest).kind)])
+export function withBadgeClaim(results: readonly CheckResult[], claim: BadgeClaim | undefined, version: { sha?: string; treeHash?: string }): CheckResult[] {
+  if (claim === undefined) return [...results]
+  // Evidence about nested plugins' badges, merged in already, stays; this
+  // README's own is judged again.
+  const rest = results.flatMap(result => {
+    if (result.id !== 'provenance.badge') return [result]
+    const kept = result.evidence.filter(item => item.file !== claim.file)
+    return kept.length === 0 ? [] : [row({ id: result.id, group: result.group, title: result.title, advice: result.advice, summary: result.summary }, kept, 'info')]
+  })
+  return sortResults(mergeResults(rest, [badgeRow(claim, decide(rest).kind, version)]))
 }
 
 async function checksFor(host: Host, ctx: ScanContext, options: ScanOptions): Promise<CheckResult[]> {
@@ -171,7 +180,7 @@ export async function scanRemote(host: Host, target: string, spec: RemoteSpec, o
     const report = await scanFolder(host, target, fetched.root, options)
     if (report.verdict.kind === 'unverified') return { ...report, source: fetched.source }
     // The badge is judged again with the source's own rows counted.
-    const results = withBadgeClaim(sortResults([...fetched.results, ...report.results]), report.badgeClaim)
+    const results = withBadgeClaim(sortResults([...fetched.results, ...report.results]), report.badgeClaim, { sha: fetched.source.sha, treeHash: report.inventory?.treeHash })
     return { ...report, source: fetched.source, results, verdict: decide(results) }
   } finally {
     await fetched.cleanup().catch(() => undefined)

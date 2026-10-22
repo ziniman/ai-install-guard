@@ -555,3 +555,26 @@ describe('the README badge', () => {
     await pane.unmount()
   })
 })
+
+describe('the README badge, PR review round one', () => {
+  test('a folder scan names its folder', () => {
+    const made = badgeFor({
+      target: 'acme/notes', action: 'approve', stage: '', rows: [], expanded: [], details: false, confirming: false,
+      verdict: { kind: 'safe', recommendation: 'Safe to install', reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
+      sha: 'a'.repeat(40), subdir: 'plugins/a', treeHash: `sha256:${'b'.repeat(64)}`,
+    })
+    expect('markdown' in made && made.markdown).toContain('Safe to install at aaaaaaa in plugins/a')
+    expect('markdown' in made && made.markdown).toContain(`folder plugins/a, sha256:`)
+  })
+
+  test('Copy badge stays after a decision', async ($, on) => {
+    mock.store(on)
+    serveUi(on)
+    serveFixture(on, ROOT, fixture('clean-plugin'))
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+    await pane.press({ key: 'install' })
+    expect(await pane.find({ key: 'badge' })).toBeDefined()
+    await pane.unmount()
+  })
+})

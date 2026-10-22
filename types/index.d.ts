@@ -46,6 +46,8 @@ export type GuardView = {
   root?: string
   /** The commit a remote scan fetched; absent for a local folder. */
   sha?: string
+  /** The folder inside the repository a remote scan covered, when it was one. */
+  subdir?: string
   treeHash?: string
   /** Rows the person opened. */
   expanded: string[]

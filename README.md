@@ -92,7 +92,7 @@ The badge says two things: the verdict (green for **Safe to install**, yellow fo
 
 A badge is a picture anyone can paste, so the guard never trusts one:
 
-- **When you see one:** scan that version yourself with `/guard scan owner/repo --ref <commit>`. Your own scan is what counts.
+- **When you see one:** scan that version yourself with `/guard scan owner/repo --ref <commit>`, adding `--path <folder>` when the badge names a folder. Your own scan is what counts.
 - **When the guard meets one:** a README badge that claims a better verdict than the guard's own scan is a warning, saying the badge is outdated or was never earned. A badge that matches is only noted. It never lifts a verdict.
 - **When the code changes:** the badge still names the old commit. A new version needs a new scan and a new badge.
 

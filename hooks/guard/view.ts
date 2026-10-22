@@ -40,6 +40,7 @@ export function viewOf(report: ScanReport, action: GuardAction): GuardView {
           ? undefined
           : safeLine(report.inventory.root),
     sha: report.source?.sha,
+    ...(report.source?.subdir === undefined ? {} : { subdir: safeLine(report.source.subdir) }),
     treeHash: report.inventory?.treeHash,
     expanded: [],
     details: false,

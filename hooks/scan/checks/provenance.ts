@@ -73,42 +73,85 @@ function judgeSource(source: unknown): { what: string; status: 'pass' | 'warn' |
 }
 
 /** What a README's AI Install Guard badge claims, read from its shields.io image. */
-export type BadgeClaim = { file: string; line: number; claimed: 'safe' | 'caution' | 'reject' | 'unverified'; text: string }
+export type BadgeClaim = {
+  file: string
+  line: number
+  claimed: 'safe' | 'caution' | 'reject' | 'unverified'
+  /** The version the badge names: a short commit or `tree <hash>`, when it names one. */
+  pin?: string
+  text: string
+}
 
-const BADGE_IMAGE = /img\.shields\.io\/badge\/AI(?:_|%20| )Install(?:_|%20| )Guard-([^)\s"'?]{1,300})/i
+const BADGE_IMAGE = /img\.shields\.io\/badge\/AI(?:_|%20| )Install(?:_|%20| )Guard-([^)\s"'?]{1,300})/gi
+const HTML_BLOCK_START = /^ {0,3}<\/?[A-Za-z][\w-]*(?:\s|\/?>|$)/
 
 /**
- * The strongest claim among the AI Install Guard badges a README shows. Code
- * blocks (fenced or indented) and HTML comments are left out: there a badge
- * is an example or hidden, not shown to the reader. A badge whose words name
- * no verdict is read as claiming the best one, since that is what it would
- * make a reader think.
+ * The strongest claim among the AI Install Guard badges a README shows, read
+ * the way a Markdown renderer shows it: fenced and indented code blocks and
+ * HTML comments are left out (there a badge is an example or hidden), while
+ * HTML blocks and list items, where badges usually sit indented, count. A
+ * badge whose words name no verdict is read as claiming the best one, since
+ * that is what it would make a reader think.
  */
 export function badgeClaim(readme: { path: string; text: string } | undefined): BadgeClaim | undefined {
   if (readme === undefined) return undefined
-  // Comments are blanked line for line, so line numbers stay right.
-  const visible = readme.text.replace(/<!--[\s\S]*?(?:-->|$)/g, comment => comment.replace(/[^\n]/g, ' '))
-  const lines = visible.split('\n')
-  let inFence = false
+  const lines = readme.text.split('\n')
+  let fence: { char: string; length: number } | undefined
+  let comment = false
+  let htmlBlock = false
+  let indentedCode = false
+  let listContext = false
+  let previousBlank = true
   let best: BadgeClaim | undefined
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] as string
-    if (/^[ \t]*(?:```|~~~)/.test(line)) {
-      inFence = !inFence
+    let line = lines[index] as string
+    const blank = line.trim() === ''
+    if (fence !== undefined) {
+      // A fence closes only with its own character, at least as long, and nothing after.
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)
+      if (close !== null && (close[1] as string)[0] === fence.char && (close[1] as string).length >= fence.length) fence = undefined
       continue
     }
-    if (inFence || /^(?: {4}|\t)/.test(line)) continue
-    const found = BADGE_IMAGE.exec(line.replace(/`[^`]*`/g, ''))
-    if (found === null) continue
-    let message = found[1] as string
-    try {
-      message = decodeURIComponent(message)
-    } catch {
-      // Left as written.
+    if (comment) {
+      const end = line.indexOf('-->')
+      if (end === -1) continue
+      comment = false
+      line = line.slice(end + 3)
     }
-    const words = message.replace(/--/g, '\u0000').replace(/-[0-9a-f]{3,8}$|-[a-z]+$/i, '').replace(/_/g, ' ').replace(/\u0000/g, '-').toLowerCase()
-    const claimed = /do not install/.test(words) ? 'reject' : /could not verify/.test(words) ? 'unverified' : /caution/.test(words) ? 'caution' : 'safe'
-    if (best === undefined || VERDICT_RANK[claimed] < VERDICT_RANK[best.claimed]) best = { file: readme.path, line: index + 1, claimed, text: words.slice(0, 120) }
+    const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    // A backtick fence's info string cannot hold a backtick: ```x``` is inline code.
+    if (open !== null && !((open[1] as string)[0] === '`' && (open[2] as string).includes('`'))) {
+      fence = { char: (open[1] as string)[0] as string, length: (open[1] as string).length }
+      continue
+    }
+    // An HTML comment hides what it holds only when it opens a line; inline,
+    // only a closed one is a comment.
+    if (/^ {0,3}<!--/.test(line) && !line.includes('-->', line.indexOf('<!--') + 4)) {
+      comment = true
+      continue
+    }
+    const indented = /^(?: {4}|\t)/.test(line)
+    if (indentedCode && !blank && !indented) indentedCode = false
+    if (!indentedCode && indented && previousBlank && !listContext && !htmlBlock) indentedCode = true
+    if (htmlBlock && blank) htmlBlock = false
+    else if (!htmlBlock && !indentedCode && HTML_BLOCK_START.test(line)) htmlBlock = true
+    if (!blank && !indented) listContext = /^ {0,3}(?:[-*+]|\d{1,9}[.)])\s/.test(line) || (listContext && !previousBlank)
+    else if (/^ {0,3}(?:[-*+]|\d{1,9}[.)])\s/.test(line)) listContext = true
+    previousBlank = blank
+    if (indentedCode) continue
+    const shown = line.replace(/<!--[\s\S]*?-->/g, '').replace(/`[^`]*`/g, '')
+    for (const found of shown.matchAll(BADGE_IMAGE)) {
+      let message = found[1] as string
+      try {
+        message = decodeURIComponent(message)
+      } catch {
+        // Left as written.
+      }
+      const words = message.replace(/--/g, '\u0000').replace(/-[0-9a-f]{3,8}$|-[a-z]+$/i, '').replace(/_/g, ' ').replace(/\u0000/g, '-').toLowerCase()
+      const claimed = /do not install/.test(words) ? 'reject' : /could not verify/.test(words) ? 'unverified' : /caution/.test(words) ? 'caution' : 'safe'
+      const pin = /·\s*((?:tree\s+)?[0-9a-f]{7,64})\b/.exec(words)?.[1]
+      if (best === undefined || VERDICT_RANK[claimed] < VERDICT_RANK[best.claimed]) best = { file: readme.path, line: index + 1, claimed, pin, text: words.slice(0, 120) }
+    }
   }
   return best
 }
@@ -121,19 +164,24 @@ const VERDICT_WORDS = { safe: 'Safe to install', caution: 'Install with caution'
  * badge never improves a verdict: one that claims better than the scan finds
  * is a warning, one that matches is only noted.
  */
-export function badgeRow(claim: BadgeClaim, actual: keyof typeof VERDICT_RANK): CheckResult {
+export function badgeRow(claim: BadgeClaim, actual: keyof typeof VERDICT_RANK, version: { sha?: string; treeHash?: string } = {}): CheckResult {
   const overclaims = VERDICT_RANK[claim.claimed] < VERDICT_RANK[actual]
+  // Which version the badge names, against the one scanned now.
+  const scanned = version.sha !== undefined ? version.sha.slice(0, 7) : version.treeHash !== undefined ? `tree ${version.treeHash.slice(7, 15)}` : undefined
+  const sameVersion = claim.pin !== undefined && scanned !== undefined && (claim.pin.startsWith('tree ') ? version.treeHash?.slice(7).startsWith(claim.pin.slice(5)) === true : version.sha?.startsWith(claim.pin) === true)
+  const named = claim.pin === undefined ? 'names no version' : sameVersion ? `is for this version (${claim.pin})` : `is for another version (${claim.pin})`
+  const summary = overclaims
+    ? [`The README's badge says ${VERDICT_WORDS[claim.claimed]}, but this version scans as ${VERDICT_WORDS[actual]}`, `The badge ${named}: it is outdated or was never earned`]
+    : sameVersion && claim.claimed === actual
+      ? [`The README shows an AI Install Guard badge for this version (${VERDICT_WORDS[claim.claimed]}); this scan agrees`]
+      : [`The README's badge says ${VERDICT_WORDS[claim.claimed]} and ${named}; this version scans as ${VERDICT_WORDS[actual]}`]
   return row(
     {
       id: 'provenance.badge',
       group: GROUP,
       title: 'Review badge in the README',
       advice: 'A badge is a picture anyone can paste. This scan is what counts: a badge that claims more than it finds is outdated or was never earned.',
-      summary: overclaims
-        ? [`The README's badge says ${VERDICT_WORDS[claim.claimed]}, but this version scans as ${VERDICT_WORDS[actual]}`, 'The badge is outdated or was never earned']
-        : claim.claimed === actual
-          ? [`The README shows an AI Install Guard badge (${VERDICT_WORDS[claim.claimed]}); this scan agrees`]
-          : [`The README's badge says ${VERDICT_WORDS[claim.claimed]}; this scan finds ${VERDICT_WORDS[actual]}`],
+      summary,
     },
     [{ file: claim.file, line: claim.line, excerpt: `badge: ${claim.text}`, status: overclaims ? 'warn' : 'info' }],
   )

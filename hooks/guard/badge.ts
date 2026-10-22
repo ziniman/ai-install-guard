@@ -25,7 +25,9 @@ export function badgeFor(view: GuardView | undefined): { markdown: string; pin: 
   const tree = /^sha256:[0-9a-f]{64}$/.test(view.treeHash) ? view.treeHash : undefined
   if (tree === undefined) return { refusal: 'The last scan has no tree hash to pin a badge to.' }
   const pin = sha !== undefined ? sha.slice(0, 7) : `tree ${tree.slice(7, 15)}`
+  // A scan of one folder says so: the rest of the commit was not judged.
+  const folder = sha !== undefined && view.subdir !== undefined && /^[\w./-]{1,200}$/.test(view.subdir) ? view.subdir : undefined
   const image = `https://img.shields.io/badge/${shieldPart('AI Install Guard')}-${shieldPart(`${MESSAGE[kind]} · ${pin}`)}-${COLOR[kind]}`
-  const scanned = sha !== undefined ? `commit ${sha}, ${tree}` : tree
-  return { markdown: `[![AI Install Guard: ${view.verdict.recommendation} at ${pin}](${image})](${BADGE_PAGE} "Scanned at ${scanned}")`, pin }
+  const scanned = sha !== undefined ? `commit ${sha}${folder === undefined ? '' : `, folder ${folder}`}, ${tree}` : tree
+  return { markdown: `[![AI Install Guard: ${view.verdict.recommendation} at ${pin}${folder === undefined ? '' : ` in ${folder}`}](${image})](${BADGE_PAGE} "Scanned at ${scanned}")`, pin }
 }

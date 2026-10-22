@@ -8,6 +8,7 @@ import { parseValidatorReport } from './scan/checks/validator'
 import type { Host } from './scan/host'
 import { formatReport, UNTRUSTED_NOTE } from './scan/report'
 import { scanFolder, type ScanReport } from './scan/scan'
+import { badgeRow } from './scan/checks/provenance'
 import type { VerdictKind } from './scan/verdict'
 import { FIXTURES } from './test-support/fixtures.gen'
 import { memoryHost, type FixtureFiles } from './test-support/memfs'
@@ -1352,6 +1353,57 @@ describe('badge claims, review round one', () => {
   test('a badge that says less than the scan finds is not called agreement', async () => {
     const report = await scanWith('clean-plugin', badge('do_not_install'))
     expect(row(report)?.status).toBe('info')
-    expect(row(report)?.summary?.[0]).toBe("The README's badge says Do not install; this scan finds Safe to install")
+    expect(row(report)?.summary?.[0]).toBe("The README's badge says Do not install and names no version; this version scans as Safe to install")
+  })
+})
+
+describe('badge claims, PR review round one', () => {
+  const b64 = (text: string) => ({ base64: btoa(text) })
+  const badge = (words: string) => `[![AI Install Guard](https://img.shields.io/badge/AI_Install_Guard-${words}-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge)`
+  const scanWith = (base: string, readme: string) =>
+    scanFolder(memoryHost(ROOT, { ...fixture(base), 'README.md': b64(`# x\n\n${readme}\n\nA plugin for the tests. Uninstall it with /plugin uninstall x.\n`) }), 'case', ROOT, { validate: false })
+  const row = (report: ScanReport) => report.results.find(result => result.id === 'provenance.badge')
+
+  test('an unclosed comment opener in inline code hides nothing', async () => {
+    expect(row(await scanWith('script-exec', `Write \`<!--\` to start a comment.\n\n${badge('safe_to_install')}`))?.status).toBe('warn')
+  })
+
+  test('badges indented inside an HTML block or a list item are shown, so they count', async () => {
+    expect(row(await scanWith('script-exec', `<p align="center">\n    ${badge('safe_to_install')}\n</p>`))?.status).toBe('warn')
+    expect(row(await scanWith('script-exec', `<div align="center">\n    ${badge('safe_to_install')}\n</div>`))?.status).toBe('warn')
+    expect(row(await scanWith('script-exec', `- Status:\n\n    ${badge('safe_to_install')}`))?.status).toBe('warn')
+  })
+
+  test('fences close only with their own kind, and ```x``` is not a fence', async () => {
+    const fence = '````'
+    expect(row(await scanWith('script-exec', `${fence}markdown\n\`\`\`\n${badge('safe_to_install')}\n\`\`\`\n${fence}`))).toBeUndefined()
+    expect(row(await scanWith('script-exec', `\`\`\`x\`\`\`\n\n${badge('safe_to_install')}`))?.status).toBe('warn')
+  })
+
+  test('every badge on a line counts', async () => {
+    expect(row(await scanWith('script-exec', `${badge('install_with_caution')} ${badge('safe_to_install')}`))?.status).toBe('warn')
+  })
+
+  test('a badge for another version is not agreement', async () => {
+    const report = await scanWith('clean-plugin', badge('safe_to_install_%C2%B7_aaaaaaa'))
+    expect(row(report)?.status).toBe('info')
+    expect(row(report)?.summary?.[0]).toBe("The README's badge says Safe to install and is for another version (aaaaaaa); this version scans as Safe to install")
+    const same = badgeRow({ file: 'README.md', line: 1, claimed: 'safe', pin: 'abcdef1', text: '' }, 'safe', { sha: `abcdef1${'0'.repeat(33)}` })
+    expect(same.summary?.[0]).toBe('The README shows an AI Install Guard badge for this version (Safe to install); this scan agrees')
+  })
+
+  test("a listed plugin's own badge is judged in a marketplace scan", async () => {
+    const plugin = Object.fromEntries(Object.entries(fixture('script-exec')).map(([path, file]) => [`plugins/a/${path}`, file]))
+    const files = {
+      ...plugin,
+      'plugins/a/README.md': b64(`# a\n\n${badge('safe_to_install')}\n\nA plugin. Uninstall it with /plugin uninstall a.\n`),
+      '.claude-plugin/marketplace.json': b64(JSON.stringify({ name: 'm', owner: { name: 'o' }, plugins: [{ name: 'a', source: './plugins/a' }] })),
+      LICENSE: fixture('clean-plugin').LICENSE as FixtureFiles[string],
+      'README.md': b64('# m\n\nA marketplace for the tests. Remove it with /plugin marketplace remove m.\n'),
+    }
+    const report = await scanFolder(memoryHost(ROOT, files), 'm', ROOT, { validate: false })
+    const found = row(report)
+    expect(found?.status).toBe('warn')
+    expect(found?.evidence[0]?.file).toBe('plugins/a/README.md')
   })
 })

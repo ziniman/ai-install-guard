@@ -238,6 +238,11 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
           {view.decidedAt === undefined ? '' : ` on ${new Date(view.decidedAt).toISOString().slice(0, 10)}`}. The decision is saved for this exact version; /guard forget clears it.
         </Text>
       )}
+      {view.decision !== undefined && offersBadge && (
+        <Box key="after-decision" flexDirection="row" gap={1} marginTop={1}>
+          <Button key="badge" label="Copy badge" hotkey="b" onPress={copyBadge} />
+        </Box>
+      )}
     </Box>
   )
 }
