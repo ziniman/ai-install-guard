@@ -16,7 +16,7 @@
 
 </div>
 
-> **Status: early development.** Today the guard can list and hash a local folder with `/guard scan <path>`. The checks, the verdict pane and the install gates below are being built in stages; see [Roadmap](#roadmap).
+> **Status: early development.** Today `/guard scan <path>` runs the deterministic checks on a local folder and prints a verdict. The pane, remote fetching and the install gates below are being built in stages; see [Roadmap](#roadmap).
 
 Everything you add to Claude Code runs with your permissions. A plugin can ship shell hooks that run every session, an MCP server can download and launch a package, a mod can read files or auto-approve tools, and a skill can carry hidden instructions the model will follow. The install prompt asks you to trust the author, and an update can change the files after you looked.
 
@@ -57,7 +57,20 @@ Approvals are remembered by commit and content hash, so the same version is neve
 
 | Command | What it does |
 |---------|--------------|
-| `/guard scan <path>` | Scan a local folder without installing it |
+| `/guard scan <path>` | Scan a local folder without installing it and print the verdict |
+| `/guard scan --details <path>` | The same, with every finding and the advice for each |
+
+## What the guard itself can do
+
+A security tool should be held to its own rules, so here is everything this mod uses, as `claude plugin validate .` lists it:
+
+| Capability | Why |
+|------------|-----|
+| `process.run` | Runs `claude plugin validate` on a candidate (it reads source and runs none of it), `readlink` to see where a symbolic link points without following it, and `printenv HOME` to expand `~`. Later stages add `git` to fetch candidates into the guard's own temporary folder. It never runs anything from a candidate. |
+| `fs.read`, `fs.list`, `fs.stat` | Reads the candidate's files to scan them. It never writes files. |
+| `command.register` | Adds the `/guard` command. |
+
+Later stages add `http.fetch` (public repository metadata), `store` and `state` (your decisions), `ui` (the pane) and, optionally, `model.complete` (a review that can only add warnings).
 
 ## What it is not
 
@@ -68,9 +81,9 @@ Approvals are remembered by commit and content hash, so the same version is neve
 ## Roadmap
 
 1. [x] Skeleton mod: `/guard scan <path>` lists and hashes a local folder
-2. [ ] Checks for structure, mod capabilities, classic hooks, skills, code patterns and committed secrets
+2. [x] Checks for structure, mod capabilities, classic hooks, skills, code patterns and committed secrets
 3. [ ] The verdict pane with Install and Reject
-4. [ ] Remote fetch pinned to a commit, provenance checks, MCP server checks
+4. [ ] Remote fetch pinned to a commit, provenance checks (with an optional reputation lookup against outside catalogs and vulnerability databases), MCP server checks
 5. [ ] Gates on `/plugin` and on Claude's own install commands, with approvals
 6. [ ] Module load gate with hash match, skill gate, session-start reconciliation
 7. [ ] Update diffs and the optional model review

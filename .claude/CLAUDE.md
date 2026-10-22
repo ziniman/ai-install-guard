@@ -25,10 +25,14 @@ These are product requirements, not style preferences. A change that breaks one 
   - `inventory.ts` walks a folder, never follows symbolic links (it records each link's stored target via `readlink` and where it lands), re-checks each file is still a plain file before reading it, and enforces size and count limits (`LIMITS`) on what it actually reads.
   - `hash.ts` holds `sha256Hex` and `treeHash`: one record per entry, `file <sha256> <path>`, `link <sha256 of stored target> <path>`, `dir - <path>` or `other - <path>`, each ended by NUL (no path can hold one), sorted by path, hashed. A link counts by its stored target so the same tree hashes the same on every machine. Changing this format changes every stored approval.
   - `safe-text.ts` shows control and invisible characters from a candidate as `<U+XXXX>`; everything a report quotes from a candidate goes through it.
+  - `scan.ts` runs a folder scan: inventory, `checks/context.ts` (file roles, manifest, hooks modules, classic hooks, MCP servers, prompts), Claude Code's validator (`checks/validator.ts`), then every check group, sorted into the report's order. `verdict.ts` decides: any FAIL is Do not install, any WARN is Install with caution, a scan error is Could not verify. `report.ts` prints the text report.
+  - `checks/`: one file per group (`structure`, `mod`, `hooks`, `prompts`, `code`, `secrets`, `quality`), shared regexes in `patterns.ts`, and `text.ts` (matches with line numbers, and `spanKinds`, a small tokenizer that tells code from strings, comments and regex literals). Each check returns one row built with `row()` from its evidence; the row takes the worst status any evidence carries.
+  - File roles decide weight: a hooks module, a script a hook or skill names, `bin/` and other code count in full; tests and docs nothing refers to, and CI or dotfiles, are only reported (INFO). A match inside a comment or a regex literal is also only reported, so a check's own patterns do not trip it.
+- Never put a literal invisible or bidirectional character in source: write `\u202e`, never the character. The hidden-characters check fails the guard's own source if one slips in.
   - `report.ts` formats the plain-text report.
 - `hooks/*.test.ts`: tests, run by `claude plugin test .`.
 - `hooks/test-support/`: `memfs.ts` serves fixtures to the engine's `fs.*` and `process.run` events; `fixtures.gen.ts` is generated.
-- `fixtures/<name>/`: inert sample plugins, one per rule. Never installed, loaded or run.
+- `fixtures/<name>/`: inert sample plugins, one per rule, listed with the rule each trips in `fixtures/README.md`. Never installed, loaded or run. `hooks/checks.test.ts` holds the table of what each fixture must trip.
 - `scripts/`: `sync-versions.js` (release) and `build-fixtures.js` (tests).
 
 ## The mod runtime

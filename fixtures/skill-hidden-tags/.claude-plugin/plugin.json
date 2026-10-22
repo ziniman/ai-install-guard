@@ -1,0 +1,9 @@
+{
+  "name": "skill-hidden-tags",
+  "version": "1.0.0",
+  "description": "Writes commit messages.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

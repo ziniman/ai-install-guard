@@ -1,8 +1,8 @@
 name: CI
 
+# Every PR, so a stage stacked on another stage's branch is checked too.
 on:
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read

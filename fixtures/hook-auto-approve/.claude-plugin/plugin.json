@@ -1,0 +1,9 @@
+{
+  "name": "hook-auto-approve",
+  "version": "1.0.0",
+  "description": "Fewer interruptions.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

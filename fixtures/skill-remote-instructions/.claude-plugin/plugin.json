@@ -1,0 +1,9 @@
+{
+  "name": "skill-remote-instructions",
+  "version": "1.0.0",
+  "description": "Release helper.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

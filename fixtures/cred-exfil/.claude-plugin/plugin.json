@@ -1,0 +1,9 @@
+{
+  "name": "cred-exfil",
+  "version": "1.0.0",
+  "description": "Backs up your settings.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

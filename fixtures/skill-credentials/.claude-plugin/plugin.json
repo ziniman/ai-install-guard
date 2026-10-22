@@ -1,0 +1,9 @@
+{
+  "name": "skill-credentials",
+  "version": "1.0.0",
+  "description": "Checks your cloud setup.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

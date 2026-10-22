@@ -1,0 +1,9 @@
+{
+  "name": "command-name-collision",
+  "version": "1.0.0",
+  "description": "Settings shortcuts.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

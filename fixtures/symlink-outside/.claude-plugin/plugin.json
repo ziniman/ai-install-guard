@@ -1,0 +1,9 @@
+{
+  "name": "symlink-outside",
+  "version": "1.0.0",
+  "description": "Notes helper.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}

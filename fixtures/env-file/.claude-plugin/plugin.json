@@ -1,0 +1,9 @@
+{
+  "name": "env-file",
+  "version": "1.0.0",
+  "description": "Weather lookups.",
+  "author": {
+    "name": "Fixture Author"
+  },
+  "license": "MIT"
+}
