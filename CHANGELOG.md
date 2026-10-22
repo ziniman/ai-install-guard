@@ -6,6 +6,10 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ## Unreleased
 
+**`skill`** - AI Install Guard for Claude chat: `npm run build:skill` bundles the scanner into an Agent Skill, `dist/ai-install-guard-skill.zip`, to upload to Claude. Attach a zip of a plugin, skill or MCP server, or paste a repository link, and Claude runs the same deterministic checks and presents the verdict, the plain-language summary and the evidence, treating the scanned files as untrusted data and never softening a failure. Where a chat's network settings block GitHub, it says so and asks for a zip
+
+**`cli`** - `node scan.js <folder | zip | repository>` runs the scan outside Claude Code, with `--ref`, `--path`, `--details`, `--json` and `--lookups`, and exits with the verdict (0 to 3). A zip is unpacked by the scanner itself into its own temporary folder, which is removed afterwards: paths that would land outside it, special files, encrypted entries, names listed twice and anything over the size limits stop the scan as Could not verify, and links are recreated as links and judged, never followed. It starts only `git`, `sh`, `mktemp` and `rm` (PowerShell on Windows)
+
 **`provenance`** - For a repository on GitHub, the report now says how old it and its owner's account are, its stars, forks and contributors, whether it is archived or a fork, and whether the scanned commit is signed and on the default branch. A brand-new account, a new repository with one author and few stars, and a commit named by id that is not on the default branch (it may come from a fork) are warnings; a lookup that fails is only noted
 
 **`outsideLookups`** - A new setting, off by default. Turned on, the packages a plugin's MCP servers start or its manifests pin are checked against OSV, where malware (MAL ids, or advisories marked CWE-506) fails and a pinned version's known vulnerabilities warn, and its name is compared with Anthropic's official plugins, where a near miss warns
