@@ -94,6 +94,8 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
 export async function showUnverified($: EngineInterface, target: string, reason: string, options: ShowOptions): Promise<{ view: GuardView; placed: boolean }> {
   const placed = await openPane($)
   const scanId = newScanId()
+  // Copy report never copies the previous scan's report in this one's place.
+  await $.store.delete(REPORT_TEXT).catch(() => undefined)
   await update($, viewAtom, () => ({ ...withRequest(scanningView(target, options.action), options.request), scanId }))
   return { view: (await showFailure($, target, `Could not verify ${safeLine(target)}: ${safeLine(reason)}`, options, scanId)).view, placed }
 }
@@ -111,7 +113,7 @@ async function showFailure($: EngineInterface, target: string, reason: string, o
     verdict: { kind: 'unverified', recommendation: 'Could not verify', reasons: [reason], counts: { pass: 0, warn: 0, fail: 0, info: 0 } },
   }
   if (!(await owns($, scanId).catch(() => false))) return { view: failed, shown: false }
-  await $.store.set(REPORT_TEXT, reason).catch(() => undefined)
+  await $.store.set(REPORT_TEXT, reason).catch(() => $.store.delete(REPORT_TEXT).catch(() => undefined))
   let shown = false
   await update($, viewAtom, current => {
     shown = current?.scanId === scanId

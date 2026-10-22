@@ -38,7 +38,9 @@ async function pluginTarget(host: Host, request: Extract<InstallRequest, { kind:
   const installed = isRecord(listing) && Array.isArray(listing.installed) ? (listing.installed as { id?: unknown }[]) : []
   const id = request.marketplace === undefined ? request.plugin : `${request.plugin}@${request.marketplace}`
   const matches = available.filter(item => item.name === request.plugin && (request.marketplace === undefined || item.marketplaceName === request.marketplace))
-  const marketplaces = await marketplaceList(host)
+  // Where marketplaces live is read only when it is needed: for a relative source or a catalog file.
+  let listed: Promise<Marketplace[]> | undefined
+  const marketplaces = (): Promise<Marketplace[]> => (listed ??= marketplaceList(host))
 
   if (matches.length === 0) {
     // An installed plugin is not in the available list: its catalog says where an update comes from.
@@ -46,21 +48,21 @@ async function pluginTarget(host: Host, request: Extract<InstallRequest, { kind:
     const mine = installed.map(item => (typeof item.id === 'string' ? item.id : '')).filter(item => (request.marketplace === undefined ? item.startsWith(`${request.plugin}@`) : item === id))
     if (mine.length > 1 && request.marketplace === undefined) return ambiguous(request.plugin, mine.map(item => item.split('@')[1] ?? ''))
     const owner = mine[0]?.split('@')[1] ?? request.marketplace
-    const market = marketplaces.find(item => item.name === owner)
+    const market = (await marketplaces()).find(item => item.name === owner)
     if (market !== undefined) {
       const entry = await catalogEntry(host, market, request.plugin)
-      if (entry !== undefined) return sourceTarget(host, entry, market)
+      if (entry !== undefined) return sourceTarget(host, entry, async () => market)
     }
     // `/plugin install <marketplace>` opens that marketplace's menu.
-    if (request.verb === 'install' && request.marketplace === undefined && marketplaces.some(item => item.name === request.plugin)) return { kind: 'browse' }
+    if (request.verb === 'install' && request.marketplace === undefined && (await marketplaces()).some(item => item.name === request.plugin)) return { kind: 'browse' }
     return { kind: 'unverifiable', reason: `${safeLine(id)} is not in the marketplaces you added, so there was nothing to scan` }
   }
 
   // The same plugin can be listed by two marketplaces. One source between them is one target.
   const distinct = new Map(matches.map(item => [sourceKey(item), item]))
   if (distinct.size > 1) return ambiguous(request.plugin, matches.map(item => String(item.marketplaceName)))
-  const [entry] = distinct.values() as IterableIterator<Listed>
-  return sourceTarget(host, entry as Listed, marketplaces.find(item => item.name === entry?.marketplaceName))
+  const entry = [...distinct.values()][0] as Listed
+  return sourceTarget(host, entry, () => marketplaces().then(list => list.find(item => item.name === entry.marketplaceName)))
 }
 
 function ambiguous(plugin: string, marketplaces: readonly string[]): Target {
@@ -76,11 +78,12 @@ function sourceKey(item: Listed): string {
   return typeof item.source === 'string' ? `${String(item.marketplaceName)}:${item.source}` : JSON.stringify(item.source ?? null)
 }
 
-/** Where a catalog entry's `source` says the plugin comes from. */
-async function sourceTarget(host: Host, entry: Listed, market: Marketplace | undefined): Promise<Target> {
+/** Where a catalog entry's `source` says the plugin comes from; `marketOf` finds its marketplace when a relative source needs it. */
+async function sourceTarget(host: Host, entry: Listed, marketOf: () => Promise<Marketplace | undefined>): Promise<Target> {
   const source = entry.source
   if (typeof source === 'string') {
     if (!source.startsWith('./')) return { kind: 'unverifiable', reason: `its source "${safeLine(source)}" is not a folder inside its marketplace` }
+    const market = await marketOf()
     if (market?.installLocation === undefined) return { kind: 'unverifiable', reason: 'its marketplace has no copy on this machine to read it from' }
     return { kind: 'local', path: await insideFolder(host, market.installLocation, source) }
   }
@@ -90,6 +93,8 @@ async function sourceTarget(host: Host, entry: Listed, market: Marketplace | und
     case 'url':
       return remote(text(source.url), ref)
     case 'git-subdir':
+      // Without its folder the entry would name the whole repository, which is not what installs.
+      if (text(source.path) === undefined) return { kind: 'unverifiable', reason: 'its catalog entry names no folder inside its repository' }
       return remote(text(source.url), ref, text(source.path))
     case 'github':
       return remote(text(source.repo) === undefined ? undefined : `https://github.com/${text(source.repo)}.git`, ref)

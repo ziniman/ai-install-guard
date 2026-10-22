@@ -145,9 +145,13 @@ type Collected = {
   others: number
 }
 
-/** A word whose text is only known as the command runs. */
+/**
+ * A word whose text is only known as the command runs: an expansion, a
+ * substitution, a pathname pattern (`claud[e]`, `cl*`) or a brace list
+ * (`cl{aude,}`). `[` on its own is the test command.
+ */
 function isDynamic(word: string): boolean {
-  return /[$`]/.test(word)
+  return word !== '[' && (/[$`*?[]/.test(word) || /\{[^}]*,[^}]*\}/.test(word))
 }
 
 /**
@@ -222,7 +226,11 @@ function collectInstalls(command: string, found: Reading[], depth: number): Coll
     out.unseen ||= inner.unseen
     out.others += inner.others
   }
-  for (const { words, input } of splitShell(command).commands) {
+  for (const { words, input, scripts: substitutions, writes } of splitShell(command).commands) {
+    // What its substitutions run comes first, and is read as commands too.
+    substitutions?.forEach(nested)
+    // A write to a file is more than an install, whatever program makes it.
+    if (writes === true) out.others += 1
     const { index, scripts, fromInput } = programAt(words)
     scripts.forEach(nested)
     const word = words[index]
@@ -359,17 +367,23 @@ function readOptions(words: readonly string[], valued: ReadonlySet<string>, flag
   return out
 }
 
-/** One simple command: its words, and the text a here-document or here-string feeds it. */
-export type ShellCommand = { words: string[]; input?: string }
+/**
+ * One simple command: its words; the text a here-document or here-string
+ * feeds it; the bodies of its command substitutions, which run before it
+ * does; and whether it writes to a file through a redirection.
+ */
+export type ShellCommand = { words: string[]; input?: string; scripts?: string[]; writes?: boolean }
 
 /**
  * Splits shell text into simple commands of words, as a POSIX shell would
  * quote them: `;`, `&&`, `||`, `|`, `&`, parentheses and new lines end a
- * command; quotes and backslashes are resolved; redirections and their
- * targets are dropped; a `#` comment is skipped; a here-document's body or a
- * here-string becomes the command's `input`, not commands of its own.
- * `dynamic` is set when part of the text is only known once it runs: `$`
- * expansions, backquotes, process substitutions and unclosed quotes.
+ * command; quotes and backslashes are resolved; a `#` comment is skipped.
+ * Redirections and their targets are not words; a redirection that writes to
+ * a file other than /dev/null marks its command `writes`. A here-document's
+ * body or a here-string becomes the command's `input`, and the body of each
+ * `$(…)`, backquoted or `<(…)` substitution one of its `scripts`, never
+ * commands of its own. `dynamic` is set when part of the text is only known
+ * once it runs: `$` expansions, substitutions and unclosed quotes.
  */
 export function splitShell(text: string): { commands: ShellCommand[]; dynamic: boolean } {
   const commands: ShellCommand[] = []
@@ -379,6 +393,9 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   let dynamic = false
   /** What the next word is: a word, a redirection's target, a here-document's end marker, or a here-string. */
   let next: 'word' | 'target' | 'marker' | 'herestring' = 'word'
+  /** For a redirection's target: whether the redirection writes, and whether it duplicates a descriptor (`>&2`). */
+  let writing = false
+  let duplicating = false
   let stripTabs = false
   const heredocs: { marker: string; stripTabs: boolean; command: ShellCommand }[] = []
   const endWord = (): void => {
@@ -386,6 +403,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     if (next === 'marker') heredocs.push({ marker: word, stripTabs, command: current })
     else if (next === 'herestring') current.input = word
     else if (next === 'word') current.words.push(word)
+    else if (writing && word !== '/dev/null' && !(duplicating && /^(?:\d+|-)$/.test(word))) current.writes = true
     next = 'word'
     word = ''
     inWord = false
@@ -393,8 +411,20 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   const endCommand = (): void => {
     endWord()
     next = 'word'
-    if (current.words.length > 0 || current.input !== undefined) commands.push(current)
+    if (current.words.length > 0 || current.input !== undefined || current.scripts !== undefined || current.writes === true) commands.push(current)
     current = { words: [] }
+  }
+  /** Reads the substitution that opens at `open` (its `(` or backquote); returns where it closes. */
+  const substitution = (open: number): number => {
+    const isBackquote = text[open] === '`'
+    const close = isBackquote ? closingBackquote(text, open) : closingParen(text, open)
+    const end = close === -1 ? text.length : close
+    // `$((…))` is arithmetic, not a command.
+    if (!(text[open] === '(' && text[open + 1] === '(')) (current.scripts ??= []).push(text.slice(open + 1, end))
+    dynamic = true
+    word += text.slice(open - (isBackquote ? 0 : 1), Math.min(end + 1, text.length))
+    inWord = true
+    return end
   }
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index] as string
@@ -416,7 +446,15 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
           index += 2
           continue
         }
-        if (inner === '$' || inner === '`') dynamic = true
+        if (inner === '$' && text[index + 1] === '(') {
+          index = substitution(index + 1) + 1
+          continue
+        }
+        if (inner === '`') {
+          index = substitution(index) + 1
+          continue
+        }
+        if (inner === '$') dynamic = true
         word += inner
         index += 1
       }
@@ -431,7 +469,15 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       index += 1
       continue
     }
-    if (char === '$' || char === '`') {
+    if (char === '$' && text[index + 1] === '(') {
+      index = substitution(index + 1)
+      continue
+    }
+    if (char === '`') {
+      index = substitution(index)
+      continue
+    }
+    if (char === '$') {
       dynamic = true
       word += char
       inWord = true
@@ -471,31 +517,45 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       endWord()
       continue
     }
-    if (char === '<' || char === '>') {
+    // `&>file` and `&>>file` redirect both outputs; any other `&` ends a command.
+    const redirects = char === '<' || char === '>' || (char === '&' && text[index + 1] === '>')
+    if (redirects) {
       // A file descriptor right before it (2>) is part of the redirection.
       if (inWord && /^\d+$/.test(word)) {
         word = ''
         inWord = false
       }
       endWord()
+      if (char === '&') index += 1
+      const operator = text[index] as string
       if (text[index + 1] === '(') {
+        // `<(…)` and `>(…)`: a command whose output or input stands in for a file.
+        const end = closingParen(text, index + 1)
+        ;(current.scripts ??= []).push(text.slice(index + 2, end === -1 ? text.length : end))
         dynamic = true
-        next = 'target'
+        index = end === -1 ? text.length : end
         continue
       }
-      if (char === '<' && text.startsWith('<<<', index)) {
+      if (operator === '<' && text.startsWith('<<<', index)) {
         index += 2
         next = 'herestring'
         continue
       }
-      if (char === '<' && text[index + 1] === '<') {
+      if (operator === '<' && text[index + 1] === '<') {
         index += 1
         stripTabs = text[index + 1] === '-'
         if (stripTabs) index += 1
         next = 'marker'
         continue
       }
-      while (text[index + 1] === '>' || text[index + 1] === '&' || text[index + 1] === '|') index += 1
+      writing = operator === '>' || char === '&'
+      duplicating = false
+      while (text[index + 1] === '>' || text[index + 1] === '&' || text[index + 1] === '|') {
+        if (text[index + 1] === '&') duplicating = true
+        index += 1
+      }
+      // `<>file` opens it for writing too.
+      if (operator === '<' && text[index] === '>') writing = true
       next = 'target'
       continue
     }
@@ -508,4 +568,37 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   }
   endCommand()
   return { commands, dynamic }
+}
+
+/** Where the `(` at `open` is closed, past quotes and nested parentheses; -1 if it never is. */
+function closingParen(text: string, open: number): number {
+  let depth = 0
+  for (let index = open; index < text.length; index += 1) {
+    const char = text[index] as string
+    if (char === '\\') {
+      index += 1
+    } else if (char === "'") {
+      const end = text.indexOf("'", index + 1)
+      if (end === -1) return -1
+      index = end
+    } else if (char === '"') {
+      index += 1
+      while (index < text.length && text[index] !== '"') index += text[index] === '\\' ? 2 : 1
+    } else if (char === '(') {
+      depth += 1
+    } else if (char === ')') {
+      depth -= 1
+      if (depth === 0) return index
+    }
+  }
+  return -1
+}
+
+/** Where the backquote at `open` is closed; -1 if it never is. */
+function closingBackquote(text: string, open: number): number {
+  for (let index = open + 1; index < text.length; index += 1) {
+    if (text[index] === '\\') index += 1
+    else if (text[index] === '`') return index
+  }
+  return -1
 }

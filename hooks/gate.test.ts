@@ -91,6 +91,22 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('claude plugin install notes@acme && ./more.sh')).toMatchObject({ reason: expect.stringContaining('runs more than the install') })
   })
 
+  test('substitutions, file writes and patterns are read, not trusted', () => {
+    // An install inside a substitution runs before the command it sits in.
+    expect(readShellCommand('true "$(claude plugin install notes@acme)"').kind).toBe('install')
+    expect(readShellCommand('echo `claude plugin install notes@acme`').kind).toBe('install')
+    expect(readShellCommand('diff <(claude plugin install notes@acme) /dev/null').kind).not.toBe('pass')
+    // A companion that writes a file is more than the install.
+    expect(readShellCommand('echo data > important && claude plugin install notes@acme')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('runs more than the install') })
+    expect(readShellCommand('claude plugin install notes@acme >> ~/.zshrc').kind).toBe('unreadable')
+    expect(readShellCommand('claude plugin install notes@acme &> log.txt').kind).toBe('unreadable')
+    expect(readShellCommand('claude plugin install notes@acme > /dev/null 2>&1').kind).toBe('install')
+    // A program named by a pattern is only known as it runs.
+    expect(readShellCommand('./claud[e] plugin install notes@acme').kind).toBe('unreadable')
+    expect(readShellCommand('cl{aude,} plugin install notes@acme').kind).toBe('unreadable')
+    expect(readShellCommand('echo $((1 + 2)) "$(date)"')).toEqual({ kind: 'pass', browse: false })
+  })
+
   test('the program is found past env, sudo and the like; arguments of a printing program are text', () => {
     expect(readShellCommand('sudo -u me env A=1 claude plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand('env -S "claude plugin install notes@acme"')).toMatchObject(install('notes', 'acme'))
@@ -220,9 +236,9 @@ describe('gate A: /plugin install', () => {
     await pane.unmount()
   })
 
-  test('a version you approved before installs without a new scan', async ($, on) => {
+  test('a version you approved before installs without asking again, after a new scan finds it no worse', async ($, on) => {
     seededStore(on)
-    serveUi(on)
+    const ui = serveUi(on)
     const state = world(on)
     await $.command.run(typed('plugin', 'install notes@acme'))
     const pane = await mountPane($)
@@ -232,7 +248,33 @@ describe('gate A: /plugin install', () => {
     const again = await $.command.run(typed('plugin', 'install notes@acme'))
     expect(again.text).toBe('core ran /plugin install notes@acme')
     expect(state.core).toEqual(['install notes@acme', 'install notes@acme'])
-    expect(fetches(state)).toBe(1)
+    expect(fetches(state)).toBe(2)
+    expect(ui.toasts.some(text => text.startsWith('AI Install Guard: you approved notes@acme at commit aaaaaaaaaaaa on '))).toBe(true)
+  })
+
+  test('an approved version that now judges worse is held again', async ($, on) => {
+    const store = seededStore(on)
+    serveUi(on)
+    const state = world(on, { work: nest('plugins/notes', fixture('curl-hook')) })
+    store.set('decisions', [
+      { target: 'notes@acme', root: 'https://github.com/acme/tools.git#plugins/notes', sha: SHA, treeHash: 'sha256:old', verdict: 'Safe to install', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 0 },
+    ])
+    const answer = await $.command.run(typed('plugin', 'install notes@acme'))
+    expect(answer.text).toContain('Do not install')
+    expect(state.core).toEqual([])
+  })
+
+  test('a rejected version is refused without a new scan', async ($, on) => {
+    const store = seededStore(on)
+    serveUi(on)
+    const state = world(on)
+    store.set('decisions', [
+      { target: 'notes@acme', root: 'https://github.com/acme/tools.git#plugins/notes', sha: SHA, treeHash: 'sha256:x', verdict: 'Safe to install', verdictKind: 'safe', decision: 'rejected', overridden: false, decidedAt: 0 },
+    ])
+    const answer = await $.command.run(typed('plugin', 'install notes@acme'))
+    expect(answer.text).toContain('you rejected notes@acme at commit aaaaaaaaaaaa on 1970-01-01')
+    expect(fetches(state)).toBe(0)
+    expect(state.core).toEqual([])
   })
 
   test('a new commit is scanned again, even after an approval', async ($, on) => {
@@ -462,7 +504,8 @@ describe("gate B: Claude's own install commands", () => {
     const ran = await $.tool.call(bash('claude plugin install notes@acme --scope project'))
     expect(ran.deny).toBeUndefined()
     expect(state.core).toEqual(['claude plugin install notes@acme --scope project'])
-    expect(fetches(state)).toBe(1)
+    // The run again is scanned again, and the approval holds because it judges no worse.
+    expect(fetches(state)).toBe(2)
   })
 
   test('commands that install nothing run as they are, with nothing looked up', async ($, on) => {

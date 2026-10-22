@@ -6,7 +6,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { GuardRequest } from '../../types'
-import { pinnedDecision, type Decision } from '../guard/decisions'
+import { pinnedDecision } from '../guard/decisions'
 import { takePass } from '../guard/passes'
 import { showScan, showUnverified, type Shown } from '../guard/run'
 import { sourceRoot } from '../guard/view'
@@ -44,11 +44,13 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
       return hold(request, 'Could not verify', '', shown.placed)
     }
     case 'remote': {
-      // The commit the install would take now. A decision on it needs no new scan.
+      // The commit the install would take now. A rejection of it stands
+      // without a new scan; an approval is checked against a new one, which
+      // may judge worse (a lookup turned on since may know it as malware).
       const pin = await resolvePin(host, target.spec).catch(() => undefined)
       if (pin !== undefined) {
         const decided = await pinnedDecision($, { root: sourceRoot(target.spec.url, pin.subdir), sha: pin.sha }).catch(() => undefined)
-        if (decided !== undefined) return earlier(request, decided, name)
+        if (decided?.decision === 'rejected') return rejected(request, name, ` at commit ${pin.sha.slice(0, 12)}`, decided.decidedAt)
       }
       // The scan fetches exactly the commit just looked up, so the verdict is about what installs.
       const spec = pin === undefined ? target.spec : { url: target.spec.url, ref: pin.sha, ...(pin.subdir === undefined ? {} : { subdir: pin.subdir }) }
@@ -72,8 +74,9 @@ function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement
   if (shown.kind === 'failed') return shown.superseded ? superseded(request) : hold(request, 'Could not verify', '', shown.placed)
   const sha = shown.report.source?.sha
   const where = sha === undefined ? '' : ` at commit ${sha.slice(0, 12)}`
-  // The same files approved before (through /guard scan, or an earlier install) need no second press.
-  if (shown.view.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${name}${where} before; installing it` }
+  // The same files approved before (through /guard scan, or an earlier install), and judged no
+  // worse now, need no second press.
+  if (shown.view.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${name}${where} on ${day(shown.view.decidedAt ?? Date.now())}; installing it` }
   if (shown.view.decision === 'rejected') return rejected(request, name, where, shown.view.decidedAt)
   if (shown.superseded) return superseded(request)
   return hold(request, shown.report.verdict.recommendation, where, shown.placed, shown.text)
@@ -83,12 +86,6 @@ function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement
 function superseded(request: GuardRequest): Judgement {
   const text = `AI Install Guard: another scan took the pane before the one for ${request.label} finished, so nothing was installed.`
   return { kind: 'hold', text: request.origin === 'tool' ? `${text} Do not retry it now; tell the person, and run it again once they ask.` : `${text} Run it again to review it.` }
-}
-
-function earlier(request: GuardRequest, decided: Decision, name: string): Judgement {
-  const where = decided.sha === undefined ? '' : ` at commit ${decided.sha.slice(0, 12)}`
-  if (decided.decision === 'rejected') return rejected(request, name, where, decided.decidedAt)
-  return { kind: 'allow', note: `AI Install Guard: you approved ${name}${where} on ${day(decided.decidedAt)}; installing it` }
 }
 
 function rejected(request: GuardRequest, name: string, where: string, decidedAt: number | undefined): Judgement {
