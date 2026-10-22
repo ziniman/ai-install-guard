@@ -294,11 +294,14 @@ function collectInstalls(command: string, found: Reading[], depth: number): Coll
     const inline = INTERPRETERS[program.replace(/\.exe$/, '').replace(/^python3\.\d+$/, 'python3')]
     if (inline !== undefined && words.slice(index + 1).some(item => inline.includes(item.toLowerCase()))) out.unseen = true
     if (QUIET.has(program)) continue
-    // Any other program may run an install among its arguments (`watch`, `flock`).
+    // Any other program may run an install among its arguments (`watch`,
+    // `flock`), and may run it again and again: the program around it counts
+    // as more than the install, so it is held.
     const inside = words.findIndex((item, at) => at > index && isClaudePlugin(words, at))
     const reading = inside === -1 ? undefined : claudePlugin(words, inside)
     if (reading !== undefined) {
       found.push(reading)
+      out.others += 1
       continue
     }
     // Or run an argument as a script (`su -c '…'`, `watch '…'`): an install

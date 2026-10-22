@@ -127,7 +127,8 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('sudo -u me env A=1 claude plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand('env -S "claude plugin install notes@acme"')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand('timeout 60 claude plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
-    expect(readShellCommand('watch claude plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
+    // watch would run the install again and again on one approval.
+    expect(readShellCommand('watch claude plugin install notes@acme')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('runs more than the install') })
     expect(readShellCommand('claude plugin install notes@acme 2>&1 | tail -20')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand("printf '%s\\n' claude plugin install notes@acme")).toEqual({ kind: 'pass', browse: false })
     expect(readShellCommand('echo claude plugin install notes@acme')).toEqual({ kind: 'pass', browse: false })
