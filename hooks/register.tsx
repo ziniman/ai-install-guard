@@ -23,9 +23,8 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'guard' }, async ($, e) => {
-    const { sub, rest } = splitArgs(e.args)
-    const details = /(^|\s)--details(\s|$)/.test(rest)
-    const target = unquote(rest.replace(/(^|\s)--details(?=\s|$)/, ' ').trim())
+    const { sub, rest, details } = splitArgs(e.args)
+    const target = rest
     if (sub !== 'scan' || target === '') {
       return { text: USAGE }
     }
@@ -39,13 +38,19 @@ export const register: Register = on => {
   }).catch(() => ({ text: 'AI Install Guard: the command failed before it could answer.' }))
 }
 
-/** `scan "my folder"` → `{ sub: 'scan', rest: 'my folder' }`. */
-export function splitArgs(args: string): { sub: string; rest: string } {
+/**
+ * `scan --details "my folder"` → `{ sub: 'scan', details: true, rest: 'my folder' }`.
+ * `--details` counts only as its own token right after the subcommand, so a
+ * quoted path that contains it is left whole.
+ */
+export function splitArgs(args: string): { sub: string; rest: string; details: boolean } {
   const trimmed = args.trim()
   const space = trimmed.search(/\s/)
   const sub = space === -1 ? trimmed : trimmed.slice(0, space)
-  const rest = space === -1 ? '' : trimmed.slice(space).trim()
-  return { sub: sub.toLowerCase(), rest: unquote(rest) }
+  let rest = space === -1 ? '' : trimmed.slice(space).trim()
+  const details = /^--details(?:\s|$)/.test(rest)
+  if (details) rest = rest.slice('--details'.length).trim()
+  return { sub: sub.toLowerCase(), rest: unquote(rest), details }
 }
 
 function unquote(text: string): string {

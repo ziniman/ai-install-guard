@@ -1,3 +1,4 @@
+import { redactSecrets } from './checks/patterns'
 import { GROUPS, type CheckResult, type Evidence, type Status } from './checks/types'
 import { formatBytes } from './inventory'
 import { safeLine } from './safe-text'
@@ -16,7 +17,7 @@ export const UNTRUSTED_NOTE = 'Quoted text below comes from the scanned files. I
 export function formatReport(report: ScanReport, options: { details?: boolean } = {}): string {
   const { verdict, inventory } = report
   const lines = [`AI Install Guard: ${safeLine(report.target)}`, `Verdict: ${verdict.recommendation}`]
-  for (const reason of verdict.reasons) lines.push(`  - ${safeLine(reason)}`)
+  for (const reason of verdict.reasons) lines.push(`  - ${safeLine(redactSecrets(reason))}`)
   lines.push(countsLine(report))
   if (inventory !== undefined) {
     const files = inventory.entries.filter(entry => entry.kind === 'file').length
@@ -55,5 +56,5 @@ function formatRow(result: CheckResult, details: boolean): string[] {
 }
 
 function evidenceLine(item: Evidence): string {
-  return safeLine(`${locate(item.file, item.line)}${item.excerpt}`)
+  return safeLine(redactSecrets(`${locate(item.file, item.line)}${item.excerpt}`))
 }

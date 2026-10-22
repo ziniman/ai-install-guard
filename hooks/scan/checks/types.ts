@@ -1,3 +1,5 @@
+import { redactSecrets } from './patterns'
+
 export type Status = 'pass' | 'warn' | 'fail' | 'info'
 
 export type Severity = 'none' | 'low' | 'medium' | 'high' | 'critical'
@@ -80,6 +82,8 @@ export function row(
     return { ...base, status: 'pass', severity: 'none', evidence: [] }
   }
   const status = evidence.reduce<Status>((acc, item) => worse(acc, item.status ?? fallback), 'info')
-  const worstFirst = [...evidence].sort((a, b) => RANK[b.status ?? fallback] - RANK[a.status ?? fallback])
+  const worstFirst = [...evidence]
+    .sort((a, b) => RANK[b.status ?? fallback] - RANK[a.status ?? fallback])
+    .map(item => ({ ...item, excerpt: redactSecrets(item.excerpt) }))
   return { ...base, status, severity: severity ?? severityFor(status), evidence: worstFirst }
 }

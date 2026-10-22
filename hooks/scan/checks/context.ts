@@ -134,7 +134,9 @@ const REPO_FILES = /^(?:\.github|\.gitlab|\.circleci|\.husky|\.vscode|\.idea|\.d
 
 export function isDocPath(path: string): boolean {
   const first = path.split('/')[0]?.toLowerCase()
-  return DOC_NAMES.test(basename(path)) || first === 'docs' || first === 'doc' || REPO_FILES.test(path)
+  // A doc name on a code file (history.js, security.ts) is still code.
+  const isDocName = DOC_NAMES.test(basename(path)) && !CODE_EXTENSIONS.has(extension(path))
+  return isDocName || first === 'docs' || first === 'doc' || REPO_FILES.test(path)
 }
 
 export function buildContext(tree: ScannedTree): ScanContext {
@@ -142,10 +144,26 @@ export function buildContext(tree: ScannedTree): ScanContext {
   const paths = new Set(files.map(file => file.path))
   // An in-folder link stands for the file it lands on: Claude Code follows it.
   const aliases = new Map<string, string>()
+  const dirAliases: { link: string; target: string }[] = []
+  const dirs = new Set(tree.inventory.entries.filter(entry => entry.kind === 'dir').map(entry => entry.path))
   for (const entry of tree.inventory.entries) {
-    if (entry.kind === 'link' && entry.isInside && entry.landsAt !== undefined && paths.has(entry.landsAt)) aliases.set(entry.path, entry.landsAt)
+    if (entry.kind !== 'link' || !entry.isInside || entry.landsAt === undefined) continue
+    if (paths.has(entry.landsAt)) aliases.set(entry.path, entry.landsAt)
+    else if (dirs.has(entry.landsAt)) dirAliases.push({ link: entry.path, target: entry.landsAt })
   }
-  const realOf = (path: string): string | undefined => (paths.has(path) ? path : aliases.get(path))
+  /** The file a path reaches, through a link to a file or a link to a folder on the way. */
+  const realOf = (path: string): string | undefined => {
+    if (paths.has(path)) return path
+    const viaFile = aliases.get(path)
+    if (viaFile !== undefined) return viaFile
+    for (const { link, target } of dirAliases) {
+      if (path.startsWith(`${link}/`)) {
+        const real = `${target}/${path.slice(link.length + 1)}`
+        if (paths.has(real)) return real
+      }
+    }
+    return undefined
+  }
   const texts = new Map<string, string>()
   const text = (path: string): string | undefined => {
     const cached = texts.get(path)
@@ -169,18 +187,19 @@ export function buildContext(tree: ScannedTree): ScanContext {
   const manifestPath = '.claude-plugin/plugin.json'
   let manifest: Record<string, unknown> | undefined
   let manifestError: string | undefined
-  if (paths.has(manifestPath)) {
-    assign(manifestPath, 'manifest')
-    const parsed = parseJson(text(manifestPath))
+  const realManifest = realOf(manifestPath)
+  if (realManifest !== undefined) {
+    assign(realManifest, 'manifest')
+    const parsed = parseJson(text(realManifest))
     if (parsed.ok && isRecord(parsed.value)) manifest = parsed.value
     else manifestError = parsed.ok ? 'plugin.json is not a JSON object' : parsed.error
   }
   if (paths.has('.claude-plugin/marketplace.json')) assign('.claude-plugin/marketplace.json', 'manifest')
 
   const hasPluginLayout =
-    paths.has(manifestPath) ||
-    paths.has('hooks/hooks.json') ||
-    paths.has('.mcp.json') ||
+    realManifest !== undefined ||
+    realOf('hooks/hooks.json') !== undefined ||
+    realOf('.mcp.json') !== undefined ||
     files.some(file => PROMPT_DIRS.some(dir => file.path.startsWith(`${dir}/`)))
   const kind: CandidateKind = paths.has('SKILL.md')
     ? 'skill'
@@ -195,10 +214,15 @@ export function buildContext(tree: ScannedTree): ScanContext {
   // Claude Code loads these by place, whatever they are named: a skill in
   // skills/testing/ is still a skill. Only a standalone skill's own README
   // and similar files are left out.
+  // A folder link under a prompt root makes its target's files prompts too.
+  const roots = [...promptRoots]
+  for (const { link, target } of dirAliases) {
+    if (promptRoots.some(root => root !== '' && (link === root || link.startsWith(`${root}/`)))) roots.push(target)
+  }
   const prompts = files
     .map(file => file.path)
     .filter(path => isMarkdown(path))
-    .filter(path => promptRoots.some(root => (root === '' ? !DOC_NAMES.test(basename(path)) || path.includes('/') : path === root || path.startsWith(`${root}/`))))
+    .filter(path => roots.some(root => (root === '' ? !DOC_NAMES.test(basename(path)) || path.includes('/') : path === root || path.startsWith(`${root}/`))))
   for (const path of prompts) assign(path, 'prompt')
 
   // Classic hooks and hooks modules.
@@ -222,8 +246,8 @@ export function buildContext(tree: ScannedTree): ScanContext {
       if (resolved !== undefined) moduleEntries.push({ path: resolved, declaredAs: entry })
     }
   }
-  if (manifest !== undefined && isRecord(manifest.hooks)) {
-    collectHookCommands(manifest.hooks, manifestPath, text(manifestPath) ?? '', hookCommands)
+  if (manifest !== undefined && isRecord(manifest.hooks) && realManifest !== undefined) {
+    collectHookCommands(manifest.hooks, realManifest, text(realManifest) ?? '', hookCommands)
   }
 
   const modules = moduleEntries.map(entry => readModule(entry.path, entry.declaredAs, realOf, text))
@@ -239,8 +263,8 @@ export function buildContext(tree: ScannedTree): ScanContext {
     const parsed = parseJson(text(real))
     if (parsed.ok && isRecord(parsed.value)) collectMcpServers(parsed.value, real, text(real) ?? '', mcpServers)
   }
-  if (manifest !== undefined && isRecord(manifest.mcpServers)) {
-    collectMcpServers({ mcpServers: manifest.mcpServers }, manifestPath, text(manifestPath) ?? '', mcpServers)
+  if (manifest !== undefined && isRecord(manifest.mcpServers) && realManifest !== undefined) {
+    collectMcpServers({ mcpServers: manifest.mcpServers }, realManifest, text(realManifest) ?? '', mcpServers)
   }
 
   // Files (and links) that hooks, servers or prompts name are run, not just shipped.
@@ -282,6 +306,21 @@ export function buildContext(tree: ScannedTree): ScanContext {
     else if (isCodeFile(file.path, text(file.path))) assign(file.path, 'code')
   }
 
+  // Whatever live code loads is live too, even when it sits in a test or
+  // docs folder: a hook script that requires ./test/helper.js runs it.
+  const queue = files.map(file => file.path).filter(path => LIVE_CODE_ROLES.has(roles.get(path) ?? 'other'))
+  const visited = new Set(queue)
+  while (queue.length > 0) {
+    const from = queue.shift() as string
+    for (const target of localImports(from, text(from) ?? '', realOf)) {
+      assign(target, 'code')
+      if (!visited.has(target)) {
+        visited.add(target)
+        queue.push(target)
+      }
+    }
+  }
+
   const readmePath = files.map(file => file.path).find(path => /^readme(\.md|\.markdown|\.txt)?$/i.test(path))
   const readmeText = readmePath === undefined ? undefined : text(readmePath)
 
@@ -300,6 +339,42 @@ export function buildContext(tree: ScannedTree): ScanContext {
     text,
     roleOf: path => roles.get(path) ?? 'other',
   }
+}
+
+const LIVE_CODE_ROLES: ReadonlySet<FileRole> = new Set(['module', 'hook-script', 'server', 'prompt-script', 'bin', 'code'])
+
+/** Relative files a source file loads: JS/TS imports and requires, Python relative imports, shell source. */
+function localImports(path: string, source: string, realOf: (path: string) => string | undefined): string[] {
+  const out: string[] = []
+  const dir = dirname(path)
+  const add = (spec: string, suffixes: readonly string[]): void => {
+    const base = joinPath(dir, spec)
+    if (base === undefined) return
+    for (const suffix of suffixes) {
+      const real = realOf(base + suffix)
+      if (real !== undefined) {
+        out.push(real)
+        return
+      }
+    }
+  }
+  for (const match of findAll(source, /\b(?:from|import)\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]|\b(?:require|import)\s*\(\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]\s*\)/g, 500)) {
+    const spec = /['"](\.{1,2}\/[^'"\n]{1,300})['"]/.exec(match.text)?.[1]
+    if (spec !== undefined) add(spec, MODULE_SUFFIXES)
+  }
+  for (const match of findAll(source, /^\s*from\s+(\.+)([\w.]*)\s+import\s+([\w, ]+)/gm, 200)) {
+    const parts = /from\s+(\.+)([\w.]*)\s+import\s+([\w, ]+)/.exec(match.text)
+    if (parts === null) continue
+    const up = '../'.repeat(Math.max(0, (parts[1] as string).length - 1))
+    const module = (parts[2] as string).replace(/\./g, '/')
+    if (module !== '') add(`./${up}${module}`, ['.py', '/__init__.py'])
+    else for (const name of (parts[3] as string).split(',')) add(`./${up}${name.trim()}`, ['.py', '/__init__.py'])
+  }
+  for (const match of findAll(source, /(?:^|[;&|]\s*)(?:source|\.)\s+["']?(\.{1,2}\/[^\s"';]{1,300})/gm, 200)) {
+    const spec = /(\.{1,2}\/[^\s"';]{1,300})/.exec(match.text)?.[1]
+    if (spec !== undefined) add(spec, [''])
+  }
+  return out
 }
 
 /** Roles whose findings count in full. Tests and docs nothing refers to are only reported. */

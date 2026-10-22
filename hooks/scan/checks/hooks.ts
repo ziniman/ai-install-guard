@@ -12,7 +12,7 @@ import {
   WRITE_CODE,
   WRITE_SHELL,
 } from './patterns'
-import { languageOf } from './code'
+import { languageOf, secretName } from './code'
 import { findAll, findFirst, spanKinds, type Match } from './text'
 import { row, type CheckResult, type Evidence } from './types'
 
@@ -49,7 +49,7 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
       const approval = findFirst(hook.command, AUTO_APPROVE)
       if (approval !== undefined) approvals.push({ file: hook.file, line: hook.line, excerpt: approval.excerpt, status: 'fail' })
     } else if (hook.type === 'http') {
-      const isLocal = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\//.test(hook.command)
+      const isLocal = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:[/?#]|$)/.test(hook.command)
       commands.push({
         file: hook.file,
         line: hook.line,
@@ -71,18 +71,27 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
     const found = (match: Match, what: string): Evidence =>
       isInert(match)
         ? { file: file.path, line: match.line, excerpt: `${what}: ${match.excerpt} (in a comment)`, status: 'info' }
-        : { file: file.path, line: match.line, excerpt: `${what}: ${match.excerpt}`, status: 'fail' }
+        : { file: file.path, line: match.line, excerpt: `${what}: ${what === 'reads secret environment variables' ? secretName(match) : match.excerpt}`, status: 'fail' }
     const live = (pattern: RegExp): boolean => findAll(text, pattern, 10_000).some(match => !isInert(match))
-    for (const { pattern, what } of DANGERS) {
-      for (const match of findAll(text, pattern, 3)) commands.push(found(match, what))
+    // Live matches first, so comments cannot crowd out a real command.
+    const matches = (pattern: RegExp): Match[] => {
+      const all = findAll(text, pattern, 10_000)
+      return [...all.filter(match => !isInert(match)).slice(0, 3), ...all.filter(isInert).slice(0, 2)]
     }
-    for (const match of findAll(text, AUTO_APPROVE, 3)) approvals.push(found(match, 'approves the tool call'))
+    for (const { pattern, what } of DANGERS) {
+      for (const match of matches(pattern)) commands.push(found(match, what))
+    }
+    for (const match of matches(AUTO_APPROVE)) approvals.push(found(match, 'approves the tool call'))
     const writes = live(WRITE_SHELL) || live(WRITE_CODE)
     if (writes) {
-      for (const match of findAll(text, PERSISTENCE_TARGET, 3)) commands.push(found(match, 'writes to a startup or persistence location'))
-      for (const match of findAll(text, CLAUDE_LOAD_DIR, 3)) commands.push(found(match, 'writes where Claude Code loads plugins, skills or memory'))
+      for (const match of matches(PERSISTENCE_TARGET)) commands.push(found(match, 'writes to a startup or persistence location'))
+      for (const match of matches(CLAUDE_LOAD_DIR)) commands.push(found(match, 'writes where Claude Code loads plugins, skills or memory'))
     }
-    for (const match of findAll(text, CLAUDE_SETTINGS, 3)) commands.push(found(match, 'changes Claude Code settings or permissions'))
+    // Reading settings is not changing them: a FAIL needs a write.
+    for (const match of matches(CLAUDE_SETTINGS)) {
+      const item = found(match, writes ? 'changes Claude Code settings or permissions' : 'reads Claude Code settings or permissions')
+      commands.push(writes || item.status === 'info' ? item : { ...item, status: 'warn' })
+    }
   }
 
   return [

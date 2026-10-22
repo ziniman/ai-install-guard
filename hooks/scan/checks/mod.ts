@@ -107,8 +107,14 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
   ])
   const explained = explanationsOf(ctx)
   // The README must spell the call or event out as a name of its own; a wildcard is never explained.
-  const isExplained = (name: string): boolean =>
-    name.length >= 5 && /^[a-z]+\.[a-zA-Z.]+$/.test(name) && new RegExp(`(?<![\\w.$])${name.replace(/\./g, '\\.')}(?![\\w])`, 'i').test(explained)
+  const isExplained = (name: string): boolean => {
+    if (name.length < 5 || !/^[a-z]+\.[a-zA-Z.]+$/.test(name)) return false
+    const mention = new RegExp(`(?<![\\w.$])${name.replace(/\./g, '\\.')}(?![\\w])`, 'i')
+    // A sentence that says it does not use the call explains nothing.
+    return explained
+      .split(/(?<=[.!?])\s+|\n{2,}/)
+      .some(sentence => mention.test(sentence) && !/\b(?:never|not|no|without|don['’]t|doesn['’]t|won['’]t|cannot|can['’]t)\b/i.test(sentence))
+  }
 
   const inventory: Evidence[] = uses.map(({ use, kind, capability }) => ({
     file: use.file,
@@ -234,7 +240,9 @@ function eventCapability(use: ModuleUse): Capability {
 
 /** Lowercased names the README or description spells out, such as `process.run`. */
 function explanationsOf(ctx: ScanContext): string {
-  return [ctx.readme?.text ?? '', typeof ctx.manifest?.description === 'string' ? ctx.manifest.description : ''].join('\n').toLowerCase()
+  // Only what a reader sees: HTML comments are hidden when the README renders.
+  const visible = (ctx.readme?.text ?? '').replace(/<!--[\s\S]{0,20000}?-->/g, ' ')
+  return [visible, typeof ctx.manifest?.description === 'string' ? ctx.manifest.description : ''].join('\n\n').toLowerCase()
 }
 
 /** Adds what Claude Code's own validator saw and the source scan missed. */

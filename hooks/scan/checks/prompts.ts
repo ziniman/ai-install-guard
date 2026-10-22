@@ -1,4 +1,4 @@
-import { languageOf } from './code'
+import { languageOf, secretName } from './code'
 import { isCodeFile, isLive, type ScanContext } from './context'
 import { CREDENTIAL_PATH, NETWORK_COMMAND, NETWORK_CODE, SECRET_ENV } from './patterns'
 import { basename, dirname, findAll, findFirst, spanKinds } from './text'
@@ -64,10 +64,11 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
         injection.push({ file: path, line: match.line, excerpt: `${match.excerpt}${hidden}`, status: cap(reachesOut ? 'fail' : 'warn') })
       }
     }
-    for (const comment of findAll(text, /<!--[\s\S]{0,5000}?-->/g, 10)) {
-      if (comment.text.length > 40 && /\b(?:run|execute|send|call|use|read|write|ignore|always|never|must)\b/i.test(comment.text)) {
-        injection.push({ file: path, line: comment.line, excerpt: `instructions inside an HTML comment, hidden when rendered: ${comment.excerpt}`, status: cap('warn') })
-      }
+    const hiddenInstructions = findAll(text, /<!--[\s\S]{0,5000}?-->/g, 10_000)
+      .filter(comment => comment.text.length > 40 && /\b(?:run|execute|send|call|use|read|write|ignore|always|never|must)\b/i.test(comment.text))
+      .slice(0, 5)
+    for (const comment of hiddenInstructions) {
+      injection.push({ file: path, line: comment.line, excerpt: `instructions inside an HTML comment, hidden when rendered: ${comment.excerpt}`, status: cap('warn') })
     }
 
     for (const match of findAll(text, CREDENTIAL_PATH, 5)) {
@@ -76,7 +77,7 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     }
     for (const match of findAll(text, SECRET_ENV, 5)) {
       const lineText = text.split('\n')[match.line - 1] ?? ''
-      credentials.push({ file: path, line: match.line, excerpt: match.excerpt, status: cap(/\b(?:echo|print|printenv|cat|send|include|output)\b/i.test(lineText) ? 'fail' : 'warn') })
+      credentials.push({ file: path, line: match.line, excerpt: `names ${secretName(match)}`, status: cap(/\b(?:echo|print|printenv|cat|send|include|output)\b/i.test(lineText) ? 'fail' : 'warn') })
     }
 
     for (const match of findAll(text, REMOTE_INSTRUCTIONS, 3)) {
@@ -145,14 +146,25 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
   return ctx.prompts.length === 0 ? results.filter(result => result.id === 'prompts.names' || result.id === 'prompts.scanner') : results
 }
 
+/** Programs that run anything they are given, fetch and run packages, or reach the network. */
+const SHELL_WIDE = new Set([
+  'sh', 'bash', 'zsh', 'dash', 'fish', 'ksh', 'csh', 'tcsh', 'pwsh', 'powershell', 'cmd', 'osascript',
+  'python', 'node', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'awk', 'gawk',
+  'eval', 'exec', 'env', 'xargs', 'sudo', 'su', 'doas', 'nohup', 'timeout', 'watch',
+  'npx', 'bunx', 'pnpx', 'uvx', 'pipx', 'npm', 'pnpm', 'yarn', 'uv',
+  'curl', 'wget', 'nc', 'ncat', 'netcat', 'socat', 'ssh', 'scp', 'sftp', 'telnet',
+])
+
 function judgeTool(tool: string): { status: Status; why: string } | undefined {
   const bash = /^Bash\s*(?:\(([\s\S]*)\))?$/i.exec(tool.trim())
   if (bash === null) return undefined
   const pattern = bash[1]?.trim()
   if (pattern === undefined) return { status: 'warn', why: 'any shell command, no pattern' }
   if (/^\*+\s*(?::\s*\*+)?$/.test(pattern) || pattern === '') return { status: 'fail', why: 'a wildcard: any shell command' }
-  if (/^(?:sh|bash|zsh|dash|fish|python[23]?|node|deno|bun|perl|ruby|php|eval|exec|env|xargs|curl|wget|nc|ssh|sudo)(?:[:\s]|$)/i.test(pattern)) {
-    return { status: 'fail', why: 'an interpreter or network tool: any command through it' }
+  // The program the pattern allows, without its path: `/bin/sh:*` is `sh`.
+  const program = basename(/^[^\s:]+/.exec(pattern)?.[0] ?? '').toLowerCase()
+  if (SHELL_WIDE.has(program) || /^python\d*(?:\.\d+)?$/.test(program)) {
+    return { status: 'fail', why: 'an interpreter, package runner or network tool: any command through it' }
   }
   return undefined
 }

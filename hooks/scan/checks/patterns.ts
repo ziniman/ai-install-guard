@@ -62,3 +62,37 @@ export const DECODE = /\batob\s*\(|\bBuffer\.from\s*\([^)\n]{0,300}['"](?:base64
 /** Hosts often used to collect stolen data. */
 export const COLLECTION_HOST =
   /\b(?:webhook\.site|requestbin\.(?:com|net)|pipedream\.net|[\w-]+\.ngrok(?:-free)?\.(?:io|app|dev)|transfer\.sh|pastebin\.com|paste\.ee|hastebin\.com|discord(?:app)?\.com\/api\/webhooks|api\.telegram\.org|burpcollaborator\.net|oast\.(?:fun|me|pro|live|site|online)|interact\.sh|[\w-]+\.trycloudflare\.com|hooks\.slack\.com)\b/i
+
+/** Known key formats. Evidence names the kind and place, never the value. */
+export const SECRET_KEYS: readonly { kind: string; pattern: RegExp }[] = [
+  { kind: 'AWS access key ID', pattern: /\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b/ },
+  { kind: 'AWS secret access key', pattern: /\baws_?secret_?access_?key\b['"]?\s*[:=]\s*['"]?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/i },
+  { kind: 'GitHub token', pattern: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,255}\b|\bgithub_pat_[A-Za-z0-9_]{22,255}\b/ },
+  { kind: 'Slack token', pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,255}\b/ },
+  { kind: 'Slack webhook', pattern: /https:\/\/hooks\.slack\.com\/services\/T[A-Za-z0-9]{1,40}\/B[A-Za-z0-9]{1,40}\/[A-Za-z0-9]{1,64}/ },
+  { kind: 'private key', pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/ },
+  { kind: 'Anthropic API key', pattern: /\bsk-ant-(?:api|admin|oat)\d{2}-[A-Za-z0-9_-]{20,255}/ },
+  { kind: 'OpenAI API key', pattern: /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{16,200}T3BlbkFJ[A-Za-z0-9_-]{16,200}/ },
+  { kind: 'Google API key', pattern: /\bAIza[0-9A-Za-z_-]{35}\b/ },
+  { kind: 'Stripe live key', pattern: /\b(?:sk|rk)_live_[0-9a-zA-Z]{24,255}\b/ },
+  { kind: 'npm token', pattern: /\bnpm_[A-Za-z0-9]{36}\b/ },
+  { kind: 'SendGrid key', pattern: /\bSG\.[\w-]{22}\.[\w-]{43}\b/ },
+  { kind: 'Hugging Face token', pattern: /\bhf_[A-Za-z0-9]{34,255}\b/ },
+]
+
+/** A secret variable given a value in text: `ANTHROPIC_API_KEY=...`, `"GITHUB_TOKEN": "..."`. */
+const SECRET_ASSIGNMENT =
+  /\b((?:[A-Z][A-Z0-9]*_)*(?:API_KEY|AUTH_TOKEN|OAUTH_TOKEN|ACCESS_KEY|SECRET_ACCESS_KEY|SECRET_KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE_KEY))(['"]?\s*[:=]\s*['"]?)([^\s'"`,;]{6,})/g
+
+/**
+ * Replaces anything that looks like a key or a secret's value with
+ * `[redacted <kind>]`. Every excerpt a report shows passes through it, so a
+ * line quoted for another reason cannot print a key.
+ */
+export function redactSecrets(text: string): string {
+  let out = text
+  for (const { kind, pattern } of SECRET_KEYS) {
+    out = out.replace(new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`), `[redacted ${kind}]`)
+  }
+  return out.replace(SECRET_ASSIGNMENT, (_, name: string, separator: string) => `${name}${separator}[redacted]`)
+}

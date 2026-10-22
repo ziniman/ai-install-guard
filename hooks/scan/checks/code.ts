@@ -107,6 +107,26 @@ function active(file: CodeFile, pattern: RegExp, limit = 20): Match[] {
     .slice(0, limit)
 }
 
+/**
+ * Every match of `pattern`, judged: live matches first (up to `limit`),
+ * then at most two inert ones, so comments cannot crowd out real code.
+ */
+function evidenceFor(file: CodeFile, pattern: RegExp, status: Status, describe: (match: Match) => string, limit = 5): Evidence[] {
+  const all = findAll(file.text, pattern, 10_000)
+  const isInert = (match: Match): boolean => {
+    const kind = file.kindAt(match.index)
+    return kind === 'comment' || kind === 'regex'
+  }
+  const live = all.filter(match => !isInert(match)).slice(0, limit)
+  const inert = all.filter(isInert).slice(0, 2)
+  return [...live, ...inert].map(match => judged(file, match, status, describe(match)))
+}
+
+/** `ANTHROPIC_API_KEY=sk-...` → `ANTHROPIC_API_KEY`: the name, never what follows it. */
+export function secretName(match: Match): string {
+  return /[A-Z][A-Z0-9_]{2,}/.exec(match.text)?.[0] ?? match.text.trim().slice(0, 40)
+}
+
 function writesFiles(file: CodeFile): boolean {
   if (file.language === 'shell') return active(file, WRITE_SHELL, 1).length > 0
   return active(file, WRITE_CODE, 1).length > 0
@@ -188,13 +208,9 @@ function execCheck(ctx: ScanContext): CheckResult {
           ? [{ pattern: SHELL_EVAL, what: 'evaluates text as shell code' }]
           : [{ pattern: PROCESS_CODE, what: 'runs programs' }, { pattern: CODE_FROM_TEXT, what: 'runs code built from text' }]
     for (const { pattern, what } of patterns) {
-      for (const match of findAll(file.text, pattern, 3)) {
-        evidence.push(judged(file, match, inModule ? 'fail' : 'warn', `${what}: ${match.excerpt}`))
-      }
+      evidence.push(...evidenceFor(file, pattern, inModule ? 'fail' : 'warn', match => `${what}: ${match.excerpt}`, 3))
     }
-    for (const match of findAll(file.text, DOWNLOAD_AND_RUN, 3)) {
-      evidence.push(judged(file, match, 'fail', `downloads or decodes code and runs it: ${match.excerpt}`))
-    }
+    evidence.push(...evidenceFor(file, DOWNLOAD_AND_RUN, 'fail', match => `downloads or decodes code and runs it: ${match.excerpt}`, 3))
   }
   return row(
     {
@@ -216,10 +232,15 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
     const level: Status = runs && decodes ? 'fail' : 'warn'
     const found: { match: Match; what: string }[] = []
     const split: { line: number; what: string }[] = []
-    for (const match of findAll(text, /(?<!data:[\w/+.-]{1,40};base64,)(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{200,}={0,2}/g, 2)) found.push({ match, what: `${match.text.length}-character base64 blob` })
-    for (const match of findAll(text, /\b(?:[0-9a-fA-F]{2}){100,}\b/g, 2)) found.push({ match, what: `${match.text.length}-character hex blob` })
-    for (const match of findAll(text, /String\.fromCharCode\s*\(\s*(?:\d+\s*,\s*){8,}|\bchr\s*\(\s*\d+\s*\)\s*\+\s*chr\s*\(/g, 2)) found.push({ match, what: `text built from character codes: ${match.excerpt}` })
-    for (const match of findAll(text, /(?:\\x[0-9a-fA-F]{2}){16,}|(?:\\u00[0-9a-fA-F]{2}){12,}/g, 2)) found.push({ match, what: 'long run of escaped bytes' })
+    const liveFirst = (pattern: RegExp): Match[] => {
+      const all = findAll(text, pattern, 10_000)
+      const isInert = (match: Match): boolean => file.kindAt(match.index) === 'comment' || file.kindAt(match.index) === 'regex'
+      return [...all.filter(match => !isInert(match)).slice(0, 2), ...all.filter(isInert).slice(0, 1)]
+    }
+    for (const match of liveFirst(/(?<!data:[\w/+.-]{1,40};base64,)(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{200,}={0,2}/g)) found.push({ match, what: `${match.text.length}-character base64 blob` })
+    for (const match of liveFirst(/\b(?:[0-9a-fA-F]{2}){100,}\b/g)) found.push({ match, what: `${match.text.length}-character hex blob` })
+    for (const match of liveFirst(/String\.fromCharCode\s*\(\s*(?:\d+\s*,\s*){8,}|\bchr\s*\(\s*\d+\s*\)\s*\+\s*chr\s*\(/g)) found.push({ match, what: `text built from character codes: ${match.excerpt}` })
+    for (const match of liveFirst(/(?:\\x[0-9a-fA-F]{2}){16,}|(?:\\u00[0-9a-fA-F]{2}){12,}/g)) found.push({ match, what: 'long run of escaped bytes' })
     const joined = text.replace(/(['"`])[ \t]*\+[ \t]*\1/g, '')
     if (joined !== text) {
       // A dangerous name that only appears once adjacent strings are joined
@@ -338,11 +359,9 @@ function credentialsCheck(ctx: ScanContext): CheckResult {
   for (const file of codeFiles(ctx)) {
     if (file.role === 'hook-script') continue
     const sends = [NETWORK_CODE, NETWORK_COMMAND, COLLECTION_HOST].some(pattern => active(file, pattern, 1).length > 0)
-    for (const pattern of [CREDENTIAL_PATH, SECRET_ENV]) {
-      for (const match of findAll(file.text, pattern, 3)) {
-        evidence.push(judged(file, match, sends ? 'fail' : 'warn', `${sends ? 'with network code in the same file: ' : ''}${match.excerpt}`))
-      }
-    }
+    const lead = sends ? 'with network code in the same file: ' : ''
+    evidence.push(...evidenceFor(file, CREDENTIAL_PATH, sends ? 'fail' : 'warn', match => `${lead}${match.excerpt}`, 3))
+    evidence.push(...evidenceFor(file, SECRET_ENV, sends ? 'fail' : 'warn', match => `${lead}reads ${secretName(match)}`, 3))
   }
   return row(
     {
@@ -360,16 +379,10 @@ function persistenceCheck(ctx: ScanContext): CheckResult {
   for (const file of codeFiles(ctx)) {
     if (file.role === 'hook-script' || basename(file.path) === 'settings.json') continue
     const writes = writesFiles(file)
-    for (const match of findAll(file.text, PERSISTENCE_TARGET, 3)) {
-      evidence.push(judged(file, match, writes ? 'fail' : 'warn', `${writes ? 'writes to' : 'names'} a startup location: ${match.excerpt}`))
-    }
-    for (const match of findAll(file.text, CLAUDE_SETTINGS, 3)) {
-      evidence.push(judged(file, match, writes ? 'fail' : 'warn', `Claude Code permission setting: ${match.excerpt}`))
-    }
+    evidence.push(...evidenceFor(file, PERSISTENCE_TARGET, writes ? 'fail' : 'warn', match => `${writes ? 'writes to' : 'names'} a startup location: ${match.excerpt}`, 3))
+    evidence.push(...evidenceFor(file, CLAUDE_SETTINGS, writes ? 'fail' : 'warn', match => `Claude Code permission setting: ${match.excerpt}`, 3))
     if (writes) {
-      for (const match of findAll(file.text, CLAUDE_LOAD_DIR, 3)) {
-        evidence.push(judged(file, match, 'fail', `writes where Claude Code loads plugins, skills or memory: ${match.excerpt}`))
-      }
+      evidence.push(...evidenceFor(file, CLAUDE_LOAD_DIR, 'fail', match => `writes where Claude Code loads plugins, skills or memory: ${match.excerpt}`, 3))
     }
   }
   return row(

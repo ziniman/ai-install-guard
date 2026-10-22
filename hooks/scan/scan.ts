@@ -58,7 +58,19 @@ export async function scanFolder(host: Host, target: string, path: string, optio
     return { target, kind: ctx.kind, inventory: tree.inventory, results: [], verdict: decide([], `a check failed: ${reasonOf(error)}`) }
   }
   if (options.extraResults !== undefined) {
-    const extra = await options.extraResults({ target, kind: ctx.kind, inventory: tree.inventory, results }).catch(() => [])
+    const extra = await options
+      .extraResults({ target, kind: ctx.kind, inventory: tree.inventory, results })
+      .catch((error: unknown): CheckResult[] => [
+        {
+          id: 'analysis.unfinished',
+          group: 'quality',
+          title: 'An additional review did not finish',
+          status: 'warn',
+          severity: 'medium',
+          evidence: [{ file: '-', excerpt: reasonOf(error), status: 'warn' }],
+          advice: 'Part of the review you asked for is missing, so the verdict rests on the deterministic checks alone.',
+        },
+      ])
     results = [...results, ...extra]
   }
   results = sortResults(results)

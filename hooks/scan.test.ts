@@ -228,8 +228,10 @@ describe('untrusted text in reports', () => {
 
 describe('arguments', () => {
   test('a quoted path keeps its spaces', () => {
-    expect(splitArgs('  scan "/tmp/my plugin" ')).toEqual({ sub: 'scan', rest: '/tmp/my plugin' })
-    expect(splitArgs('SCAN ./x')).toEqual({ sub: 'scan', rest: './x' })
-    expect(splitArgs('')).toEqual({ sub: '', rest: '' })
+    expect(splitArgs('  scan "/tmp/my plugin" ')).toEqual({ sub: 'scan', rest: '/tmp/my plugin', details: false })
+    expect(splitArgs('SCAN ./x')).toEqual({ sub: 'scan', rest: './x', details: false })
+    expect(splitArgs('')).toEqual({ sub: '', rest: '', details: false })
+    expect(splitArgs('scan --details ./x')).toEqual({ sub: 'scan', rest: './x', details: true })
+    expect(splitArgs('scan "/work/My --details Plugin"')).toEqual({ sub: 'scan', rest: '/work/My --details Plugin', details: false })
   })
 })

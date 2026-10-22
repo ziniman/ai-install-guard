@@ -280,7 +280,50 @@ export function trailingBytes(bytes: Uint8Array): { format: string; extra: numbe
   }
   if (magic === 'webp') {
     const size = ((bytes[4] as number) | ((bytes[5] as number) << 8) | ((bytes[6] as number) << 16) | ((bytes[7] as number) << 24)) >>> 0
-    return { format: 'WebP', extra: Math.max(0, bytes.length - (size + 8 + (size % 2))) }
+    const end = size + 8 + (size % 2)
+    // A size that claims more than the file holds is forged or broken.
+    if (end > bytes.length + (size % 2)) return { format: 'WebP', extra: 0, malformed: true }
+    return { format: 'WebP', extra: Math.max(0, bytes.length - end) }
+  }
+  if (magic === 'gif') {
+    const end = gifEnd(bytes)
+    if (end === undefined) return { format: 'GIF', extra: 0, malformed: true }
+    return { format: 'GIF', extra: bytes.length - end }
+  }
+  return undefined
+}
+
+/** Where a GIF's trailer (0x3B) ends, walking its blocks; undefined when malformed. */
+function gifEnd(bytes: Uint8Array): number | undefined {
+  if (bytes.length < 13) return undefined
+  let offset = 13
+  const flags = bytes[10] as number
+  if ((flags & 0x80) !== 0) offset += 3 * (1 << ((flags & 0x07) + 1))
+  const skipSubBlocks = (): boolean => {
+    while (offset < bytes.length) {
+      const size = bytes[offset] as number
+      offset += 1
+      if (size === 0) return true
+      offset += size
+    }
+    return false
+  }
+  while (offset < bytes.length) {
+    const block = bytes[offset] as number
+    if (block === 0x3b) return offset + 1
+    if (block === 0x21) {
+      offset += 2
+      if (!skipSubBlocks()) return undefined
+    } else if (block === 0x2c) {
+      if (offset + 10 > bytes.length) return undefined
+      const local = bytes[offset + 9] as number
+      offset += 10
+      if ((local & 0x80) !== 0) offset += 3 * (1 << ((local & 0x07) + 1))
+      offset += 1
+      if (!skipSubBlocks()) return undefined
+    } else {
+      return undefined
+    }
   }
   return undefined
 }

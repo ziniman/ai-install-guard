@@ -183,7 +183,10 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
         else if (text[j] === '/' && !inClass) break
         j += 1
       }
-      if (text[j] === '/') {
+      // Only a literal with an escape inside counts as a pattern: real
+      // patterns nearly always have one, and code dressed up as a regex by
+      // stray slashes rarely does, so it stays code.
+      if (text[j] === '/' && text.slice(i + 1, j).includes('\\')) {
         j += 1
         while (j < text.length && /[a-z]/i.test(text[j] as string)) j += 1
         mark(i, j, REGEX)
@@ -193,7 +196,8 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
       }
     }
     if (!/\s/.test(char)) {
-      lastSignificant = char
+      // `x++ / y` and `x-- / y` divide: a postfix operator ends an operand.
+      lastSignificant = (char === '+' || char === '-') && text[i - 1] === char ? 'a' : char
       if (/[A-Za-z_$]/.test(char)) {
         let j = i
         while (j < text.length && /[\w$]/.test(text[j] as string)) j += 1
@@ -212,5 +216,7 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
 function regexCanStart(lastSignificant: string, lastWord: string): boolean {
   if (lastSignificant === '') return true
   if (lastSignificant === 'a') return /^(?:return|typeof|case|do|else|in|of|new|delete|void|throw|yield|await|instanceof)$/.test(lastWord)
-  return /[(,=:[!&|?{};+\-*%<>~^]/.test(lastSignificant)
+  // Not after `)`, `]` or `}`: there a slash divides, and reading code as a
+  // pattern would hide it.
+  return /[(,=:[!&|?{;+\-*%<>~^]/.test(lastSignificant)
 }

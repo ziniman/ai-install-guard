@@ -1,25 +1,9 @@
 import { isLive, type ScanContext } from './context'
+import { SECRET_KEYS } from './patterns'
 import { basename, findAll } from './text'
 import { row, type CheckResult, type Evidence } from './types'
 
 const GROUP = 'secrets' as const
-
-/** Known key formats. Evidence names the kind and place, never the value. */
-const KEYS: readonly { kind: string; pattern: RegExp }[] = [
-  { kind: 'AWS access key ID', pattern: /\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b/ },
-  { kind: 'AWS secret access key', pattern: /\baws_?secret_?access_?key\b['"]?\s*[:=]\s*['"]?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/i },
-  { kind: 'GitHub token', pattern: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,255}\b|\bgithub_pat_[A-Za-z0-9_]{22,255}\b/ },
-  { kind: 'Slack token', pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,255}\b/ },
-  { kind: 'Slack webhook', pattern: /https:\/\/hooks\.slack\.com\/services\/T[A-Za-z0-9]{1,40}\/B[A-Za-z0-9]{1,40}\/[A-Za-z0-9]{1,64}/ },
-  { kind: 'private key', pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/ },
-  { kind: 'Anthropic API key', pattern: /\bsk-ant-(?:api|admin|oat)\d{2}-[A-Za-z0-9_-]{20,255}/ },
-  { kind: 'OpenAI API key', pattern: /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{16,200}T3BlbkFJ[A-Za-z0-9_-]{16,200}/ },
-  { kind: 'Google API key', pattern: /\bAIza[0-9A-Za-z_-]{35}\b/ },
-  { kind: 'Stripe live key', pattern: /\b(?:sk|rk)_live_[0-9a-zA-Z]{24,255}\b/ },
-  { kind: 'npm token', pattern: /\bnpm_[A-Za-z0-9]{36}\b/ },
-  { kind: 'SendGrid key', pattern: /\bSG\.[\w-]{22}\.[\w-]{43}\b/ },
-  { kind: 'Hugging Face token', pattern: /\bhf_[A-Za-z0-9]{34,255}\b/ },
-]
 
 const PLACEHOLDER = /^(?:|<.*>|\$\{.*\}|your[-_ ].*|xx+|\*+|changeme|change-me|todo|tbd|none|null|example|placeholder|dummy|test|secret|password|\.\.\.)$/i
 
@@ -38,7 +22,7 @@ export function secretChecks(ctx: ScanContext): CheckResult[] {
     const text = file.isText ? ctx.text(file.path) : asciiOf(ctx.tree.contents.get(file.path))
     if (text === undefined) continue
     const live = isLive(ctx.roleOf(file.path))
-    for (const { kind, pattern } of KEYS) {
+    for (const { kind, pattern } of SECRET_KEYS) {
       for (const match of findAll(text, pattern, 3)) {
         keys.push({ file: file.path, line: match.line, excerpt: kind, status: live ? 'fail' : 'info' })
       }
