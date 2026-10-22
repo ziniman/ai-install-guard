@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/reviewed-by-ai-install-guard-light@1x.png" alt="Reviewed by AI Install Guard" width="406" height="104">
+
 # AI Install Guard
 
 **A security gate for Claude Code. Nothing new gets installed until you have seen what it can do.**
