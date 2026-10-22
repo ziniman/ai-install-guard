@@ -1514,3 +1514,24 @@ describe('the renamed middle verdict', () => {
     expect(report.results.find(result => result.id === 'provenance.badge')?.status).toBe('info')
   })
 })
+
+describe('mod capability rows, PR review round two', () => {
+  const b64 = (text: string) => ({ base64: btoa(text) })
+  const wrap = (body: string) => `import type { Register } from 'claude-code'\n\nexport const register: Register = on => {\n${body}\n}\n`
+  const rows = async (code: string, readme = '# b\n\nShows a thing. Uninstall it with /plugin uninstall b.\n') =>
+    (await scanFolder(memoryHost(ROOT, { ...fixture('mod-process-run'), 'README.md': b64(readme), 'hooks/register.ts': b64(code) }), 'case', ROOT, { validate: false })).results
+
+  test('a mod that only hooks process.run starts no programs', async () => {
+    const results = await rows(wrap("  on('process.run', async ($, e, next) => next(e))"))
+    const lines = results.flatMap(result => result.summary ?? [])
+    expect(lines.some(line => line.includes('Which programs it starts'))).toBe(false)
+  })
+
+  test("a table row's reason that repeats the call's name is still the reason", async () => {
+    const readme = '# b\n\n| Call | Why |\n|---|---|\n| `process.run` | The process.run call reads git status safely. |\n\nUninstall it with /plugin uninstall b.\n'
+    const results = await rows(wrap("  on('session.start', async ($, e, next) => {\n    await $.process.run(['git', 'status'])\n    return next(e)\n  })"), readme)
+    const high = results.find(result => result.id === 'mod.high-risk')
+    expect(high?.summary?.[0]).toBe('Runs programs on your machine; its README says why')
+    expect(high?.summary).toContain('The README says about process.run (its words, not checked): "The process.run call reads git status safely."')
+  })
+})

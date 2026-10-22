@@ -300,10 +300,12 @@ function findExplanation(name: string, sources: readonly { where: Explanation['w
         const index = found.index ?? 0
         const before = line.slice(Math.max(0, index - 40), index).split(/[.!?|]/).pop() ?? ''
         if (NEGATION.test(before)) continue
-        // A table row: the cells that are not the call's own name.
+        // A table row: every cell but the one that is only the call's name;
+        // a reason cell that repeats the name is still the reason.
         const cells = line.trim().startsWith('|') ? line.split('|').map(cell => cell.trim()).filter(cell => cell !== '' && !/^:?-+:?$/.test(cell)) : [line]
-        const words = cells.filter(cell => !mention.test(cell)).join(' ').replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim()
-        const said = cells.length > 1 ? words : line.replace(mention, '').replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim()
+        const plain = (text: string) => text.replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim()
+        const words = cells.filter(cell => plain(cell).toLowerCase() !== name.toLowerCase()).map(plain).join(' ')
+        const said = plain((cells.length > 1 ? words : line).replace(mentions, ''))
         if ((said.match(/[A-Za-z]{3,}/g) ?? []).length < 3) continue
         const quote = cells.length > 1 ? words : line.replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim()
         return { where, quote: quote.length > 220 ? `${quote.slice(0, 219)}…` : quote }
@@ -336,7 +338,9 @@ function capabilitySummary(
     const explanation = explanationFor(name)
     if (explanation !== undefined) lines.push(`${explanation.where === 'README' ? 'The README says' : 'Its description says'} about ${name} (its words, not checked): "${explanation.quote}"`)
   }
-  if (names.some(name => /^process(?:\.|$)/.test(name))) {
+  // Programs only for a mod that calls processes itself; hooking another's
+  // process.run starts nothing.
+  if (uses.some(item => item.kind === 'call' && /^process(?:\.|$)/.test(item.use.name))) {
     // Only the modules that reach for processes, and the files they import.
     const files = new Set(modules.filter(info => info.calls.some(call => /^process(?:\.|$)/.test(call.name))).flatMap(info => [info.entry, ...info.files]))
     const described = describePrograms(programsOfModule(ctx, files), { buildsCode: 0, downloads: 0 }).filter(line => !line.startsWith('In '))
