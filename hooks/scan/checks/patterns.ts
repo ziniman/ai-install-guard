@@ -61,7 +61,7 @@ export const DECODE = /\batob\s*\(|\bBuffer\.from\s*\([^)\n]{0,300}['"](?:base64
 
 /** Hosts often used to collect stolen data. */
 export const COLLECTION_HOST =
-  /\b(?:webhook\.site|requestbin\.(?:com|net)|pipedream\.net|[\w-]+\.ngrok(?:-free)?\.(?:io|app|dev)|transfer\.sh|pastebin\.com|paste\.ee|hastebin\.com|discord(?:app)?\.com\/api\/webhooks|api\.telegram\.org|burpcollaborator\.net|oast\.(?:fun|me|pro|live|site|online)|interact\.sh|[\w-]+\.trycloudflare\.com|hooks\.slack\.com)\b/i
+  /\b(?:webhook\.site|requestbin\.(?:com|net)|pipedream\.net|[\w-]{1,63}\.ngrok(?:-free)?\.(?:io|app|dev)|transfer\.sh|pastebin\.com|paste\.ee|hastebin\.com|discord(?:app)?\.com\/api\/webhooks|api\.telegram\.org|burpcollaborator\.net|oast\.(?:fun|me|pro|live|site|online)|interact\.sh|[\w-]{1,63}\.trycloudflare\.com|hooks\.slack\.com)\b/i
 
 /** Known key formats. Evidence names the kind and place, never the value. */
 export const SECRET_KEYS: readonly { kind: string; pattern: RegExp }[] = [
@@ -94,5 +94,8 @@ export function redactSecrets(text: string): string {
   for (const { kind, pattern } of SECRET_KEYS) {
     out = out.replace(new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`), `[redacted ${kind}]`)
   }
-  return out.replace(SECRET_ASSIGNMENT, (_, name: string, separator: string) => `${name}${separator}[redacted]`)
+  return out
+    .replace(SECRET_ASSIGNMENT, (_, name: string, separator: string) => `${name}${separator}[redacted]`)
+    // A password in a URL: https://user:secret@host keeps the user, hides the secret.
+    .replace(/(\b[a-z][a-z0-9+.-]{1,20}:\/\/[^\s:/@]{1,100}:)[^\s@/]{1,200}@/gi, '$1[redacted]@')
 }

@@ -10,14 +10,22 @@ export type Match = {
   excerpt: string
 }
 
-/** Every match of `pattern` in `text`, with 1-based line numbers. */
-export function findAll(text: string, pattern: RegExp, limit = 20): Match[] {
+/**
+ * Every match of `pattern` in `text`, with 1-based line numbers, up to
+ * `limit` of those `keep` accepts. Rejected matches are skipped before they
+ * count, so no number of decoys can use up the limit.
+ */
+export function findAll(text: string, pattern: RegExp, limit = 20, keep?: (index: number) => boolean): Match[] {
   const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
   const global = new RegExp(pattern.source, flags)
   const starts = lineStarts(text)
   const matches: Match[] = []
   for (const found of text.matchAll(global)) {
     const index = found.index ?? 0
+    if (keep !== undefined && !keep(index)) {
+      if (found[0].length === 0) global.lastIndex += 1
+      continue
+    }
     const line = lineAt(starts, index)
     const lineStart = starts[line - 1] as number
     const lineEnd = line < starts.length ? (starts[line] as number) - 1 : text.length
@@ -136,6 +144,9 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
   let i = 0
   let lastSignificant = ''
   let lastWord = ''
+  // After a `/` that opened no literal on its line, the rest of that line is
+  // not tried again: one pass per line, so `[/[/[/...` cannot stall the scan.
+  let noRegexBefore = 0
   while (i < text.length) {
     const char = text[i] as string
     const next = text[i + 1]
@@ -176,8 +187,9 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
       const quote = triple ? char.repeat(3) : char
       let j = i + quote.length
       while (j < text.length) {
-        // A backslash escapes in every string but a shell's single-quoted one.
-        if (text[j] === '\\' && !(language === 'shell' && char === "'")) {
+        // A backslash escapes in every string but a shell's plain single-quoted
+        // one; in a shell `$'...'` string it escapes again.
+        if (text[j] === '\\' && !(language === 'shell' && char === "'" && text[i - 1] !== '$')) {
           j += 2
           continue
         }
@@ -193,7 +205,7 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
       lastSignificant = char
       continue
     }
-    if (language === 'js' && char === '/' && regexCanStart(lastSignificant, lastWord)) {
+    if (language === 'js' && char === '/' && i >= noRegexBefore && regexCanStart(lastSignificant, lastWord)) {
       let j = i + 1
       let inClass = false
       while (j < text.length && text[j] !== '\n') {
@@ -221,14 +233,17 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
         lastSignificant = '/'
         continue
       }
+      noRegexBefore = j
     }
     if (!/\s/.test(char)) {
+      const before = lastSignificant
       // `x++ / y` and `x-- / y` divide: a postfix operator ends an operand.
       lastSignificant = (char === '+' || char === '-') && text[i - 1] === char ? 'a' : char
       if (/[A-Za-z_$]/.test(char)) {
         let j = i
         while (j < text.length && /[\w$]/.test(text[j] as string)) j += 1
-        lastWord = text.slice(i, j)
+        // `obj.in` or `x.return` is a property, an operand, never a keyword.
+        lastWord = before === '.' ? '' : text.slice(i, j)
         lastSignificant = 'a'
         i = j
         continue
@@ -245,7 +260,14 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
  * index after its closing backtick: text as `string`, each `${...}` as `code`,
  * with nested quotes and templates inside an interpolation skipped whole.
  */
-function templateEnd(text: string, start: number, mark: (from: number, to: number, kind: number) => void, STRING: number, CODE: number): number {
+const MAX_TEMPLATE_DEPTH = 32
+
+function templateEnd(text: string, start: number, mark: (from: number, to: number, kind: number) => void, STRING: number, CODE: number, depth = 0): number {
+  // Nested deeper than any real code: the rest is judged as code, never hidden.
+  if (depth > MAX_TEMPLATE_DEPTH) {
+    mark(start, text.length, CODE)
+    return text.length
+  }
   let j = start + 1
   let segment = start
   while (j < text.length) {
@@ -259,7 +281,7 @@ function templateEnd(text: string, start: number, mark: (from: number, to: numbe
     }
     if (text[j] === '$' && text[j + 1] === '{') {
       mark(segment, j + 2, STRING)
-      const close = interpolationEnd(text, j + 2, mark, STRING, CODE)
+      const close = interpolationEnd(text, j + 2, mark, STRING, CODE, depth + 1)
       j = close + 1
       segment = j
       continue
@@ -271,7 +293,7 @@ function templateEnd(text: string, start: number, mark: (from: number, to: numbe
 }
 
 /** The index of the `}` closing an interpolation opened just before `start`. */
-function interpolationEnd(text: string, start: number, mark: (from: number, to: number, kind: number) => void, STRING: number, CODE: number): number {
+function interpolationEnd(text: string, start: number, mark: (from: number, to: number, kind: number) => void, STRING: number, CODE: number, nesting: number): number {
   let depth = 1
   let j = start
   let codeFrom = start
@@ -279,7 +301,7 @@ function interpolationEnd(text: string, start: number, mark: (from: number, to: 
     const char = text[j]
     if (char === '`') {
       mark(codeFrom, j, CODE)
-      j = templateEnd(text, j, mark, STRING, CODE)
+      j = templateEnd(text, j, mark, STRING, CODE, nesting + 1)
       codeFrom = j
       continue
     }

@@ -201,7 +201,7 @@ export function buildContext(tree: ScannedTree): ScanContext {
     realOf('hooks/hooks.json') !== undefined ||
     realOf('.mcp.json') !== undefined ||
     files.some(file => PROMPT_DIRS.some(dir => file.path.startsWith(`${dir}/`)))
-  const kind: CandidateKind = paths.has('SKILL.md')
+  const kind: CandidateKind = realOf('SKILL.md') !== undefined
     ? 'skill'
     : hasPluginLayout
       ? 'plugin'
@@ -219,10 +219,14 @@ export function buildContext(tree: ScannedTree): ScanContext {
   for (const { link, target } of dirAliases) {
     if (promptRoots.some(root => root !== '' && (link === root || link.startsWith(`${root}/`)))) roots.push(target)
   }
-  const prompts = files
-    .map(file => file.path)
-    .filter(path => isMarkdown(path))
-    .filter(path => roots.some(root => (root === '' ? !DOC_NAMES.test(basename(path)) || path.includes('/') : path === root || path.startsWith(`${root}/`))))
+  const underRoot = (path: string): boolean =>
+    roots.some(root => (root === '' ? !DOC_NAMES.test(basename(path)) || path.includes('/') : path === root || path.startsWith(`${root}/`)))
+  const prompts = files.map(file => file.path).filter(path => isMarkdown(path) && underRoot(path))
+  // A markdown link under a prompt root (skills/x/SKILL.md -> ../../docs/x.md)
+  // makes the file it lands on a prompt too.
+  for (const [link, real] of aliases) {
+    if (isMarkdown(link) && underRoot(link) && !prompts.includes(real)) prompts.push(real)
+  }
   for (const path of prompts) assign(path, 'prompt')
 
   // Classic hooks and hooks modules.
@@ -270,14 +274,22 @@ export function buildContext(tree: ScannedTree): ScanContext {
   // Files (and links) that hooks, servers or prompts name are run, not just shipped.
   const linkPaths = tree.inventory.entries.filter(entry => entry.kind === 'link').map(entry => entry.path)
   const referenced = (haystack: string, role: FileRole, skipMarkdown: boolean): void => {
+    // `hooks//run.sh`, `"hooks/run.sh"` and `cd hooks && sh run.sh` all name
+    // hooks/run.sh: paths are compared with quotes and doubled slashes
+    // removed, and a bare file name counts when one file has it.
+    const normalized = haystack.replace(/["']/g, ' ').replace(/\/{2,}/g, '/')
+    const words = new Set(normalized.split(/[\s;&|()<>=]+/).map(word => word.split('/').pop() ?? word))
     for (const path of [...paths, ...linkPaths]) {
       if (skipMarkdown && isMarkdown(path)) continue
-      if (!haystack.includes(path)) continue
+      const named = normalized.includes(path) || (words.has(basename(path)) && nameCount.get(basename(path)) === 1)
+      if (!named) continue
       assign(path, role)
       const real = aliases.get(path)
       if (real !== undefined) assign(real, role)
     }
   }
+  const nameCount = new Map<string, number>()
+  for (const path of [...paths, ...linkPaths]) nameCount.set(basename(path), (nameCount.get(basename(path)) ?? 0) + 1)
   for (const hook of hookCommands) referenced(hook.command, 'hook-script', false)
   for (const server of mcpServers) referenced([server.command ?? '', ...server.args].join(' '), 'server', false)
   for (const prompt of prompts) {
@@ -358,14 +370,14 @@ function localImports(path: string, source: string, realOf: (path: string) => st
       }
     }
   }
-  for (const match of findAll(source, /\b(?:from|import)\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]|\b(?:require|import)\s*\(\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]\s*\)/g, 500)) {
+  for (const match of findAll(source, /\b(?:from|import)\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]|\b(?:require|import)\s*\(\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]\s*\)/g, Number.MAX_SAFE_INTEGER)) {
     const spec = /['"](\.{1,2}\/[^'"\n]{1,300})['"]/.exec(match.text)?.[1]
     const base = spec === undefined ? undefined : joinPath(dir, spec)
     // The same resolution as a hooks module's imports: `./x.js` written for `./x.ts`.
     const real = base === undefined ? undefined : resolveModuleFile(base, realOf)
     if (real !== undefined) out.push(real)
   }
-  for (const match of findAll(source, /^[ \t]*from[ \t]+(\.+)([\w.]*)[ \t]+import[ \t]+([\w, ]+)/gm, 200)) {
+  for (const match of findAll(source, /^[ \t]*from[ \t]+(\.+)([\w.]*)[ \t]+import[ \t]+([\w, ]+)/gm, Number.MAX_SAFE_INTEGER)) {
     const parts = /from\s+(\.+)([\w.]*)\s+import\s+([\w, ]+)/.exec(match.text)
     if (parts === null) continue
     const up = '../'.repeat(Math.max(0, (parts[1] as string).length - 1))
@@ -373,7 +385,7 @@ function localImports(path: string, source: string, realOf: (path: string) => st
     if (module !== '') add(`./${up}${module}`, ['.py', '/__init__.py'])
     else for (const name of (parts[3] as string).split(',')) add(`./${up}${name.trim()}`, ['.py', '/__init__.py'])
   }
-  for (const match of findAll(source, /(?:^|[;&|]\s*)(?:source|\.)\s+["']?(\.{1,2}\/[^\s"';]{1,300})/gm, 200)) {
+  for (const match of findAll(source, /(?:^|[;&|]\s*)(?:source|\.)\s+["']?(\.{1,2}\/[^\s"';]{1,300})/gm, Number.MAX_SAFE_INTEGER)) {
     const spec = /(\.{1,2}\/[^\s"';]{1,300})/.exec(match.text)?.[1]
     if (spec !== undefined) add(spec, [''])
   }
@@ -402,7 +414,7 @@ function readModule(
     const source = text(file) ?? ''
     // `from './x'`, `import './x'`, `require('./x')`, `import('./x')`: each a short,
     // linear pattern, so a module full of import tokens cannot stall the scan.
-    for (const match of findAll(source, /\b(?:from|import)\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]|\b(?:require|import)\s*\(\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]\s*\)/g, 500)) {
+    for (const match of findAll(source, /\b(?:from|import)\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]|\b(?:require|import)\s*\(\s*['"](\.{1,2}\/[^'"\n]{1,300})['"]\s*\)/g, Number.MAX_SAFE_INTEGER)) {
       const spec = /['"](\.{1,2}\/[^'"\n]{1,300})['"]/.exec(match.text)?.[1]
       const target = spec === undefined ? undefined : joinPath(dirname(file), spec)
       if (target !== undefined) queue.push(target)

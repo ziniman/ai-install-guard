@@ -126,7 +126,9 @@ function filesCheck(ctx: ScanContext): CheckResult {
   for (const file of ctx.files) {
     const bytes = ctx.tree.contents.get(file.path)
     if (bytes === undefined) continue
-    const ext = extension(file.path)
+    // A versioned native library (libfoo.so.1, libbar.1.dylib) is a .so or .dylib.
+    const versioned = /\.(so|dylib)(?:\.\d+)+$|\.\d+\.(dylib)$/.exec(basename(file.path))
+    const ext = versioned !== null ? ((versioned[1] ?? versioned[2]) as string) : extension(file.path)
     const magic = magicOf(bytes)
     const live = isLive(ctx.roleOf(file.path))
     const cap = (status: Status): Status => (live ? status : 'info')

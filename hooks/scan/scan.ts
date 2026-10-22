@@ -11,7 +11,7 @@ import { GROUPS, rankOf, type CheckResult } from './checks/types'
 import { runValidator } from './checks/validator'
 import type { Host } from './host'
 import { treeHash } from './hash'
-import { ScanError, takeInventory, type Inventory, type ScannedTree } from './inventory'
+import { ScanError, takeInventory, type Inventory, type InventoryEntry, type ScannedTree } from './inventory'
 import { decide, type Verdict } from './verdict'
 
 export type ScanReport = {
@@ -49,6 +49,10 @@ export async function scanFolder(host: Host, target: string, path: string, optio
     // A marketplace's local plugins are plugins in their own right: each is
     // checked from its own folder, as Claude Code would read it.
     for (const source of marketplaceSources(ctx)) {
+      if (source.kind === 'overflow') {
+        results.push(overflowRow(source.count))
+        continue
+      }
       if (source.kind === 'remote') {
         results.push(remoteSourceNote(source.name, source.description))
         continue
@@ -102,6 +106,7 @@ const MAX_NESTED_PLUGINS = 50
 type MarketplaceSource =
   | { kind: 'local'; name: string; path: string }
   | { kind: 'remote'; name: string; description: string }
+  | { kind: 'overflow'; count: number }
 
 /** The plugins a `.claude-plugin/marketplace.json` lists, other than the root itself. */
 function marketplaceSources(ctx: ScanContext): MarketplaceSource[] {
@@ -109,6 +114,8 @@ function marketplaceSources(ctx: ScanContext): MarketplaceSource[] {
   const parsed = parseJson(raw)
   if (!parsed.ok || !isRecord(parsed.value) || !Array.isArray(parsed.value.plugins)) return []
   const out: MarketplaceSource[] = []
+  const skipped = parsed.value.plugins.length - MAX_NESTED_PLUGINS
+  if (skipped > 0) out.push({ kind: 'overflow', count: skipped })
   for (const plugin of parsed.value.plugins.slice(0, MAX_NESTED_PLUGINS)) {
     if (!isRecord(plugin)) continue
     const name = typeof plugin.name === 'string' ? plugin.name : '(unnamed)'
@@ -126,15 +133,24 @@ function marketplaceSources(ctx: ScanContext): MarketplaceSource[] {
 
 /** The part of a scanned tree under `prefix`, re-rooted there. */
 async function subTree(tree: ScannedTree, prefix: string): Promise<ScannedTree | undefined> {
+  const root = `${tree.inventory.root}/${prefix}`
   const entries = tree.inventory.entries
     .filter(entry => entry.path.startsWith(`${prefix}/`))
-    .map(entry => ({ ...entry, path: entry.path.slice(prefix.length + 1) }))
+    .map((entry): InventoryEntry => {
+      const path = entry.path.slice(prefix.length + 1)
+      if (entry.kind !== 'link' || !entry.isInside || entry.landsAt === undefined) return { ...entry, path }
+      // A link's landing, seen from the nested plugin: inside it, or outside
+      // it (once installed on its own, the plugin no longer holds that file).
+      return entry.landsAt.startsWith(`${prefix}/`)
+        ? { ...entry, path, landsAt: entry.landsAt.slice(prefix.length + 1) }
+        : { ...entry, path, landsAt: `${tree.inventory.root}/${entry.landsAt}`, isInside: false }
+    })
   if (entries.length === 0) return undefined
   const contents = new Map<string, Uint8Array>()
   for (const [path, bytes] of tree.contents) if (path.startsWith(`${prefix}/`)) contents.set(path.slice(prefix.length + 1), bytes)
   return {
     inventory: {
-      root: `${tree.inventory.root}/${prefix}`,
+      root,
       entries,
       totalBytes: entries.reduce((sum, entry) => sum + (entry.kind === 'file' ? entry.size : 0), 0),
       treeHash: await treeHash(entries),
@@ -186,6 +202,18 @@ function remoteSourceNote(name: string, description: string): CheckResult {
     severity: 'none',
     evidence: [{ file: '.claude-plugin/marketplace.json', excerpt: `${name} comes from ${description}: scanned when you install it`, status: 'info' }],
     advice: 'A marketplace only lists plugins. Each one is scanned on its own when it is installed.',
+  }
+}
+
+function overflowRow(count: number): CheckResult {
+  return {
+    id: 'structure.marketplace',
+    group: 'structure',
+    title: 'Plugins this marketplace lists',
+    status: 'warn',
+    severity: 'medium',
+    evidence: [{ file: '.claude-plugin/marketplace.json', excerpt: `${count} more plugins than the ${MAX_NESTED_PLUGINS} checked here were not scanned`, status: 'warn' }],
+    advice: 'Unscanned plugins are unknown. Each one is still scanned on its own when it is installed.',
   }
 }
 

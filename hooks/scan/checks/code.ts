@@ -26,6 +26,7 @@ const GROUP = 'code' as const
 
 const CONFIG_EXTENSIONS = new Set(['json', 'jsonc', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'env', 'plist', 'xml'])
 const LOCKFILES = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|go\.sum|poetry\.lock|uv\.lock|Pipfile\.lock|composer\.lock|Gemfile\.lock)$|\.map$/
+const LIVE_ROLES: ReadonlySet<FileRole> = new Set(['module', 'hook-script', 'server', 'prompt-script', 'bin', 'code'])
 const JS_EXTENSIONS = new Set(['js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts', 'cts'])
 const SHELL_EXTENSIONS = new Set(['sh', 'bash', 'zsh', 'fish', 'ksh'])
 /** Names worth hiding by splitting them across strings. */
@@ -74,10 +75,13 @@ type CodeFile = {
 function codeFiles(ctx: ScanContext): CodeFile[] {
   const out: CodeFile[] = []
   for (const file of ctx.files) {
-    if (!file.isText || LOCKFILES.test(file.path)) continue
+    // Lockfiles and source maps are skipped, unless live code loads them.
+    if (!file.isText || (LOCKFILES.test(file.path) && !LIVE_ROLES.has(ctx.roleOf(file.path)))) continue
     const text = ctx.text(file.path)
     if (text === undefined) continue
-    if (isCodeFile(file.path, text) || CONFIG_EXTENSIONS.has(extension(file.path)) || basename(file.path).startsWith('.')) {
+    // Whatever live code loads is code, whatever its name (a required ./helper.map).
+    const loaded = LIVE_ROLES.has(ctx.roleOf(file.path))
+    if (isCodeFile(file.path, text) || loaded || CONFIG_EXTENSIONS.has(extension(file.path)) || basename(file.path).startsWith('.')) {
       const language = languageOf(file.path, text)
       const kindAt = isCodeFile(file.path, text) ? spanKinds(text, language) : () => 'string' as const
       out.push({ path: file.path, text, role: ctx.roleOf(file.path), language, kindAt })
@@ -106,12 +110,10 @@ function judged(file: CodeFile, match: Match, status: Status, excerpt: string): 
 
 /** Matches of `pattern` in the file's code and strings, not its comments or patterns. */
 function active(file: CodeFile, pattern: RegExp, limit = 20): Match[] {
-  return findAll(file.text, pattern, 10_000)
-    .filter(match => {
-      const kind = file.kindAt(match.index)
-      return kind === 'code' || kind === 'string'
-    })
-    .slice(0, limit)
+  return findAll(file.text, pattern, limit, index => {
+    const kind = file.kindAt(index)
+    return kind === 'code' || kind === 'string'
+  })
 }
 
 /**
@@ -119,13 +121,12 @@ function active(file: CodeFile, pattern: RegExp, limit = 20): Match[] {
  * then at most two inert ones, so comments cannot crowd out real code.
  */
 function evidenceFor(file: CodeFile, pattern: RegExp, status: Status, describe: (match: Match) => string, limit = 5): Evidence[] {
-  const all = findAll(file.text, pattern, 10_000)
-  const isInert = (match: Match): boolean => {
-    const kind = file.kindAt(match.index)
+  const isInert = (index: number): boolean => {
+    const kind = file.kindAt(index)
     return kind === 'comment' || kind === 'regex' || kind === 'trailing-comment'
   }
-  const live = all.filter(match => !isInert(match)).slice(0, limit)
-  const inert = all.filter(isInert).slice(0, 2)
+  const live = findAll(file.text, pattern, limit, index => !isInert(index))
+  const inert = findAll(file.text, pattern, 2, isInert)
   return [...live, ...inert].map(match => judged(file, match, status, describe(match)))
 }
 
@@ -240,12 +241,13 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
     const found: { match: Match; what: string }[] = []
     const split: { line: number; what: string; status: Status }[] = []
     const liveFirst = (pattern: RegExp): Match[] => {
-      const all = findAll(text, pattern, 10_000)
-      const isInert = (match: Match): boolean => file.kindAt(match.index) === 'comment' || file.kindAt(match.index) === 'regex'
-      return [...all.filter(match => !isInert(match)).slice(0, 2), ...all.filter(isInert).slice(0, 1)]
+      const isInert = (index: number): boolean => file.kindAt(index) === 'comment' || file.kindAt(index) === 'regex'
+      return [...findAll(text, pattern, 2, index => !isInert(index)), ...findAll(text, pattern, 1, isInert)]
     }
     for (const match of liveFirst(/(?<!data:[\w/+.-]{1,40};base64,)(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{200,}={0,2}/g)) found.push({ match, what: `${match.text.length}-character base64 blob` })
     for (const match of liveFirst(/\b(?:[0-9a-fA-F]{2}){100,}\b/g)) found.push({ match, what: `${match.text.length}-character hex blob` })
+    // A payload wrapped over short lines: four or more lines of nothing but base64.
+    for (const match of liveFirst(/(?:^[ \t]*['"`]?[A-Za-z0-9+/]{40,120}={0,2}['"`]?[ \t]*[,+\\]?[ \t]*\r?\n){4,}/gm)) found.push({ match, what: 'base64 wrapped over several lines' })
     for (const match of liveFirst(/String\.fromCharCode\s*\(\s*(?:\d+\s*,\s*){8,}|\bchr\s*\(\s*\d+\s*\)\s*\+\s*chr\s*\(/g)) found.push({ match, what: `text built from character codes: ${match.excerpt}` })
     for (const match of liveFirst(/(?:\\x[0-9a-fA-F]{2}){16,}|(?:\\u00[0-9a-fA-F]{2}){12,}/g)) found.push({ match, what: 'long run of escaped bytes' })
     // Adjacent literals joined, whatever their quotes: "child" + '_process'.
@@ -255,10 +257,13 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
       // was split to hide it. Joining keeps lines intact, so each join is
       // judged where its `+` sits: one inside a comment or pattern is only
       // reported, like any other mention there.
-      const joins = findAll(text, /(['"`])[ \t]*\+[ \t]*(['"`])/g, 10_000)
-      const liveJoinLines = new Set(joins.filter(join => !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(join.index + join.text.indexOf('+')))).map(join => join.line))
-      const before = new Set(findAll(text, SPLIT_NAMES, 10_000).map(match => `${match.line}:${match.text}`))
-      for (const match of findAll(joined, SPLIT_NAMES, 10_000)) {
+      const joins = findAll(text, /(['"`])[ \t]*\+[ \t]*(['"`])/g, Number.MAX_SAFE_INTEGER, index => {
+        const plus = text.indexOf('+', index)
+        return !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(plus))
+      })
+      const liveJoinLines = new Set(joins.map(join => join.line))
+      const before = new Set(findAll(text, SPLIT_NAMES, Number.MAX_SAFE_INTEGER).map(match => `${match.line}:${match.text}`))
+      for (const match of findAll(joined, SPLIT_NAMES, Number.MAX_SAFE_INTEGER)) {
         if (!liveJoinLines.has(match.line)) continue
         if (!before.has(`${match.line}:${match.text}`)) {
           // A split name is a warning; once joined, if the code runs programs or

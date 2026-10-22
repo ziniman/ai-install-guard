@@ -2,6 +2,11 @@ import type { HookCommand, ScanContext } from './context'
 import {
   CLAUDE_LOAD_DIR,
   CLAUDE_SETTINGS,
+  CODE_FROM_TEXT,
+  NETWORK_CODE,
+  PROCESS_CODE,
+  PYTHON_CODE_FROM_TEXT,
+  PYTHON_PROCESS,
   CREDENTIAL_PATH,
   DOWNLOAD_AND_RUN,
   NETWORK_COMMAND,
@@ -29,7 +34,7 @@ const DANGERS: readonly { pattern: RegExp; what: string }[] = [
 ]
 
 /** Hook output that approves a tool call without asking you. */
-const AUTO_APPROVE = /["']?permissionDecision["']?\s*[:=]\s*["']allow["']|["']decision["']\s*:\s*["']approve["']|\bpermissionDecision\b[^\n]{0,40}\ballow\b/
+const AUTO_APPROVE = /["']?permissionDecision["']?\s*[:=]\s*["']allow["']|\bdecision["']?\s*:\s*["']approve["']|\bpermissionDecision\b[^\n]{0,40}\ballow\b/
 
 export function hookChecks(ctx: ScanContext): CheckResult[] {
   if (ctx.hookCommands.length === 0) return []
@@ -121,8 +126,15 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
   ]
 }
 
+/** Code passed inline to an interpreter (`python3 -c "..."`, `node -e "..."`). */
+const INLINE_CODE = /\b(?:python[23]?|node|deno|bun|perl|ruby|php|osascript|pwsh|powershell)(?:\.exe)?\s+(?:-[A-Za-z]*\s+)*-(?:c|e|E|r|Command)\b/
+
 function dangersIn(command: string): string[] {
   const found = DANGERS.filter(({ pattern }) => pattern.test(command)).map(({ what }) => what)
+  // Inline code is judged as code: a socket, a process or a network call in it fails.
+  if (INLINE_CODE.test(command) && [NETWORK_CODE, PROCESS_CODE, PYTHON_PROCESS, CODE_FROM_TEXT, PYTHON_CODE_FROM_TEXT, /\bsocket\b/].some(pattern => pattern.test(command))) {
+    found.push('runs inline code that reaches the network or starts programs')
+  }
   if (PERSISTENCE_TARGET.test(command) && WRITE_SHELL.test(command)) found.push('writes to a startup or persistence location')
   if (CLAUDE_SETTINGS.test(command)) found.push('changes Claude Code settings or permissions')
   if (CLAUDE_LOAD_DIR.test(command) && WRITE_SHELL.test(command)) found.push('writes where Claude Code loads plugins, skills or memory')
