@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 
 import type { GuardView } from '../types'
+import { badgeFor } from './guard/badge'
 import { PANE_ID } from './guard/view'
 import { FIXTURES } from './test-support/fixtures.gen'
 import { paneProps, serveFixture, serveUi, typed, type FixtureFiles } from './test-support/memfs'
@@ -495,4 +496,62 @@ describe('a row explains itself before it shows code', () => {
       await pane.unmount()
     })
   }
+})
+
+describe('the README badge', () => {
+  const SHA = 'a'.repeat(40)
+  const TREE = `sha256:${'b'.repeat(64)}`
+  const view = (kind: GuardView['verdict'] extends infer V ? (V extends { kind: infer K } ? K : never) : never, extra: Partial<GuardView> = {}): GuardView => ({
+    target: 'acme/notes',
+    action: 'approve',
+    stage: '',
+    verdict: { kind, recommendation: { safe: 'Safe to install', caution: 'Install with caution', reject: 'Do not install', unverified: 'Could not verify' }[kind], reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
+    rows: [],
+    expanded: [],
+    details: false,
+    confirming: false,
+    treeHash: TREE,
+    ...extra,
+  })
+
+  test('names the verdict and the exact version, and links to how to check it', () => {
+    const made = badgeFor(view('safe', { sha: SHA }))
+    expect('markdown' in made && made.markdown).toBe(
+      `[![AI Install Guard: Safe to install at aaaaaaa](https://img.shields.io/badge/AI_Install_Guard-safe_to_install_%C2%B7_aaaaaaa-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned at commit ${SHA}, ${TREE}")`,
+    )
+    const local = badgeFor(view('caution'))
+    expect('markdown' in local && local.markdown).toContain('install_with_caution_%C2%B7_tree_bbbbbbbb-dbab09')
+  })
+
+  test('there is no badge for Do not install, Could not verify, or nothing scanned', () => {
+    expect(badgeFor(view('reject'))).toEqual({ refusal: 'There is no badge for Do not install.' })
+    expect(badgeFor(view('unverified'))).toEqual({ refusal: 'There is no badge for Could not verify.' })
+    expect('refusal' in badgeFor(undefined)).toBe(true)
+    expect('refusal' in badgeFor(view('safe', { treeHash: undefined }))).toBe(true)
+  })
+
+  test('/guard badge after a scan, and Copy badge in the pane', async ($, on) => {
+    mock.store(on)
+    const ui = serveUi(on)
+    serveFixture(on, ROOT, fixture('clean-plugin'))
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    const answer = await $.command.run(typed('guard', 'badge'))
+    expect(answer.text).toContain('[![AI Install Guard: Safe to install at tree ')
+
+    const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+    await pane.press({ key: 'badge' })
+    expect(ui.copied.at(-1)).toContain('img.shields.io/badge/AI_Install_Guard-safe_to_install')
+    await pane.unmount()
+  })
+
+  test('no Copy badge for a candidate that fails', async ($, on) => {
+    mock.store(on)
+    serveUi(on)
+    serveFixture(on, ROOT, fixture('curl-hook'))
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+    expect(await pane.find({ key: 'badge' })).toBeUndefined()
+    expect((await $.command.run(typed('guard', 'badge'))).text).toContain('There is no badge for Do not install')
+    await pane.unmount()
+  })
 })

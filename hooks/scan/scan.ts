@@ -4,7 +4,7 @@ import { hookChecks } from './checks/hooks'
 import { mcpChecks } from './checks/mcp'
 import { modChecks } from './checks/mod'
 import { promptChecks } from './checks/prompts'
-import { marketplacePinsCheck } from './checks/provenance'
+import { badgeClaim, badgeRow, marketplacePinsCheck, type BadgeClaim } from './checks/provenance'
 import { licenseCheck, qualityChecks } from './checks/quality'
 import { secretChecks } from './checks/secrets'
 import { structureChecks } from './checks/structure'
@@ -26,6 +26,8 @@ export type ScanReport = {
   verdict: Verdict
   /** For a remote scan: the one commit that was fetched and checked. */
   source?: PinnedSource
+  /** What an AI Install Guard badge in the README claims, judged in `results`. */
+  badgeClaim?: BadgeClaim
 }
 
 export type ScanOptions = {
@@ -104,8 +106,20 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
       ])
     results = [...results, ...extra]
   }
-  results = sortResults(results)
-  return { target, kind: ctx.kind, inventory: tree.inventory, results, verdict: decide(results) }
+  const claim = badgeClaim(ctx.readme)
+  results = withBadgeClaim(sortResults(results), claim)
+  return { target, kind: ctx.kind, inventory: tree.inventory, results, verdict: decide(results), ...(claim === undefined ? {} : { badgeClaim: claim }) }
+}
+
+/**
+ * The results with a README badge judged against everything else: the badge
+ * row is computed last, from the verdict the other rows give, so a badge can
+ * add a warning and never lift a verdict.
+ */
+export function withBadgeClaim(results: readonly CheckResult[], claim: BadgeClaim | undefined): CheckResult[] {
+  const rest = results.filter(result => result.id !== 'provenance.badge')
+  if (claim === undefined) return [...rest]
+  return sortResults([...rest, badgeRow(claim, decide(rest).kind)])
 }
 
 async function checksFor(host: Host, ctx: ScanContext, options: ScanOptions): Promise<CheckResult[]> {
@@ -156,7 +170,8 @@ export async function scanRemote(host: Host, target: string, spec: RemoteSpec, o
   try {
     const report = await scanFolder(host, target, fetched.root, options)
     if (report.verdict.kind === 'unverified') return { ...report, source: fetched.source }
-    const results = sortResults([...fetched.results, ...report.results])
+    // The badge is judged again with the source's own rows counted.
+    const results = withBadgeClaim(sortResults([...fetched.results, ...report.results]), report.badgeClaim)
     return { ...report, source: fetched.source, results, verdict: decide(results) }
   } finally {
     await fetched.cleanup().catch(() => undefined)

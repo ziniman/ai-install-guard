@@ -4,6 +4,7 @@ import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 import type { GuardRow, GuardStatus, GuardView } from '../../types'
 import { GROUPS } from '../scan/checks/types'
 import { locate } from '../scan/verdict'
+import { badgeFor } from './badge'
 import { recordDecision, saveLastView } from './decisions'
 import { needsConfirmation, PANE_ID, primaryLabel } from './view'
 
@@ -98,6 +99,17 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     }
     await decide('approved', false)()
   }
+
+  const copyBadge = async () => {
+    const made = badgeFor(view)
+    if ('refusal' in made) {
+      $.ui.toast(`AI Install Guard: ${made.refusal}`)
+      return
+    }
+    const result = await $.ui.copy({ text: made.markdown, surface: e.surface })
+    $.ui.toast(result.isCopied ? 'AI Install Guard: badge copied; paste it near the top of your README' : 'AI Install Guard: could not copy the badge here')
+  }
+  const offersBadge = view.treeHash !== undefined && (view.verdict?.kind === 'safe' || view.verdict?.kind === 'caution')
 
   const copy = async () => {
     const text = await $.store.get(REPORT_TEXT)
@@ -204,6 +216,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
           <Button key="reject" label="Reject" hotkey="r" variant={needsConfirmation(view) ? 'primary' : 'secondary'} onPress={decide('rejected', false)} />
           <Button key="details" label={view.details ? 'Fewer details' : 'Details'} hotkey="d" onPress={() => update($, viewAtom, current => (current === null ? current : { ...current, details: !current.details }))} />
           <Button key="copy" label="Copy report" hotkey="c" onPress={copy} />
+          {offersBadge && <Button key="badge" label="Copy badge" hotkey="b" onPress={copyBadge} />}
         </Box>
       )}
 

@@ -6,6 +6,10 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ## Unreleased
 
+**`/guard badge`** - A README badge for plugin authors: after a scan that was Safe to install or Install with caution, `/guard badge` or Copy badge in the pane gives a shields.io badge naming the verdict and the exact commit or tree hash scanned, linked to how to check it. The guard never trusts a badge it meets: one that claims more than its own scan finds is a warning, and one that matches is only noted
+
+**`README`** - The Reviewed by AI Install Guard mark heads the README
+
 **`/guard scan <repository>`** - Scans one commit of a remote repository (`https://`, `github:owner/repo` or `owner/repo`, with `@ref`, `--ref` and `--path`). The ref is resolved with `git ls-remote`, only that commit is fetched into the guard's own temporary folder with no hooks, submodules, LFS downloads or filters, and the checkout must land on the pinned commit before anything is read; the folder is removed afterwards. Short commit ids, refs that name both a branch and a tag, and non-https sources are refused
 
 **`provenance`** - New rows for a remote scan: the source and its pinned commit, branches or tags named like a commit id or `FETCH_HEAD` (the Plugin4Shell trick, a failure), and submodules whose code was not scanned. For a marketplace, each plugin it lists from elsewhere is checked for a full commit pin or an exact package version
