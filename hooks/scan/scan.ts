@@ -7,7 +7,7 @@ import { licenseCheck, qualityChecks } from './checks/quality'
 import { secretChecks } from './checks/secrets'
 import { structureChecks } from './checks/structure'
 import { joinPath } from './checks/text'
-import { GROUPS, rankOf, type CheckResult } from './checks/types'
+import { GROUPS, rankOf, type CheckResult, type Evidence } from './checks/types'
 import { runValidator } from './checks/validator'
 import type { Host } from './host'
 import { treeHash } from './hash'
@@ -181,10 +181,18 @@ export function mergeResults(base: readonly CheckResult[], extra: readonly Check
       out.push({ ...result, evidence: [...result.evidence] })
       continue
     }
-    const seen = new Set(existing.evidence.map(item => `${item.file}:${item.line ?? ''}:${item.excerpt}`))
+    const seen = new Map(existing.evidence.map((item, index) => [`${item.file}:${item.line ?? ''}:${item.excerpt}`, index]))
     for (const item of result.evidence) {
       const key = `${item.file}:${item.line ?? ''}:${item.excerpt}`
-      if (!seen.has(key)) existing.evidence.push(item)
+      const at = seen.get(key)
+      if (at === undefined) {
+        existing.evidence.push(item)
+        continue
+      }
+      // The same place seen twice keeps the worse judgement, so a failure is
+      // never shown with only a note as its evidence.
+      const kept = existing.evidence[at] as Evidence
+      if (rankOf(item.status ?? result.status) > rankOf(kept.status ?? existing.status)) existing.evidence[at] = item
     }
     // A pass on one side and a note on the other stay a pass; anything worse wins.
     if (rankOf(result.status) > rankOf(existing.status)) existing.status = result.status

@@ -4,7 +4,7 @@ import type { CheckResult } from './types'
 /** Group 1's local part: a license. The rest of provenance needs the repo. */
 export function licenseCheck(ctx: ScanContext): CheckResult {
   const file = ctx.files.find(entry => /^(?:license|licence|copying)(?:\.[a-z]+)?$/i.test(entry.path))
-  const declared = typeof ctx.manifest?.license === 'string' ? ctx.manifest.license : undefined
+  const declared = typeof ctx.manifest?.license === 'string' && ctx.manifest.license.trim() !== '' ? ctx.manifest.license.trim() : undefined
   const found = file?.path ?? (declared === undefined ? undefined : `license "${declared}" in plugin.json`)
   return {
     id: 'provenance.license',

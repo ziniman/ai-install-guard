@@ -213,14 +213,15 @@ function codePoints(text: string): string {
 function execCheck(ctx: ScanContext): CheckResult {
   const evidence: Evidence[] = []
   for (const file of codeFiles(ctx)) {
-    if (!isCodeFile(file.path, file.text)) continue
+    // Code files, and anything live code runs or loads whatever its name.
+    if (!isCodeFile(file.path, file.text) && !LIVE_ROLES.has(file.role)) continue
     const inModule = file.role === 'module'
+    const python = [{ pattern: PYTHON_PROCESS, what: 'runs programs' }, { pattern: PYTHON_CODE_FROM_TEXT, what: 'runs code built from text' }]
+    const shell = [{ pattern: SHELL_EVAL, what: 'evaluates text as shell code' }]
+    const js = [{ pattern: PROCESS_CODE, what: 'runs programs' }, { pattern: CODE_FROM_TEXT, what: 'runs code built from text' }]
+    // A file of no known language is checked as all of them.
     const patterns: { pattern: RegExp; what: string }[] =
-      file.language === 'python'
-        ? [{ pattern: PYTHON_PROCESS, what: 'runs programs' }, { pattern: PYTHON_CODE_FROM_TEXT, what: 'runs code built from text' }]
-        : file.language === 'shell'
-          ? [{ pattern: SHELL_EVAL, what: 'evaluates text as shell code' }]
-          : [{ pattern: PROCESS_CODE, what: 'runs programs' }, { pattern: CODE_FROM_TEXT, what: 'runs code built from text' }]
+      file.language === 'python' ? python : file.language === 'shell' ? shell : file.language === 'js' ? js : [...js, ...python, ...shell]
     for (const { pattern, what } of patterns) {
       evidence.push(...evidenceFor(file, pattern, inModule ? 'fail' : 'warn', match => `${what}: ${match.excerpt}`, 3))
     }
@@ -253,7 +254,7 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
     for (const match of liveFirst(/(?<!data:[\w/+.-]{1,40};base64,)(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{200,}={0,2}/g)) found.push({ match, what: `${match.text.length}-character base64 blob` })
     for (const match of liveFirst(/\b(?:[0-9a-fA-F]{2}){100,}\b/g)) found.push({ match, what: `${match.text.length}-character hex blob` })
     // A payload wrapped over short lines: four or more lines of nothing but base64.
-    for (const match of liveFirst(/(?:^[ \t]*['"`]?[A-Za-z0-9+/]{40,120}={0,2}['"`]?[ \t]*[,+\\]?[ \t]*\r?\n){4,}/gm)) found.push({ match, what: 'base64 wrapped over several lines' })
+    for (const match of liveFirst(/(?:^[ \t]{0,20}['"`]?[A-Za-z0-9+/]{40,120}={0,2}['"`]?(?:[ \t]{0,20}[,+\\])?[ \t]{0,20}\r?\n){4,}/gm)) found.push({ match, what: 'base64 wrapped over several lines' })
     for (const match of liveFirst(/String\.fromCharCode\s*\(\s*(?:\d+\s*,\s*){8,}|\bchr\s*\(\s*\d+\s*\)\s*\+\s*chr\s*\(/g)) found.push({ match, what: `text built from character codes: ${match.excerpt}` })
     for (const match of liveFirst(/(?:\\x[0-9a-fA-F]{2}){16,}|(?:\\u00[0-9a-fA-F]{2}){12,}/g)) found.push({ match, what: 'long run of escaped bytes' })
     // Adjacent literals joined, whatever their quotes and across line breaks:

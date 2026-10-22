@@ -13,7 +13,8 @@ export const DOWNLOAD_AND_RUN =
   /\b(?:curl|wget)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\b|\b(?:curl|wget)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:python[23]?|node|perl|ruby|php)\b|\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)|\bsource\s+<\(\s*(?:curl|wget)|\bbase64\s+(?:-d|--decode|-D)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da)?sh\b|\bpython[23]?\s+-c\s+["'][^"'\n]{0,500}urllib|\beval\s+["']?\$\(\s*(?:curl|wget|echo|base64)/
 
 /** Fetching and running a package that is not pinned to a version. */
-export const UNPINNED_RUNNER = /\b(?:npx|bunx|pnpx)\s+(?:-y\b|--yes\b)|\b(?:uvx|pipx\s+run)\s+(?!\S+(?:==|@)\d)/
+export const UNPINNED_RUNNER =
+  /\b(?:npx|bunx|pnpx)\s+(?:(?:-y|--yes)\b|(?:-{1,2}[\w-]+\s+){0,5}(?!-)(?:@[\w.-]+\/)?[\w.-]+(?![@\w./-]))|\b(?:uvx|pipx\s+run)\s+(?!\S+(?:==|@)\d)/
 
 /** Shell `eval` and piping into a shell. */
 export const SHELL_EVAL = /(?:^|[\s;&|(])eval\s|\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\s*(?:$|[;&|)])/m
@@ -28,7 +29,7 @@ export const SECRET_ENV =
 
 /** Places whose change persists past the session or grants itself more. */
 export const PERSISTENCE_TARGET =
-  /\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b|\bconfig\.fish\b|\bcrontab\b|\/etc\/cron|\bLaunchAgents\b|\bLaunchDaemons\b|\blaunchctl\s+(?:load|bootstrap|submit)\b|\bsystemctl\s+(?:--user\s+)?enable\b|\/etc\/systemd\/|\.config\/systemd\/|\.git\/hooks\b|\bcore\.hooksPath\b|\/etc\/profile\b|\.config\/autostart\b|CurrentVersion\\+Run\b/
+  /(?<![\w$)\]])\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b|\bconfig\.fish\b|\bcrontab\b|\/etc\/cron|\bLaunchAgents\b|\bLaunchDaemons\b|\blaunchctl\s+(?:load|bootstrap|submit)\b|\bsystemctl\s+(?:--user\s+)?enable\b|\/etc\/systemd\/|\.config\/systemd\/|\.git\/hooks\b|\bcore\.hooksPath\b|\/etc\/profile\b|\.config\/autostart\b|CurrentVersion\\+Run\b/
 
 /** Claude Code settings and permission switches. */
 export const CLAUDE_SETTINGS =

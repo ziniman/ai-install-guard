@@ -9,7 +9,7 @@ const GROUP = 'prompts' as const
 /** Phrases that try to take over the model or hide from the person. */
 const INJECTION: readonly RegExp[] = [
   /\bignore\s+(?:all\s+|any\s+)?(?:of\s+)?(?:the\s+|your\s+)?(?:previous|prior|above|earlier|preceding|system|original)\s+(?:instructions?|prompts?|messages?|rules|guidelines|directions)/i,
-  /\bdisregard\s+(?:all\s+|any\s+)?(?:the\s+|your\s+)?(?:previous|prior|above|earlier|system|original)?\s*(?:instructions?|prompts?|rules|guidelines)\b/i,
+  /\bdisregard\s+(?:(?:all|any)\s+)?(?:(?:the|your)\s+)?(?:(?:previous|prior|above|earlier|system|original)\s+)?(?:instructions?|prompts?|rules|guidelines)\b/i,
   /\bforget\s+(?:all\s+|everything\s+)?(?:about\s+)?(?:your|the|previous|prior)\s+(?:instructions?|rules|guidelines)/i,
   /\b(?:do\s+not|don['’]t|never)\s+(?:tell|inform|show|mention|reveal|disclose|alert|notify|warn)\s+(?:this\s+to\s+|it\s+to\s+|anything\s+to\s+)?(?:the\s+)?user\b/i,
   /\bwithout\s+(?:telling|asking|informing|notifying|alerting|showing|warning)\s+(?:the\s+)?user\b/i,
@@ -221,7 +221,7 @@ function toolList(value: string): string[] {
   let current = ''
   for (const char of value.replace(/^\[|\]$/g, '')) {
     if (char === '(') depth += 1
-    if (char === ')') depth -= 1
+    if (char === ')') depth = Math.max(0, depth - 1)
     if ((char === ',' || (char === ' ' && depth === 0 && current.trim() !== '' && !current.endsWith('('))) && depth === 0) {
       if (current.trim() !== '') out.push(current.trim().replace(/^["']|["']$/g, ''))
       current = ''

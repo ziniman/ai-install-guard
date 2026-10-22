@@ -1,4 +1,5 @@
 import type { InventoryFile, ScannedTree } from '../inventory'
+import { magicOf } from './magic'
 import { basename, dirname, extension, findAll, joinPath, lineOf, spanKinds, type Match } from './text'
 
 /**
@@ -167,13 +168,19 @@ export function buildContext(tree: ScannedTree): ScanContext {
     return undefined
   }
   const texts = new Map<string, string>()
-  const text = (path: string): string | undefined => {
+  const byPath = new Map(files.map(file => [file.path, file]))
+  // Any file that is not a known binary format is read as text, NUL bytes
+  // and all: a NUL in a comment must not hide the code after it. Paths are
+  // read through in-folder links, as Claude Code reads them.
+  const text = (asked: string): string | undefined => {
+    const path = realOf(asked) ?? asked
     const cached = texts.get(path)
     if (cached !== undefined) return cached
-    const file = files.find(entry => entry.path === path)
+    const file = byPath.get(path)
     const bytes = tree.contents.get(path)
-    if (file === undefined || !file.isText || bytes === undefined) return undefined
-    const decoded = decoder.decode(bytes)
+    if (file === undefined || bytes === undefined) return undefined
+    if (!file.isText && magicOf(bytes) !== undefined) return undefined
+    const decoded = file.isText ? decoder.decode(bytes) : decoder.decode(bytes).replace(/\u0000/g, ' ')
     texts.set(path, decoded)
     return decoded
   }

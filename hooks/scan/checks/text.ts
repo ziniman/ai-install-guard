@@ -199,6 +199,13 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
       continue
     }
     lineHasCode = true
+    // In shell a backslash escapes the next character outside strings too:
+    // `\'` is a quote character, not the start of a string.
+    if (language === 'shell' && char === '\\') {
+      i += 2
+      lastSignificant = 'a'
+      continue
+    }
     if (char === '`' && language === 'js') {
       // A template literal: its text is a string, each `${...}` inside it is
       // code (and may hold strings and templates of its own).
