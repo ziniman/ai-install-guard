@@ -70,7 +70,17 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     })
     return claimed
   }
-  const release = () => update($, viewAtom, latest => (latest === null || latest.scanId !== view.scanId ? latest : { ...latest, deciding: false })).then(() => undefined)
+  /** Puts `next` in the pane while it still shows this scan; false once another scan has taken it. */
+  const replaceOwn = async (next: GuardView): Promise<boolean> => {
+    let ours = false
+    await update($, viewAtom, latest => {
+      ours = latest !== null && latest.scanId === view.scanId
+      return ours ? next : latest
+    })
+    return ours
+  }
+  const release = (current: GuardView) => replaceOwn({ ...current, deciding: false })
+  const movedOn = 'the pane has moved on to another scan'
 
   const decide = (decision: 'approved' | 'rejected', overridden: boolean) => async () => {
     const current = await claim()
@@ -81,17 +91,19 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     // person allows anyway goes through once, as that exact command.
     if (current.treeHash === undefined) {
       if (held !== undefined && decision === 'approved') {
-        await grantPass($, { origin: held.origin, args: held.args })
         // The pass is spent on this request: the reopened report shows it allowed, not the buttons again.
         const allowed = { ...current, decision, decidedAt: Date.now(), confirming: false, deciding: false }
-        await update($, viewAtom, latest => (latest === null || latest.scanId !== current.scanId ? latest : allowed))
+        if (!(await replaceOwn(allowed))) {
+          $.ui.toast(`AI Install Guard: nothing was allowed: ${movedOn}`)
+          return
+        }
+        await grantPass($, { origin: held.origin, args: held.args })
         await saveLastView($, allowed).catch(() => undefined)
         await carryOut($, held, allowed)
         return
       }
       $.ui.toast(held !== undefined ? 'AI Install Guard: rejected; nothing was installed' : 'AI Install Guard: closed; the scan read nothing, so there is no decision to remember')
-      await release()
-      await $.ui.close({ id: PANE_ID })
+      if (await release(current)) await $.ui.close({ id: PANE_ID })
       return
     }
     const decidedAt = Date.now()
@@ -110,11 +122,16 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     } catch {
       // Nothing was saved: say so, and leave the pane open to try again.
       $.ui.toast('AI Install Guard: could not save the decision; nothing was recorded')
-      await release()
+      await release(current)
       return
     }
     const decided = { ...current, decision, decidedAt, confirming: false, deciding: false }
-    await update($, viewAtom, () => decided)
+    // The decision is saved for its version either way; the pane, the
+    // reopened report and the install are this scan's only while it has the pane.
+    if (!(await replaceOwn(decided))) {
+      $.ui.toast(`AI Install Guard: ${decision} ${current.target}, but ${movedOn}${held !== undefined && decision === 'approved' ? '; run the install again and it goes through' : ''}`)
+      return
+    }
     // The reopened report shows the outcome, not the buttons again.
     await saveLastView($, decided).catch(() => undefined)
     // The approval is saved for this exact version, so the install, asked for

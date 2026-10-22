@@ -83,7 +83,7 @@ function readShell(command: string): Reading {
   if (opaque) {
     return { kind: 'unreadable', label: 'a command built as it runs', reason: 'it runs a command only known as it runs (as in bash -c "$CMD" or eval "$X"), so the guard cannot tell whether it installs anything; run the command itself instead' }
   }
-  if (unseen && (MAY_INSTALL.test(command) || /\bclaude\b/i.test(command))) {
+  if (unseen && (MAY_INSTALL.test(command) || (CLAUDE_WORD.test(command) && /\bplugins?\b/i.test(command)))) {
     return { kind: 'unreadable', label: 'a claude plugin command', reason: 'part of the command is only known as it runs, so the guard cannot tell what it installs; run claude plugin install <name>@<marketplace> as a plain command' }
   }
   return PASS
@@ -94,6 +94,9 @@ function readShell(command: string): Reading {
  * the commas of a list in another language (`['plugin', 'install']`).
  */
 const MAY_INSTALL = /\bplugins?\b[^\w\n]{1,8}(?:install|i|update|marketplace)\b/i
+
+/** `claude` as a word of its own, not part of a path such as `~/.claude/` or a name such as `claude-code`. */
+const CLAUDE_WORD = /(?<![\w./-])claude(?![\w./-])/i
 
 /** Names the `claude` command goes by. */
 const CLAUDE = new Set(['claude', 'claude.exe', 'claude-code'])
@@ -153,25 +156,50 @@ const WRAPPERS: Record<string, Wrapper> = {
 const TEXT_ARGUMENTS = new Set(['git', 'gh'])
 
 /**
- * The shell text git itself runs, from its arguments: a configuration value
- * (`-c alias.x='!…'`, `-c core.pager=…`), `rebase --exec`, `bisect run` and
- * `submodule foreach`. Everything else git takes is text.
+ * Configuration keys whose value git runs as a command (a `!` alias, a pager,
+ * an editor, a helper or driver), or that point it at hooks to run.
  */
-function gitScripts(args: readonly string[]): string[] {
-  const out: string[] = []
-  for (let index = 0; index < args.length; index += 1) {
+const GIT_RUNS = /^(?:alias\.[^=]+|core\.(?:pager|editor|sshcommand|fsmonitor|hookspath|askpass)|sequence\.editor|diff\.external|gpg\.(?:[^.]+\.)?program|credential\.(?:[^=]+\.)?helper|(?:diff|filter|merge|difftool|mergetool|pager|uploadpack|receivepack|remote\.[^.]+)\.[^=]+)=/i
+
+/** Git's options that take a value before its subcommand. */
+const GIT_VALUES = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env'])
+
+/**
+ * The shell text git itself runs, from its arguments: a configuration value
+ * it runs (`-c alias.x='!…'`, `-c core.pager=…`), `rebase --exec`,
+ * `bisect run` and `submodule foreach`. Everything else git takes, messages
+ * and names included, is text. `hooks` is set when a configuration points it
+ * at hooks the guard cannot read.
+ */
+function gitScripts(args: readonly string[]): { scripts: string[]; hooks: boolean } {
+  const scripts: string[] = []
+  let hooks = false
+  let index = 0
+  // Global options, before the subcommand.
+  for (; index < args.length; index += 1) {
     const arg = args[index] as string
-    const value = (name: string): string | undefined => (arg === name ? args[index + 1] : arg.startsWith(`${name}=`) ? arg.slice(name.length + 1) : undefined)
-    const config = arg === '-c' ? args[index + 1] : /^-c./.test(arg) ? arg.slice(2) : undefined
-    if (config !== undefined && config.includes('=')) out.push(config.slice(config.indexOf('=') + 1).replace(/^!/, ''))
-    const exec = value('-x') ?? value('--exec')
-    if (exec !== undefined) out.push(exec)
-    if (arg === 'foreach' || (arg === 'run' && args[index - 1] === 'bisect')) {
-      out.push(args.slice(index + 1).join(' '))
-      break
+    if (!arg.startsWith('-')) break
+    const config = arg === '-c' ? args[index + 1] : arg.startsWith('-c') ? arg.slice(2) : undefined
+    if (config !== undefined && GIT_RUNS.test(config)) {
+      if (/^core\.hookspath=/i.test(config)) hooks = true
+      else scripts.push(config.slice(config.indexOf('=') + 1).replace(/^!/, ''))
     }
+    if (GIT_VALUES.has(arg)) index += 1
   }
-  return out
+  const sub = args[index]
+  const rest = args.slice(index + 1)
+  if (sub === 'rebase') {
+    rest.forEach((arg, at) => {
+      if (arg === '-x' || arg === '--exec') scripts.push(rest[at + 1] ?? '')
+      else if (arg.startsWith('--exec=')) scripts.push(arg.slice('--exec='.length))
+    })
+  }
+  if (sub === 'bisect' && rest[0] === 'run') scripts.push(rest.slice(1).join(' '))
+  if (sub === 'submodule') {
+    const at = rest.indexOf('foreach')
+    if (at !== -1) scripts.push(rest.slice(at + 1).filter(arg => arg !== '--recursive' && arg !== '-q' && arg !== '--quiet').join(' '))
+  }
+  return { scripts, hooks }
 }
 
 /** How deep `sh -c "sh -c '…'"` is followed before the guard gives up reading it. */
@@ -277,12 +305,12 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     if (writes === true) out.others += 1
     const { index, scripts, fromInput } = programAt(words)
     scripts.forEach(nested)
-    // xargs fills in words from its input, which the guard does not see.
-    if (fromInput) out.unseen = true
     const word = words[index]
     // Only NAME=value words: nothing runs.
     if (word === undefined) continue
     const program = programName(word)
+    // xargs fills in words from its input, which the guard does not see; for a quiet program that is only text.
+    if (fromInput && !(QUIET.has(program) && !writesAnyway(program, words.slice(index + 1)))) out.unseen = true
     if (CLAUDE.has(program)) {
       // `claude` asked to do something only known as it runs could be installing.
       const at = words.findIndex((item, place) => place > index && /^plugins?$/i.test(item))
@@ -337,8 +365,13 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     // Or run an argument as a script (`su -c '…'`, `watch '…'`, git's own
     // `-c alias.x='!…'`): an install there is found, and the program around
     // it counts as more than it.
-    const texts = program === 'git' ? gitScripts(words.slice(index + 1)) : TEXT_ARGUMENTS.has(program) ? [] : words.slice(index + 1).filter(argument => /\s/.test(argument))
-    for (const text of texts) merge(collectInstalls(text, found, depth + 1, program === 'git'), false)
+    if (program === 'git') {
+      const ran = gitScripts(words.slice(index + 1))
+      if (ran.hooks) out.unseen = true
+      for (const script of ran.scripts) merge(collectInstalls(script, found, depth + 1, true), false)
+    } else if (!TEXT_ARGUMENTS.has(program)) {
+      for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) merge(collectInstalls(text, found, depth + 1, false), false)
+    }
     out.others += 1
   }
   return out
@@ -475,8 +508,12 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     const isBackquote = text[open] === '`'
     const close = isBackquote ? closingBackquote(text, open) : closingParen(text, open)
     const end = close === -1 ? text.length : close
-    // `$((…))` is arithmetic, not a command.
-    if (!(text[open] === '(' && text[open + 1] === '(')) (current.scripts ??= []).push(text.slice(open + 1, end))
+    // `$((…))` is arithmetic, not a command, but a substitution inside it still runs.
+    const body = text.slice(open + 1, end)
+    if (text[open] === '(' && text[open + 1] === '(') {
+      const inner = substitutionsIn(body)
+      if (inner.length > 0) (current.scripts ??= []).push(...inner)
+    } else (current.scripts ??= []).push(body)
     dynamic = true
     word += text.slice(open - (isBackquote ? 0 : 1), Math.min(end + 1, text.length))
     inWord = true
@@ -643,7 +680,10 @@ function substitutionsIn(text: string): string[] {
       index += 1
     } else if (text[index] === '$' && text[index + 1] === '(') {
       const close = closingParen(text, index + 1)
-      if (text[index + 2] !== '(') out.push(text.slice(index + 2, close === -1 ? text.length : close))
+      const body = text.slice(index + 2, close === -1 ? text.length : close)
+      // Arithmetic is not a command, but a substitution inside it still runs.
+      if (text[index + 2] === '(') out.push(...substitutionsIn(body))
+      else out.push(body)
       index = close === -1 ? text.length : close
     } else if (text[index] === '`') {
       const close = closingBackquote(text, index)

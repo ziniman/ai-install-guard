@@ -165,6 +165,23 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand(`git -c user.name='A Person' commit -m "claude plugin install notes@acme"`)).toEqual({ kind: 'pass', browse: false })
   })
 
+  test('PR review, round two: arithmetic substitutions run, and ordinary commands pass', () => {
+    expect(readShellCommand('cat <<EOF\n$(( $(claude plugin install foo@bar >/dev/null) + 0 ))\nEOF').kind).not.toBe('pass')
+    expect(readShellCommand('echo $(( $(claude plugin install foo@bar) + 1 ))').kind).not.toBe('pass')
+    for (const command of [
+      'python3 ~/.claude/hooks/x.py',
+      'node .claude/scripts/build.js',
+      'git ls-files | xargs grep -n claude',
+      "git -c user.name='claude plugin install x' status",
+      'git cherry-pick -x $SHA',
+      'git -c diff.algorithm=patience diff',
+    ]) {
+      expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
+    }
+    expect(readShellCommand(`git -c core.pager='claude plugin install evil@m' log`).kind).toBe('unreadable')
+    expect(readShellCommand(`git rebase --exec='claude plugin install evil@m' main`).kind).toBe('unreadable')
+  })
+
   test('PR review: tee and sort -o write files beside an install', () => {
     expect(readShellCommand('claude plugin install notes@acme | tee out.txt').kind).toBe('unreadable')
     expect(readShellCommand('sort -o out.txt list && claude plugin install notes@acme').kind).toBe('unreadable')

@@ -97,6 +97,10 @@ export async function pinnedDecision($: EngineInterface, pin: { root: string; sh
  * failed write leaves no report, never another scan's.
  */
 export async function saveReport($: EngineInterface, scanId: string, text: string): Promise<void> {
+  // A newer scan's report is never replaced by an older one's.
+  const stored = await $.store.get(REPORT_TEXT).catch(() => undefined)
+  const storedId = stored !== null && typeof stored === 'object' ? (stored as { scanId?: unknown }).scanId : undefined
+  if (typeof storedId === 'string' && storedId > scanId) return
   const kept = text.length > MAX_REPORT_CHARS ? `${text.slice(0, MAX_REPORT_CHARS)}\n… the report was cut here to fit the store` : text
   await $.store.set(REPORT_TEXT, { scanId, text: kept }).catch(() => $.store.delete(REPORT_TEXT).catch(() => undefined))
 }

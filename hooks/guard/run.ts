@@ -64,11 +64,12 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
     const base = { ...withRequest(viewOf(report, options.action), options.request), scanId }
     const view = earlier === undefined ? base : { ...base, decision: earlier.decision, decidedAt: earlier.decidedAt }
     const text = formatReport(report, { details: true })
+    // A scan started since owns the pane now: this one leaves it, its report
+    // and the reopened report alone, so no press lands on the wrong scan.
+    if (!(await owns($, scanId))) return { kind: 'done', report, view, text, placed: opened, superseded: true }
     // The report is stored under this scan's name before the pane shows the
     // verdict, so Copy report copies it, and never another scan's.
     await saveReport($, scanId, text)
-    // A scan started since owns the pane now: this one leaves it and the
-    // reopened report alone, so no press lands on the wrong scan.
     if (!(await showOwn($, view))) return { kind: 'done', report, view, text, placed: opened, superseded: true }
     $.ui.toast(`AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}`)
     return { kind: 'done', report, view, text, placed: opened, superseded: false }
@@ -107,8 +108,14 @@ async function showFailure($: EngineInterface, target: string, reason: string, o
     stage: '',
     verdict: { kind: 'unverified', recommendation: 'Could not verify', reasons: [reason], counts: { pass: 0, warn: 0, fail: 0, info: 0 } },
   }
+  if (!(await owns($, scanId).catch(() => false))) return { view: failed, shown: false }
   await saveReport($, scanId, reason)
   return { view: failed, shown: await showOwn($, failed).catch(() => false) }
+}
+
+/** Whether the pane still shows this scan. */
+async function owns($: EngineInterface, scanId: string): Promise<boolean> {
+  return (await read($, viewAtom))?.scanId === scanId
 }
 
 /** Takes the pane for a scan just started, unless a newer scan already has it. */
