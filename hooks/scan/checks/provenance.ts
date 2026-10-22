@@ -106,9 +106,11 @@ export function badgeClaim(readme: { path: string; text: string } | undefined): 
   for (let index = 0; index < lines.length; index += 1) {
     let line = lines[index] as string
     const blank = line.trim() === ''
+    // Inside a list item a fence may sit as deep as the item's own content.
+    const fenceIndent = listContext ? '[ \\t]{0,16}' : ' {0,3}'
     if (fence !== undefined) {
       // A fence closes only with its own character, at least as long, and nothing after.
-      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)
+      const close = new RegExp(`^${fenceIndent}(\`{3,}|~{3,})[ \\t]*$`).exec(line)
       if (close !== null && (close[1] as string)[0] === fence.char && (close[1] as string).length >= fence.length) fence = undefined
       continue
     }
@@ -118,7 +120,7 @@ export function badgeClaim(readme: { path: string; text: string } | undefined): 
       comment = false
       line = line.slice(end + 3)
     }
-    const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    const open = htmlBlock ? null : new RegExp(`^${fenceIndent}(\`{3,}|~{3,})(.*)$`).exec(line)
     // A backtick fence's info string cannot hold a backtick: ```x``` is inline code.
     if (open !== null && !((open[1] as string)[0] === '`' && (open[2] as string).includes('`'))) {
       fence = { char: (open[1] as string)[0] as string, length: (open[1] as string).length }

@@ -578,3 +578,15 @@ describe('the README badge, PR review round one', () => {
     await pane.unmount()
   })
 })
+
+describe('the README badge, PR review round two', () => {
+  test('a folder name with a space is encoded, never dropped', () => {
+    const made = badgeFor({
+      target: 'acme/notes', action: 'approve', stage: '', rows: [], expanded: [], details: false, confirming: false,
+      verdict: { kind: 'safe', recommendation: 'Safe to install', reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
+      sha: 'a'.repeat(40), subdir: 'packages/my skill "x"', treeHash: `sha256:${'b'.repeat(64)}`,
+    })
+    expect('markdown' in made && made.markdown).toContain('in packages/my%20skill%20%22x%22](')
+    expect('markdown' in made && made.markdown).toContain('folder packages/my%20skill%20%22x%22, sha256:')
+  })
+})

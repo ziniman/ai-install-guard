@@ -1407,3 +1407,15 @@ describe('badge claims, PR review round one', () => {
     expect(found?.evidence[0]?.file).toBe('plugins/a/README.md')
   })
 })
+
+describe('badge claims, PR review round two', () => {
+  const b64 = (text: string) => ({ base64: btoa(text) })
+  const badge = (words: string) => `[![AI Install Guard](https://img.shields.io/badge/AI_Install_Guard-${words}-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge)`
+  const scanWith = (base: string, readme: string) =>
+    scanFolder(memoryHost(ROOT, { ...fixture(base), 'README.md': b64(`# x\n\n${readme}\n\nA plugin for the tests. Uninstall it with /plugin uninstall x.\n`) }), 'case', ROOT, { validate: false })
+
+  test('a fenced example inside a list item is code, not a claim', async () => {
+    const report = await scanWith('script-exec', `- Add the badge:\n\n    \`\`\`markdown\n    ${badge('safe_to_install')}\n    \`\`\``)
+    expect(report.results.find(result => result.id === 'provenance.badge')).toBeUndefined()
+  })
+})
