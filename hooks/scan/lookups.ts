@@ -120,10 +120,12 @@ export function packagesOf(ctx: ScanContext): Package[] {
         }
         continue
       }
-      // A path is an argument, never a package name; a scoped npm name
-      // (@scope/name) is a name, and so is one that merely ends like a file.
-      if (/^(?:\.{1,2}[\\/]|[\\/~])/.test(word) || (/[\\/]/.test(word) && !/^@[\w.-]+\/[\w.-]+(?:@[^\\/\s]*)?$/.test(word))) continue
-      if (!named) addSpec(word, python, server.file, server.name)
+      // A path or a git or URL spec (./server.js, github:me/tool) is what
+      // runs, and it is no registry package: nothing after it is one either.
+      // A scoped npm name (@scope/name) is a name, and so is one that merely
+      // ends like a file.
+      const isLocalOrGit = /^(?:\.{1,2}[\\/]|[\\/~])|^[a-z][\w+.-]*:/i.test(word) || (/[\\/]/.test(word) && !/^@[\w.-]+\/[\w.-]+(?:@[^\\/\s]*)?$/.test(word))
+      if (!named && !isLocalOrGit) addSpec(word, python, server.file, server.name)
       break
     }
   }
@@ -324,21 +326,27 @@ async function namesCheck(host: Host, ctx: ScanContext, cache: LookupCache): Pro
     return [failedRow('provenance.names', title, `could not reach the official list: ${error instanceof Error ? error.message : String(error)}`)]
   }
   const evidence: Evidence[] = []
-  if (all.length > compared.length) evidence.push({ file: '-', excerpt: `${all.length - compared.length} more names were not compared`, status: 'warn' })
+  const near: string[] = []
   for (const name of compared) {
     if (official.includes(name)) {
       evidence.push({ file: '-', excerpt: `${safeLine(name)} has the same name as an official plugin: make sure this is that plugin, from its own source`, status: 'info' })
       continue
     }
     const mine = folded(name)
-    const near = official.find(other => {
+    const match = official.find(other => {
       const theirs = folded(other)
       if (theirs === mine) return true
       const limit = Math.min(mine.length, theirs.length) >= 8 ? 2 : Math.min(mine.length, theirs.length) >= 5 ? 1 : 0
       return limit > 0 && distance(mine, theirs, limit) <= limit
     })
-    if (near !== undefined) evidence.push({ file: '-', excerpt: `${safeLine(name)} looks like the official plugin ${safeLine(near)}`, status: 'warn' })
+    if (match !== undefined) {
+      const excerpt = `${safeLine(name)} looks like the official plugin ${safeLine(match)}`
+      near.push(excerpt)
+      evidence.push({ file: '-', excerpt, status: 'warn' })
+    }
   }
+  const skipped = all.length - compared.length
+  if (skipped > 0) evidence.push({ file: '-', excerpt: `${skipped} more names were not compared`, status: 'warn' })
   return [
     row(
       {
@@ -346,9 +354,11 @@ async function namesCheck(host: Host, ctx: ScanContext, cache: LookupCache): Pro
         group: 'provenance',
         title,
         advice: "A name one letter away from an official plugin's is a common way to be installed by mistake. Check the publisher before you trust it.",
+        // A look-alike only from a real comparison; names left uncompared are said apart.
         summary: (() => {
-          const near = evidence.filter(item => item.status === 'warn').map(item => item.excerpt)
-          return near.length === 0 ? undefined : [`Its name looks like an official plugin's: ${near.slice(0, 3).join('; ')}${near.length > 3 ? ` and ${near.length - 3} more` : ''}`]
+          const lines = near.length === 0 ? [] : [`Its name looks like an official plugin's: ${near.slice(0, 3).join('; ')}${near.length > 3 ? ` and ${near.length - 3} more` : ''}`]
+          if (skipped > 0) lines.push(`${skipped} more names were not compared with the official list`)
+          return lines.length === 0 ? undefined : lines
         })(),
       },
       capEvidence(evidence, 20),

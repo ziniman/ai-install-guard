@@ -159,6 +159,8 @@ async function lookups(host: Host, path: string, source: PinnedSource, now: numb
       : `${repoDays === undefined ? 'A repository' : `Created ${spoken(repoDays)}`} by the ${who}${ownerDays === undefined ? '' : ` (on GitHub since ${spoken(ownerDays)})`}`,
     `${stars ?? '?'} stars, ${forks ?? '?'} forks, ${people ?? '?'} contributor${people === 1 ? '' : 's'}${pushedDays === undefined ? '' : `; last pushed ${spoken(pushedDays)}`}`,
   ]
+  // A part that could not be read is said in the summary too, not only below it.
+  if (notChecked.length > 0) summary.push(`Not checked: ${notChecked.map(safeLine).join('; ')}`)
   const repository = row(
     {
       id: 'provenance.repository',

@@ -412,3 +412,30 @@ describe('lookups, local review of the release', () => {
     expect(row?.evidence.map(item => item.excerpt)).toContain('101 more names were not compared')
   })
 })
+
+describe('lookups, PR #11 review fixes', () => {
+  const ctxOf = async (files: FixtureFiles) => buildContext(await takeInventory(memoryHost('/p', { ...fixture('clean-plugin'), ...files }), '/p'))
+  const names = async (servers: Record<string, unknown>) => packagesOf(await ctxOf({ '.mcp.json': b64(JSON.stringify({ mcpServers: servers })) })).map(pkg => pkg.name)
+
+  test('a local path or git spec is what runs, and its arguments are not packages', async () => {
+    expect(await names({ a: { command: 'npx', args: ['./server.js', 'stdio'] } })).toEqual([])
+    expect(await names({ a: { command: 'npx', args: ['github:me/tool', 'start'] } })).toEqual([])
+    expect(await names({ a: { command: 'uvx', args: ['--with-requirements', 'r.txt', './app', 'serve'] } })).toEqual([])
+    expect(await names({ a: { command: 'npx', args: ['-y', '@scope/tool@1.0.0', 'start'] } })).toEqual(['@scope/tool'])
+  })
+
+  test('names left uncompared are not called look-alikes', async () => {
+    const plugins = Array.from({ length: 2100 }, (_, index) => ({ name: `plugin-${index}`, source: `./p${index}` }))
+    const ctx = await ctxOf({ '.claude-plugin/marketplace.json': b64(JSON.stringify({ name: 'm', owner: { name: 'o' }, plugins })) })
+    const results = await outsideLookups(netHost(url => (url === OFFICIAL_MARKETPLACE ? json({ plugins: [{ name: 'code-review' }] }) : json({ results: [] }))), ctx)
+    const row = results.find(result => result.id === 'provenance.names')
+    expect(row?.summary).toEqual(['101 more names were not compared with the official list'])
+  })
+
+  test('a late GitHub failure is said in the summary', async () => {
+    const base = github({ repoDays: 900, ownerDays: 3000, stars: 120, people: 6 })
+    const answers = (url: string): FetchResult | Error => (url.includes('/contributors') ? new Error('reset by peer') : base(url))
+    const results = await githubProvenance(netHost(answers), SOURCE, NOW)
+    expect(results[0]?.summary?.at(-1)).toBe('Not checked: its contributors: could not reach GitHub: reset by peer')
+  })
+})
