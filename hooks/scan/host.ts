@@ -32,7 +32,20 @@ export type RunOptions = {
   env?: Record<string, string>
 }
 
+/** An HTTP answer, the body read as text. */
+export type FetchResult = {
+  status: number
+  ok: boolean
+  /** Lower-cased names. */
+  headers: Record<string, string>
+  text: string
+}
+
+export type FetchInit = { method?: string; headers?: Record<string, string>; body?: string }
+
 export type Host = {
+  /** HTTPS requests, for repository metadata and the lookups you turn on. Absent where there is no network. */
+  fetch?: (url: string, init?: FetchInit) => Promise<FetchResult>
   list: (path: string) => Promise<HostEntry[]>
   stat: (path: string, options?: { resolve: boolean }) => Promise<HostStat>
   readBytes: (path: string) => Promise<Uint8Array>

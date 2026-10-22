@@ -58,7 +58,7 @@ Approvals are remembered by commit and content hash, so the same version is neve
 | Prompt injection | Hidden instructions in skills, commands, agents and tool descriptions, including invisible Unicode |
 | Permission escalation | Mods that auto-approve tools, writes to Claude settings or permissions, skills granting broad `Bash` |
 | Persistence | Writes to shell rc files, crontab, launchd, systemd, git hooks |
-| Supply chain | Marketplace plugins not pinned to a commit, branches named like a commit id or `FETCH_HEAD` (the Plugin4Shell trick), submodules and Git LFS files whose code is fetched at install, remote MCP servers, look-alike names, committed secrets, binaries, data hidden after the end of images |
+| Supply chain | Brand-new repositories and accounts, commits that are not on the default branch (they may come from a fork), packages known to be malware or vulnerable (an optional lookup), names one letter away from an official plugin's (an optional lookup), marketplace plugins not pinned to a commit, branches named like a commit id or `FETCH_HEAD` (the Plugin4Shell trick), submodules and Git LFS files whose code is fetched at install, remote MCP servers, committed secrets, binaries, data hidden after the end of images |
 | Sneaky updates | An update that adds capabilities, hooks, domains or servers without saying so |
 
 ## Commands
@@ -108,7 +108,24 @@ A security tool should be held to its own rules, so here is everything this mod 
 | `store`, `state` | Remembers your decisions and the last report, and holds what the pane shows. |
 | `ui` | The verdict pane, its status line and toasts, and copying the report. |
 
-Later stages add `http.fetch` (public repository metadata) and, optionally, `model.complete` (a review that can only add warnings).
+| `http.fetch` | For a repository on GitHub, reads its public metadata from GitHub's API: age, owner, stars, contributors, and whether the scanned commit is signed and on the default branch. GitHub is where the code came from, so this tells it nothing new. With **outside lookups** on, also sends package names to [OSV](https://osv.dev) and reads Anthropic's [official plugin list](https://github.com/anthropics/claude-plugins-official). |
+
+A later stage adds, optionally, `model.complete` (a review that can only add warnings).
+
+### Outside lookups
+
+Off by default, because they send names to other services. Turned on, the guard checks:
+
+- **Packages:** every package an MCP server starts or the candidate's `package.json` or `requirements.txt` pins, against OSV. A package OSV lists as malware is a failure; a pinned version with known vulnerabilities is a warning.
+- **Names:** its name against Anthropic's official plugins. A name one letter away from an official one is a warning; the same name is noted, so you can check it is that plugin.
+
+Turn them on in `/config` (the AI Install Guard row), or with:
+
+```bash
+claude plugin configure ai-install-guard
+```
+
+A lookup that fails or hits a rate limit is noted in the report and never fails the scan.
 
 ## What it is not
 
@@ -121,7 +138,7 @@ Later stages add `http.fetch` (public repository metadata) and, optionally, `mod
 1. [x] Skeleton mod: `/guard scan <path>` lists and hashes a local folder
 2. [x] Checks for structure, mod capabilities, classic hooks, skills, code patterns and committed secrets
 3. [x] The verdict pane with Install and Reject
-4. [ ] Remote fetch pinned to a commit and MCP server checks (done); repository provenance checks, with an optional reputation lookup against outside catalogs and vulnerability databases (next)
+4. [x] Remote fetch pinned to a commit, repository provenance, MCP server checks, and optional lookups against OSV and the official plugin list
 5. [ ] Gates on `/plugin` and on Claude's own install commands, with approvals
 6. [ ] Module load gate with hash match, skill gate, session-start reconciliation
 7. [ ] Update diffs and the optional model review
