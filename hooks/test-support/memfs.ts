@@ -1,6 +1,6 @@
 import type { On } from 'claude-code'
 
-import { fromBase64, type Host, type HostEntry, type HostStat } from '../scan/host'
+import { fromBase64, type Host, type HostEntry, type HostStat, type RunResult } from '../scan/host'
 
 /** A file's bytes, a symbolic link's stored target, or an empty folder. */
 export type FixtureFile = { base64: string } | { link: string } | { dir: true }
@@ -116,8 +116,10 @@ export function memoryHost(root: string, files: FixtureFiles): Host {
 /**
  * Answers the engine's `fs.*` and `process.run` beneath the plugin from
  * `files` under `root`; a path outside `root` goes on to the next answer.
+ * With `platform: 'windows'` there is no `readlink`, only PowerShell.
  */
-export function serveFixture(on: On, root: string, files: FixtureFiles): void {
+export function serveFixture(on: On, root: string, files: FixtureFiles, options: { platform?: 'posix' | 'windows' } = {}): void {
+  const isWindows = options.platform === 'windows'
   const host = memoryHost(root, files) as Host & { owns: (path: string) => boolean }
   const toBase64 = (bytes: Uint8Array): string => {
     let binary = ''
@@ -143,12 +145,25 @@ export function serveFixture(on: On, root: string, files: FixtureFiles): void {
     return { value: e.as === 'bytes' ? { base64: toBase64(bytes) } : new TextDecoder().decode(bytes) }
   })
   on('process.run', async ($, e, next) => {
+    const done = (result: RunResult) => ({ value: { ...result, isStdoutTruncated: false, isStderrTruncated: false } })
+    if (e.argv[0] === 'readlink' && isWindows) {
+      return done({ exitCode: 127, stdout: '', stderr: 'readlink: command not found' })
+    }
+    if (e.argv[0] === 'powershell' && isWindows) {
+      const path = e.init?.env?.GUARD_LINK ?? ''
+      if (!host.owns(trimSlash(path))) return next(e)
+      return done(
+        await host.readLink(path).then(
+          target => ({ exitCode: 0, stdout: `${target}\r\n`, stderr: '' }),
+          (error: Error) => ({ exitCode: 1, stdout: '', stderr: error.message }),
+        ),
+      )
+    }
     const isOurs = e.argv[0] === 'printenv' || (e.argv[0] === 'readlink' && host.owns(trimSlash(e.argv[1] ?? '')))
     if (!isOurs) {
       return next(e)
     }
-    const result = await host.run(e.argv)
-    return { value: { ...result, isStdoutTruncated: false, isStderrTruncated: false } }
+    return done(await host.run(e.argv))
   })
 }
 

@@ -72,7 +72,7 @@ Every check needs a fixture that trips exactly that rule and a passing test. Nam
 2. Commit in focused, logical steps.
 3. Before opening the PR, run `npm run check` and a local Qodo review (the `qodo-review` skill), and address what it finds.
 4. Push and open the PR with `gh pr create`. `gh` is logged in as the owner's own account, so the PR is authored by a person and the Qodo bot reviews it.
-5. Work the Qodo review to completion with the `qodo-review-resolver` skill: fix each finding (or dismiss it with a reason), push the fixes as `Address Qodo review: <what changed>` commits, and repeat until the review is clean at the head commit.
+5. Work the Qodo review to completion with the `qodo-review-resolver` skill: fix each finding (or dismiss it with a reason), push the fixes as `Address Qodo review: <what changed>` commits, then comment `/agentic_review` on the PR (`gh pr comment <n> --body /agentic_review`) so Qodo reviews the new head; pushing alone does not trigger it. Repeat until the review is clean at the head commit.
 6. Do not merge. The owner merges.
 
 ### Commit messages

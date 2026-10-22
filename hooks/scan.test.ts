@@ -29,6 +29,13 @@ describe('/guard scan on a local folder', () => {
     expect(report).toContain(`Folder: ${HOME}/plugins/clean`)
   })
 
+  test('reads link targets through PowerShell where there is no readlink', async ($, on) => {
+    serveFixture(on, '/work/linked', { 'README.md': text('x\n'), 'docs/readme': { link: '../README.md' } }, { platform: 'windows' })
+    const { text: report } = await $.command.run(typed('guard', 'scan /work/linked'))
+
+    expect(report).toContain('docs/readme  link to ../README.md')
+  })
+
   test('says it could not verify a folder that is not there', async ($, on) => {
     serveFixture(on, '/work/clean-plugin', CLEAN)
     const { text: report } = await $.command.run(typed('guard', 'scan /work/missing'))
@@ -127,6 +134,17 @@ describe('inventory', () => {
     }
 
     await expect(takeInventory(growing, '/r')).rejects.toThrow(/over the 4.0 MB per-file limit/)
+  })
+
+  test('refuses a tree with more links than the link limit, before reading any of them', async () => {
+    const files: FixtureFiles = { 'README.md': text('x') }
+    for (let i = 0; i <= LIMITS.maxLinks; i += 1) files[`l${i}`] = { link: 'README.md' }
+    const host = memoryHost('/links', files)
+    let readlinks = 0
+    const counting: Host = { ...host, readLink: path => ((readlinks += 1), host.readLink(path)) }
+
+    await expect(takeInventory(counting, '/links')).rejects.toThrow(/more than 500 symbolic links/)
+    expect(readlinks).toBe(0)
   })
 
   test('folders count toward the entry limit', async () => {

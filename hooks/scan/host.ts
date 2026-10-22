@@ -28,6 +28,8 @@ export type RunResult = {
 export type RunOptions = {
   cwd?: string
   timeoutMs?: number
+  /** Variables set over the host's own environment. */
+  env?: Record<string, string>
 }
 
 export type Host = {

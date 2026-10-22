@@ -4,6 +4,8 @@ import type { Host } from './host'
 /** Past these the scan stops and the verdict is "Could not verify". */
 export const LIMITS = {
   maxEntries: 5000,
+  /** Each link costs a `readlink` process, so links have a lower ceiling. */
+  maxLinks: 500,
   maxFileBytes: 4 * 1024 * 1024,
   maxTotalBytes: 50 * 1024 * 1024,
 }
@@ -85,6 +87,7 @@ export async function takeInventory(host: Host, path: string): Promise<ScannedTr
 
   const entries: InventoryEntry[] = []
   const files: { path: string; size: number }[] = []
+  const links: string[] = []
   const skipped: string[] = []
   const queue: string[] = ['']
 
@@ -94,7 +97,7 @@ export async function takeInventory(host: Host, path: string): Promise<ScannedTr
     for (const item of listed) {
       const rel = dir === '' ? item.name : `${dir}/${item.name}`
       if (item.isLink) {
-        entries.push(await describeLink(host, root, rel))
+        links.push(rel)
       } else if (item.kind === 'dir') {
         if (dir === '' && item.name === '.git') {
           skipped.push(rel)
@@ -107,13 +110,17 @@ export async function takeInventory(host: Host, path: string): Promise<ScannedTr
       } else {
         entries.push({ kind: 'other', path: rel })
       }
-      if (entries.length + files.length > LIMITS.maxEntries) {
+      if (entries.length + files.length + links.length > LIMITS.maxEntries) {
         throw new ScanError(`more than ${LIMITS.maxEntries} files and folders`)
       }
     }
   }
 
+  if (links.length > LIMITS.maxLinks) {
+    throw new ScanError(`more than ${LIMITS.maxLinks} symbolic links`)
+  }
   checkSizes(files)
+  entries.push(...(await mapLimit(links, READ_CONCURRENCY, rel => describeLink(host, root, rel))))
 
   const contents = new Map<string, Uint8Array>()
   let readBytes = 0

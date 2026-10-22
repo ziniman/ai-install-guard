@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -71,17 +73,22 @@ jobs:
             echo "Release $TAG already exists."
             exit 0
           fi
-          PR_TITLE=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].title // empty')
+          # The commit on main that set this version (the PR's merge commit),
+          # so a release repaired by a later push still tags what was published.
+          RELEASE_SHA=$(git log -s --first-parent --diff-merges=first-parent -n 1 --format=%H \
+            -G'"version"[[:space:]]*:' "$GITHUB_SHA" -- package.json)
+          RELEASE_SHA=${RELEASE_SHA:-$GITHUB_SHA}
+          PR_TITLE=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/pulls" --jq '.[0].title // empty')
           TITLE="$TAG${PR_TITLE:+ - $PR_TITLE}"
           awk -v head="## $TAG " 'index($0, head) == 1 { f = 1; next } f && /^---/ { exit } f { print }' CHANGELOG.md > notes.md
-          # An existing tag keeps the commit it already names; a new one marks this commit.
+          # An existing tag keeps the commit it already names; a new one marks the release commit.
           TARGET=()
           if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            TARGET=(--target "$GITHUB_SHA")
+            TARGET=(--target "$RELEASE_SHA")
           fi
           if [ -s notes.md ]; then
             gh release create "$TAG" "${TARGET[@]}" --title "$TITLE" --notes-file notes.md
           else
             gh release create "$TAG" "${TARGET[@]}" --title "$TITLE" --generate-notes
           fi
-          echo "Created release $TAG." >> "$GITHUB_STEP_SUMMARY"
+          echo "Created release $TAG at ${RELEASE_SHA:0:7}." >> "$GITHUB_STEP_SUMMARY"
