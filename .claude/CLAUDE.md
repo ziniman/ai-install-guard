@@ -100,7 +100,7 @@ Same as ai-instruct. Publishing to npm, tagging and the GitHub release all happe
 
 `0.0.0` is the unreleased placeholder: CI and the release workflow never publish it.
 
-npm auth uses [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC): no `NPM_TOKEN` secret and no 2FA prompt. The trusted publisher is configured on npmjs.com under the package settings: GitHub Actions, repo `ziniman/ai-install-guard`, workflow `release.yml`. Renaming the workflow file breaks publishing until that setting is updated.
+npm auth uses [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC): no `NPM_TOKEN` secret and no 2FA prompt. The trusted publisher is configured on npmjs.com under the package settings: GitHub Actions, repo `ziniman/ai-install-guard`, workflow `release.yml`, with `npm publish` among its allowed actions. Renaming the workflow file breaks publishing until that setting is updated. Once CI has published, the package's Publishing access is set to "Require two-factor authentication and disallow tokens", so only the trusted publisher can publish.
 
 **Never bump the version by hand-editing `package.json`.** It skips the sync hook, and CI fails on mismatched plugin versions.
 
