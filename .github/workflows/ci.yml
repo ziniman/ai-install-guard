@@ -52,6 +52,23 @@ jobs:
       - name: Run the mod's tests
         run: claude plugin test .
 
+      # esbuild and Node's types for the chat skill, with no package's install script run.
+      - name: Install build tools
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck the command line
+        run: npx tsc -p cli
+
+      - name: Build and test the chat skill
+        run: npm run test:skill
+
+      - name: Keep the chat skill zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-install-guard-skill
+          path: dist/ai-install-guard-skill.zip
+          if-no-files-found: error
+
       - name: Release preview
         run: |
           NAME=$(node -p "require('./package.json').name")

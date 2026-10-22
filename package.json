@@ -9,7 +9,8 @@
     "validate": "claude plugin validate --strict .",
     "typecheck": "tsc -p . && tsc -p cli",
     "test": "claude plugin test .",
-    "check": "npm run validate && npm run typecheck && npm test",
+    "test:skill": "node scripts/build-skill.js && node --test cli/scan.spec.mjs",
+    "check": "npm run validate && npm run typecheck && npm test && npm run test:skill",
     "version": "node scripts/sync-versions.js && git add .claude-plugin/"
   },
   "keywords": [
