@@ -4,7 +4,7 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
-## Unreleased
+## v0.1.0 &nbsp;·&nbsp; 2026-10-22
 
 **`pane`** - `/guard scan` opens a verdict pane: the recommendation and its reasons in a coloured banner, the counts, and every check grouped with failures first, each row opening to its evidence and advice. Approve and Reject record the decision against the exact tree hash; on Do not install or Could not verify the button reads Approve anyway and asks a second time. Details opens every row and Copy report copies the full text. Progress shows in the pane and the status line, and a toast says when the verdict is ready
 

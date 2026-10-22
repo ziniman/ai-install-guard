@@ -22,6 +22,12 @@ Everything you add to Claude Code runs with your permissions. A plugin can ship 
 
 AI Install Guard is a Claude Code mod that stops every new plugin, mod, skill, MCP server or marketplace, and every update to one, scans it without running any of its code, and installs nothing until you approve it.
 
+## Who it is for
+
+You, at the moment you add something to Claude Code. It runs inside your own session, needs no account, server or agent, sends nothing anywhere, and is open source, so you can read every check it makes.
+
+Company security platforms such as AIR, Pluto and Neo watch a whole fleet of agents and enforce policy across it. The guard does not replace them; it is the open, local gate in front of one developer's install, and it works the same whether or not your company runs one.
+
 ## How it works
 
 1. **Fetch without running.** The candidate is fetched at an exact commit into a folder the guard owns. Nothing is installed, built or run.
