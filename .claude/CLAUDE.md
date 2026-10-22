@@ -22,8 +22,9 @@ These are product requirements, not style preferences. A change that breaks one 
 - `hooks/hooks.json` names the one hooks module, `hooks/register.tsx`, which wires events and commands.
 - `hooks/mod-host.ts` adapts `$` to the scanner's `Host` interface.
 - `hooks/scan/`: the scanner. It never touches `$` or Node directly, only a `Host` (`hooks/scan/host.ts`), so the same code can run under the mod, the tests and a future Node CLI.
-  - `inventory.ts` walks a folder, never follows symbolic links, reads and hashes every file, and enforces size and count limits (`LIMITS`).
-  - `hash.ts` holds `sha256Hex` and `treeHash`: one line per entry, `file <sha256> <path>` or `link <sha256 of target> <path>`, sorted by path, joined with `\n`, hashed. Changing this format changes every stored approval.
+  - `inventory.ts` walks a folder, never follows symbolic links (it records each link's stored target via `readlink` and where it lands), re-checks each file is still a plain file before reading it, and enforces size and count limits (`LIMITS`) on what it actually reads.
+  - `hash.ts` holds `sha256Hex` and `treeHash`: one record per entry, `file <sha256> <path>`, `link <sha256 of stored target> <path>`, `dir - <path>` or `other - <path>`, each ended by NUL (no path can hold one), sorted by path, hashed. A link counts by its stored target so the same tree hashes the same on every machine. Changing this format changes every stored approval.
+  - `safe-text.ts` shows control and invisible characters from a candidate as `<U+XXXX>`; everything a report quotes from a candidate goes through it.
   - `report.ts` formats the plain-text report.
 - `hooks/*.test.ts`: tests, run by `claude plugin test .`.
 - `hooks/test-support/`: `memfs.ts` serves fixtures to the engine's `fs.*` and `process.run` events; `fixtures.gen.ts` is generated.

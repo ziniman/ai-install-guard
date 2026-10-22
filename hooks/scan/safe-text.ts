@@ -5,7 +5,8 @@
 const HIDDEN = new RegExp(
   [
     '[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f]', // control characters (escapes, NUL, C1)
-    '[\\u00ad\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2069\\ufeff]', // invisible and bidi controls
+    '[\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f]', // invisible marks and fillers
+    '[\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2069\\u3164\\ufeff\\uffa0\\ufff9-\\ufffb]', // zero-width, line and paragraph separators, bidi controls
     '[\\ufe00-\\ufe0f]', // variation selectors
     '[\\u{e0000}-\\u{e007f}]', // tag characters
     '[\\u{e0100}-\\u{e01ef}]', // variation selectors supplement

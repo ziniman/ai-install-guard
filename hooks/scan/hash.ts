@@ -9,23 +9,30 @@ export async function sha256Hex(data: Uint8Array | string): Promise<string> {
 }
 
 /**
- * One line per entry, sorted by path, hashed. A file is `file <sha256> <path>`,
- * a link `link <sha256 of where it points> <path>`, anything else
- * `other - <path>`. The hash leads so a path can hold any character; a path
- * with a line break is JSON-escaped so it stays one line.
+ * One record per entry, sorted by path, each ended by a NUL byte (which no
+ * path can hold, so two different trees never share a record list), then
+ * hashed:
+ *
+ *   file <sha256 of its bytes> <path>
+ *   link <sha256 of the target as stored in the link> <path>
+ *   dir - <path>
+ *   other - <path>
+ *
+ * A link counts by its stored target, not where it lands on this machine, so
+ * the same tree hashes the same everywhere. Changing this format changes every
+ * stored approval.
  */
 export async function treeHash(entries: readonly InventoryEntry[]): Promise<string> {
   const sorted = [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-  const lines: string[] = []
+  let records = ''
   for (const entry of sorted) {
-    const path = /[\n\r]/.test(entry.path) ? JSON.stringify(entry.path) : entry.path
     if (entry.kind === 'file') {
-      lines.push(`file ${entry.sha256} ${path}`)
+      records += `file ${entry.sha256} ${entry.path}\0`
     } else if (entry.kind === 'link') {
-      lines.push(`link ${await sha256Hex(entry.target)} ${path}`)
+      records += `link ${await sha256Hex(entry.target)} ${entry.path}\0`
     } else {
-      lines.push(`other - ${path}`)
+      records += `${entry.kind} - ${entry.path}\0`
     }
   }
-  return `sha256:${await sha256Hex(lines.join('\n'))}`
+  return `sha256:${await sha256Hex(records)}`
 }

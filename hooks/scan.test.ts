@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { splitArgs } from './register'
+import type { Host } from './scan/host'
 import { LIMITS, takeInventory } from './scan/inventory'
 import { formatInventory } from './scan/report'
 import { safeLine, safeText } from './scan/safe-text'
@@ -55,19 +56,91 @@ describe('inventory', () => {
     expect(edited.inventory.treeHash).not.toBe(first.inventory.treeHash)
   })
 
-  test('records a symbolic link with where it lands and never reads through it', async () => {
+  test('records a symbolic link with its target and where it lands, and never reads through it', async () => {
     const files: FixtureFiles = {
       'README.md': text('hello\n'),
       'docs/inside': { link: '../README.md' },
       'docs/keys': { link: '../../../home/tester/.ssh/id_ed25519' },
+      'docs/gone': { link: 'missing.md' },
     }
     const { inventory } = await takeInventory(memoryHost('/p/plugin', files), '/p/plugin')
     const links = inventory.entries.filter(entry => entry.kind === 'link')
 
     expect(links).toEqual([
-      { kind: 'link', path: 'docs/inside', target: 'README.md', isInside: true },
-      { kind: 'link', path: 'docs/keys', target: '/home/tester/.ssh/id_ed25519', isInside: false },
+      { kind: 'link', path: 'docs/gone', target: 'missing.md', isInside: false },
+      { kind: 'link', path: 'docs/inside', target: '../README.md', landsAt: 'README.md', isInside: true },
+      {
+        kind: 'link',
+        path: 'docs/keys',
+        target: '../../../home/tester/.ssh/id_ed25519',
+        landsAt: '/home/tester/.ssh/id_ed25519',
+        isInside: false,
+      },
     ])
+  })
+
+  test('a link counts by its stored target, so the hash is the same on every machine', async () => {
+    const tree = (target: string): FixtureFiles => ({ 'README.md': text('x\n'), 'docs/link': { link: target } })
+    const here = await takeInventory(memoryHost('/home/a/plugin', tree('../../outside')), '/home/a/plugin')
+    const there = await takeInventory(memoryHost('/srv/b/plugin', tree('../../outside')), '/srv/b/plugin')
+    const otherDangling = await takeInventory(memoryHost('/home/a/plugin', tree('nope-1')), '/home/a/plugin')
+    const anotherDangling = await takeInventory(memoryHost('/home/a/plugin', tree('nope-2')), '/home/a/plugin')
+
+    expect(there.inventory.treeHash).toBe(here.inventory.treeHash)
+    expect(anotherDangling.inventory.treeHash).not.toBe(otherDangling.inventory.treeHash)
+  })
+
+  test('two different file names never share a tree hash', async () => {
+    const withNewline = await takeInventory(memoryHost('/r', { 'a\nb': text('same') }), '/r')
+    const withEscapes = await takeInventory(memoryHost('/r', { '"a\\nb"': text('same') }), '/r')
+
+    expect(withEscapes.inventory.treeHash).not.toBe(withNewline.inventory.treeHash)
+  })
+
+  test('an empty folder changes the tree hash', async () => {
+    const plain = await takeInventory(memoryHost('/r', { 'README.md': text('x') }), '/r')
+    const withFolder = await takeInventory(memoryHost('/r', { 'README.md': text('x'), empty: { dir: true } }), '/r')
+
+    expect(withFolder.inventory.treeHash).not.toBe(plain.inventory.treeHash)
+  })
+
+  test('refuses to read a file that turned into a link after it was listed', async () => {
+    const host = memoryHost('/r', { 'README.md': text('x'), 'notes.md': text('y') })
+    const swapped: Host = {
+      ...host,
+      stat: async (path, options) =>
+        path === '/r/notes.md' ? { kind: 'file', size: 1, isLink: true, realPath: '/home/tester/.ssh/id_rsa' } : host.stat(path, options),
+      readBytes: async path => {
+        if (path === '/r/notes.md') throw new Error('test: read a swapped link')
+        return host.readBytes(path)
+      },
+    }
+
+    await expect(takeInventory(swapped, '/r')).rejects.toThrow(/notes.md changed while it was being scanned/)
+  })
+
+  test('limits apply to the bytes read, not only to the listed size', async () => {
+    const host = memoryHost('/r', { 'grows.txt': text('small') })
+    const growing: Host = {
+      ...host,
+      readBytes: async () => new Uint8Array(LIMITS.maxFileBytes + 1),
+    }
+
+    await expect(takeInventory(growing, '/r')).rejects.toThrow(/over the 4.0 MB per-file limit/)
+  })
+
+  test('folders count toward the entry limit', async () => {
+    const files: FixtureFiles = {}
+    for (let i = 0; i <= LIMITS.maxEntries; i += 1) files[`d${i}`] = { dir: true }
+
+    await expect(takeInventory(memoryHost('/deep', files), '/deep')).rejects.toThrow(/more than 5000 files and folders/)
+  })
+
+  test('a backslash in a POSIX folder name is part of the name', async () => {
+    const { inventory } = await takeInventory(memoryHost('/r/we\\ird', { 'README.md': text('x') }), '/r/we\\ird')
+
+    expect(inventory.root).toBe('/r/we\\ird')
+    expect(inventory.entries.map(entry => entry.path)).toEqual(['README.md'])
   })
 
   test('leaves out the root .git folder', async () => {
@@ -103,6 +176,9 @@ describe('untrusted text in reports', () => {
     expect(safeText('rtl\u202eexe.md')).toBe('rtl<U+202E>exe.md')
     expect(safeText('line one\nline two')).toBe('line one\nline two')
     expect(safeLine('a\nb\tc')).toBe('a<U+000A>b<U+0009>c')
+    expect(safeText('\u061c\u034f\u115f\u1160\u3164\u2028\u2029')).toBe(
+      '<U+061C><U+034F><U+115F><U+1160><U+3164><U+2028><U+2029>',
+    )
   })
 
   test('a file name with escapes cannot paint the report', async () => {

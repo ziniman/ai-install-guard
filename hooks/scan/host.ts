@@ -34,6 +34,8 @@ export type Host = {
   list: (path: string) => Promise<HostEntry[]>
   stat: (path: string, options?: { resolve: boolean }) => Promise<HostStat>
   readBytes: (path: string) => Promise<Uint8Array>
+  /** The target text stored in a symbolic link, as `readlink` prints it. */
+  readLink: (path: string) => Promise<string>
   run: (argv: readonly string[], options?: RunOptions) => Promise<RunResult>
 }
 

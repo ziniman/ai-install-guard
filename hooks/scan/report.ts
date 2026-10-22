@@ -8,6 +8,7 @@ export function formatInventory(target: string, inventory: Inventory): string {
   const files = inventory.entries.filter(entry => entry.kind === 'file')
   const links = inventory.entries.filter(entry => entry.kind === 'link')
   const others = inventory.entries.filter(entry => entry.kind === 'other')
+  const listed = inventory.entries.filter(entry => entry.kind !== 'dir')
 
   const lines = [
     `AI Install Guard: ${safeLine(target)}`,
@@ -20,18 +21,19 @@ export function formatInventory(target: string, inventory: Inventory): string {
   }
   lines.push('')
 
-  for (const entry of inventory.entries.slice(0, MAX_LISTED)) {
+  for (const entry of listed.slice(0, MAX_LISTED)) {
     const path = safeLine(entry.path)
     if (entry.kind === 'file') {
       lines.push(`  ${path}  ${formatBytes(entry.size)}${entry.isText ? '' : ', binary'}`)
     } else if (entry.kind === 'link') {
-      lines.push(`  ${path}  link to ${safeLine(entry.target)}${entry.isInside ? '' : ' (outside the folder)'}`)
+      const where = entry.landsAt === undefined ? 'leads nowhere' : entry.isInside ? '' : 'outside the folder'
+      lines.push(`  ${path}  link to ${safeLine(entry.target)}${where === '' ? '' : ` (${where})`}`)
     } else {
       lines.push(`  ${path}  not a regular file`)
     }
   }
-  if (inventory.entries.length > MAX_LISTED) {
-    lines.push(`  ... and ${inventory.entries.length - MAX_LISTED} more`)
+  if (listed.length > MAX_LISTED) {
+    lines.push(`  ... and ${listed.length - MAX_LISTED} more`)
   }
 
   lines.push('', 'No checks run yet: this build lists and hashes the files only.')

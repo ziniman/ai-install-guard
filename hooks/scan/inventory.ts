@@ -22,9 +22,19 @@ export type InventoryFile = {
 export type InventoryLink = {
   kind: 'link'
   path: string
-  /** Relative to the root when the link lands inside it, else where it lands, or `(nowhere)`. */
+  /** The target as stored in the link (what `readlink` prints). */
   target: string
+  /**
+   * Where it lands: relative to the root when inside it, absolute when
+   * outside, absent when it leads nowhere.
+   */
+  landsAt?: string
   isInside: boolean
+}
+
+export type InventoryDir = {
+  kind: 'dir'
+  path: string
 }
 
 export type InventoryOther = {
@@ -32,7 +42,7 @@ export type InventoryOther = {
   path: string
 }
 
-export type InventoryEntry = InventoryFile | InventoryLink | InventoryOther
+export type InventoryEntry = InventoryFile | InventoryLink | InventoryDir | InventoryOther
 
 export type Inventory = {
   /** The scanned folder, every link resolved. */
@@ -60,8 +70,8 @@ export class ScanError extends Error {
 
 /**
  * Lists every entry under `path` and reads and hashes every regular file.
- * A symbolic link is recorded with where it lands and never followed, so a
- * link to `~/.ssh` is reported, not read.
+ * A symbolic link is recorded with its target and where it lands, and never
+ * followed, so a link to `~/.ssh` is reported, not read.
  */
 export async function takeInventory(host: Host, path: string): Promise<ScannedTree> {
   const rootStat = await host.stat(path, { resolve: true }).catch(() => undefined)
@@ -89,6 +99,7 @@ export async function takeInventory(host: Host, path: string): Promise<ScannedTr
         if (dir === '' && item.name === '.git') {
           skipped.push(rel)
         } else {
+          entries.push({ kind: 'dir', path: rel })
           queue.push(rel)
         }
       } else if (item.kind === 'file') {
@@ -97,23 +108,21 @@ export async function takeInventory(host: Host, path: string): Promise<ScannedTr
         entries.push({ kind: 'other', path: rel })
       }
       if (entries.length + files.length > LIMITS.maxEntries) {
-        throw new ScanError(`more than ${LIMITS.maxEntries} files`)
+        throw new ScanError(`more than ${LIMITS.maxEntries} files and folders`)
       }
     }
   }
 
-  const totalBytes = files.reduce((sum, file) => sum + file.size, 0)
-  if (totalBytes > LIMITS.maxTotalBytes) {
-    throw new ScanError(`${formatBytes(totalBytes)} of files, over the ${formatBytes(LIMITS.maxTotalBytes)} limit`)
-  }
-  const tooLarge = files.find(file => file.size > LIMITS.maxFileBytes)
-  if (tooLarge !== undefined) {
-    throw new ScanError(`${tooLarge.path} is ${formatBytes(tooLarge.size)}, over the ${formatBytes(LIMITS.maxFileBytes)} per-file limit`)
-  }
+  checkSizes(files)
 
   const contents = new Map<string, Uint8Array>()
+  let readBytes = 0
   const read = await mapLimit(files, READ_CONCURRENCY, async (file): Promise<InventoryFile> => {
-    const bytes = await host.readBytes(`${root}/${file.path}`)
+    const full = `${root}/${file.path}`
+    await assertPlainFile(host, full, file.path)
+    const bytes = await host.readBytes(full)
+    readBytes += bytes.length
+    checkSizes([{ path: file.path, size: bytes.length }], readBytes)
     contents.set(file.path, bytes)
     return {
       kind: 'file',
@@ -130,7 +139,7 @@ export async function takeInventory(host: Host, path: string): Promise<ScannedTr
     inventory: {
       root,
       entries,
-      totalBytes: read.reduce((sum, file) => sum + file.size, 0),
+      totalBytes: readBytes,
       treeHash: await treeHash(entries),
       skipped,
     },
@@ -138,20 +147,53 @@ export async function takeInventory(host: Host, path: string): Promise<ScannedTr
   }
 }
 
-async function describeLink(host: Host, root: string, rel: string): Promise<InventoryLink> {
-  const stat = await host.stat(`${root}/${rel}`, { resolve: true }).catch(() => undefined)
-  const real = stat?.realPath === undefined ? undefined : normalize(stat.realPath)
-  if (real === undefined) {
-    return { kind: 'link', path: rel, target: '(nowhere)', isInside: false }
+/** Throws when a file, or all of them together, is over its limit. */
+function checkSizes(files: readonly { path: string; size: number }[], total?: number): void {
+  const tooLarge = files.find(file => file.size > LIMITS.maxFileBytes)
+  if (tooLarge !== undefined) {
+    throw new ScanError(`${tooLarge.path} is ${formatBytes(tooLarge.size)}, over the ${formatBytes(LIMITS.maxFileBytes)} per-file limit`)
   }
-  if (real === root || real.startsWith(`${root}/`)) {
-    return { kind: 'link', path: rel, target: real.slice(root.length + 1) || '.', isInside: true }
+  const sum = total ?? files.reduce((acc, file) => acc + file.size, 0)
+  if (sum > LIMITS.maxTotalBytes) {
+    throw new ScanError(`${formatBytes(sum)} of files, over the ${formatBytes(LIMITS.maxTotalBytes)} limit`)
   }
-  return { kind: 'link', path: rel, target: real, isInside: false }
 }
 
+/**
+ * Refuses to read a path that is no longer the plain file the listing saw:
+ * swapped for a link, or reached through one, it would be read where it lands.
+ */
+async function assertPlainFile(host: Host, full: string, rel: string): Promise<void> {
+  const stat = await host.stat(full, { resolve: true }).catch(() => undefined)
+  const real = stat?.realPath === undefined ? undefined : normalize(stat.realPath)
+  if (stat === undefined || stat.isLink || stat.kind !== 'file' || real !== normalize(full)) {
+    throw new ScanError(`${rel} changed while it was being scanned`)
+  }
+}
+
+async function describeLink(host: Host, root: string, rel: string): Promise<InventoryLink> {
+  const full = `${root}/${rel}`
+  const target = await host.readLink(full).catch(() => {
+    throw new ScanError(`could not read where the link ${rel} points`)
+  })
+  const stat = await host.stat(full, { resolve: true }).catch(() => undefined)
+  const real = stat?.realPath === undefined ? undefined : normalize(stat.realPath)
+  if (real === undefined) {
+    return { kind: 'link', path: rel, target, isInside: false }
+  }
+  if (real === root || real.startsWith(`${root}/`)) {
+    return { kind: 'link', path: rel, target, landsAt: real.slice(root.length + 1) || '.', isInside: true }
+  }
+  return { kind: 'link', path: rel, target, landsAt: real, isInside: false }
+}
+
+/**
+ * Drops trailing slashes. Backslashes become slashes only in a Windows path
+ * (`C:\...` or `\\server\...`): elsewhere a backslash is part of a name.
+ */
 function normalize(path: string): string {
-  const slashed = path.replace(/\\/g, '/')
+  const isWindows = /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')
+  const slashed = isWindows ? path.replace(/\\/g, '/') : path
   return slashed.length > 1 ? slashed.replace(/\/+$/, '') : slashed
 }
 
