@@ -367,15 +367,21 @@ function filledInCheck(ctx: ScanContext): CheckResult {
   for (const file of ctx.files) {
     const name = basename(file.path)
     if (name === '.gitattributes') {
-      // Attributes cover their own folder: rewriting only tests or docs is noted.
+      // A line covers the files its pattern names under its own folder:
+      // rewriting only tests or docs is noted, live code is a warning.
       const folder = dirname(file.path)
-      const coversLive = ctx.files.some(other => (folder === '' || other.path.startsWith(`${folder}/`)) && isLive(ctx.roleOf(other.path)))
       const lines = (ctx.text(file.path) ?? '').split('\n')
-      for (let index = 0; index < lines.length && evidence.length < 20; index += 1) {
+      for (let index = 0; index < lines.length && index < 1000; index += 1) {
         const line = (lines[index] as string).trim()
-        if (line.startsWith('#')) continue
+        if (line.startsWith('#') || line.startsWith('[attr]')) continue
         const driver = /(?:^|\s)filter=([^\s]{1,100})/.exec(line)?.[1]
-        if (driver !== undefined) evidence.push({ file: file.path, line: index + 1, excerpt: `git rewrites these files with the "${driver}" filter on checkout: ${line.slice(0, 200)}`, status: coversLive ? 'warn' : 'info' })
+        if (driver === undefined) continue
+        const pattern = line.split(/\s/)[0] as string
+        const coversLive = ctx.files.some(other => {
+          const rel = folder === '' ? other.path : other.path.startsWith(`${folder}/`) ? other.path.slice(folder.length + 1) : undefined
+          return rel !== undefined && attributeMatches(pattern, rel) && isLive(ctx.roleOf(other.path))
+        })
+        evidence.push({ file: file.path, line: index + 1, excerpt: `git rewrites these files with the "${driver}" filter on checkout: ${line.slice(0, 200)}`, status: coversLive ? 'warn' : 'info' })
       }
       continue
     }
@@ -399,4 +405,45 @@ function filledInCheck(ctx: ScanContext): CheckResult {
     },
     evidence,
   )
+}
+
+/**
+ * Whether a .gitattributes pattern names `path` (relative to the attributes
+ * file's folder): no slash matches the name at any depth, a slash anchors it,
+ * `*` and `?` stay within a folder and `**` crosses them. A pattern too
+ * elaborate to match cheaply counts as matching, which can only warn more.
+ */
+export function attributeMatches(pattern: string, path: string): boolean {
+  if (pattern.endsWith('/')) return false
+  if (pattern.length > 200 || path.length > 1000 || (pattern.match(/[*?[]/g) ?? []).length > 8) return true
+  const anchored = pattern.includes('/')
+  const body = pattern.startsWith('/') ? pattern.slice(1) : pattern
+  let source = ''
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index] as string
+    if (char === '*' && body[index + 1] === '*') {
+      if (body[index + 2] === '/') {
+        source += '(?:.*/)?'
+        index += 2
+      } else {
+        source += '.*'
+        index += 1
+      }
+    } else if (char === '*') {
+      source += '[^/]*'
+    } else if (char === '?') {
+      source += '[^/]'
+    } else if (char === '[' && body.indexOf(']', index + 2) !== -1) {
+      const end = body.indexOf(']', index + 2)
+      source += `[${body.slice(index + 1, end).replace(/^!/, '^').replace(/[\\\]]/g, '\\$&')}]`
+      index = end
+    } else {
+      source += char.replace(/[.+^${}()|\\[\]]/g, '\\$&')
+    }
+  }
+  try {
+    return new RegExp(`^${source}$`).test(anchored ? path : basename(path))
+  } catch {
+    return true
+  }
 }

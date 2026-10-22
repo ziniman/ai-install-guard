@@ -68,6 +68,16 @@ export function severityFor(status: Status): Severity {
 }
 
 /**
+ * At most `max` pieces of evidence, the worst first, and a line counting the
+ * rest. Every piece is judged before capping, so a late failure still counts.
+ */
+export function capEvidence(evidence: Evidence[], max: number, fallback: Status = 'warn'): Evidence[] {
+  if (evidence.length <= max) return evidence
+  const worstFirst = [...evidence].sort((a, b) => RANK[b.status ?? fallback] - RANK[a.status ?? fallback])
+  return [...worstFirst.slice(0, max), { file: '-', excerpt: `and ${evidence.length - max} more`, status: 'info' }]
+}
+
+/**
  * Builds a check's row from its evidence: the row takes the worst status any
  * piece of evidence carries (`fallback` when none does), and `pass` when
  * there is no evidence at all.

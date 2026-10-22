@@ -13,12 +13,13 @@ export const DOWNLOAD_AND_RUN =
   /\b(?:curl|wget)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\b|\b(?:curl|wget)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:python[23]?|node|perl|ruby|php)\b|\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)|(?:\b(?:source|(?:ba|z|da|k)?sh)|(?:^|(?<=[\s;&|(]))\.)\s+<\(\s*(?:curl|wget)|\bbase64\s+(?:-d|--decode|-D)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da)?sh\b|\bpython[23]?\s+-c\s+["'][^"'\n]{0,500}urllib|\beval\s+["']?\$\(\s*(?:curl|wget|echo|base64)/
 
 /**
- * Fetching and running a package that is not pinned to an exact version:
+ * Fetching and running a package that is not pinned to an exact version
+ * (npx, npm exec, pnpm dlx, yarn dlx, bunx, uvx, pipx run):
  * no version, a tag (@latest, @next) or a range (@^1.2) all count. An exact
  * x.y.z, with any prerelease (-rc-1) or build (+5) part, is a pin.
  */
 export const UNPINNED_RUNNER =
-  /\b(?:npx|bunx|pnpx)\s+(?:-{1,2}[\w-]+\s+){0,5}(?!-)(?:@[\w.-]+\/)?[\w.-]+(?:@(?!\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?(?![\w.+-]))[^\s`'"();&|]*)?(?![@\w./-])|\b(?:uvx|pipx\s+run)\s+(?!\S+(?:==|@)\d)/
+  /\b(?:npx|bunx|pnpx|npm\s+exec|pnpm\s+dlx|yarn\s+dlx|bun\s+x)\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+){0,5}(?!-)(?:@[\w.-]+\/)?[\w.-]+(?:@(?!\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?(?![\w.+-]))[^\s`'"();&|]*)?(?![@\w./-])|\b(?:uvx|pipx\s+run)\s+(?!\S+(?:==|@)\d)/
 
 /** Shell `eval` and piping into a shell. */
 export const SHELL_EVAL = /(?:^|[\s;&|(])eval\s|\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\s*(?:$|[;&|)])/m

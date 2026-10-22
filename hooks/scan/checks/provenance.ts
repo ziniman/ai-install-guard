@@ -1,5 +1,6 @@
 import { isRecord, parseJson, type ScanContext } from './context'
-import { row, type CheckResult, type Evidence } from './types'
+import { joinPath } from './text'
+import { capEvidence, row, type CheckResult, type Evidence } from './types'
 
 const GROUP = 'provenance' as const
 const MARKETPLACE = '.claude-plugin/marketplace.json'
@@ -21,7 +22,6 @@ export function marketplacePinsCheck(ctx: ScanContext): CheckResult[] {
     const name = typeof plugin.name === 'string' ? plugin.name : '(unnamed)'
     const judged = judgeSource(plugin.source)
     if (judged !== undefined) evidence.push({ file: MARKETPLACE, excerpt: `${name}: ${judged.what}`, status: judged.status })
-    if (evidence.length >= 30) break
   }
   if (evidence.length === 0) return []
   return [
@@ -32,15 +32,19 @@ export function marketplacePinsCheck(ctx: ScanContext): CheckResult[] {
         title: 'Marketplace pins',
         advice: 'Pin each plugin to a full commit id (sha) or an exact package version. A branch, a tag or a commit given as ref can change what installs after it was reviewed.',
       },
-      evidence,
+      // Every entry is judged; only the worst are listed.
+      capEvidence(evidence, 30),
     ),
   ]
 }
 
 function judgeSource(source: unknown): { what: string; status: 'pass' | 'warn' | 'fail' } | undefined {
   if (typeof source === 'string') {
-    // A folder in the marketplace is pinned with the marketplace itself.
-    if (source.startsWith('./') || source.startsWith('../')) return undefined
+    // A folder in the marketplace is pinned with the marketplace itself; one
+    // that climbs out of it is not part of what was pinned.
+    if (source.startsWith('./') || source.startsWith('../')) {
+      return joinPath('', source) === undefined ? { what: `comes from ${source}, outside the marketplace, which is not pinned with it`, status: 'warn' } : undefined
+    }
     return { what: `comes from ${source} and follows its default branch`, status: 'warn' }
   }
   if (!isRecord(source)) return undefined

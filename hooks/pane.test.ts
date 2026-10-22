@@ -418,13 +418,14 @@ describe('pane review fixes, round four', () => {
 describe('a remote scan in the pane', () => {
   const SHA = 'a'.repeat(40)
   const WORK = '/tmp/ai-install-guard.Ef56Gh78/repo'
+  let head = SHA
   const git = (argv: readonly string[]) => {
     const ok = (stdout = '') => ({ exitCode: 0, stdout, stderr: '' })
     if (argv[0] === 'mktemp') return ok('/tmp/ai-install-guard.Ef56Gh78\n')
     if (argv[0] === 'rm') return ok()
     if (argv[0] !== 'git') return undefined
-    if (argv.includes('ls-remote')) return ok(`ref: refs/heads/main\tHEAD\n${SHA}\tHEAD\n${SHA}\trefs/heads/main\n`)
-    if (argv.includes('rev-parse')) return ok(`${SHA}\n`)
+    if (argv.includes('ls-remote')) return ok(`ref: refs/heads/main\tHEAD\n${head}\tHEAD\n${head}\trefs/heads/main\n`)
+    if (argv.includes('rev-parse')) return ok(`${head}\n`)
     if (argv.includes('count-objects')) return ok('size: 0\nsize-pack: 12\n')
     return ok()
   }
@@ -446,6 +447,25 @@ describe('a remote scan in the pane', () => {
     expect(decision?.sha).toBe(SHA)
     expect(decision?.root).toBe('https://github.com/acme/notes.git')
     await pane.unmount()
+  })
+
+  test('another commit with the same files is judged on its own', async ($, on) => {
+    mock.store(on)
+    serveUi(on)
+    serveFixture(on, WORK, fixture('clean-plugin'), { run: git })
+    head = SHA
+    await $.command.run(typed('guard', 'scan github:acme/notes'))
+    const first = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+    await first.press({ key: 'install' })
+    await first.unmount()
+    head = 'c'.repeat(40)
+    await $.command.run(typed('guard', 'scan github:acme/notes'))
+    const again = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+
+    expect(await again.find({ key: 'install' })).toBeDefined()
+    expect(await again.find({ type: 'Text', text: /^Approved on/ })).toBeUndefined()
+    await again.unmount()
+    head = SHA
   })
 
   test('--ref and --path on a folder are refused', async ($, on) => {

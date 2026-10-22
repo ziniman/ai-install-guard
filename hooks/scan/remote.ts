@@ -3,8 +3,9 @@
 // and the checkout is confirmed to have landed on it. The checks then read
 // that folder like any local one, and the folder is removed afterwards.
 
-import { row, type CheckResult, type Evidence } from './checks/types'
+import { capEvidence, row, type CheckResult, type Evidence } from './checks/types'
 import type { Host, RunResult } from './host'
+import { LIMITS } from './inventory'
 import { safeLine } from './safe-text'
 
 /** A remote candidate as asked for: an https git URL, a ref and a folder in it. */
@@ -39,6 +40,14 @@ export const MAX_FETCH_BYTES = 50 * 1024 * 1024
 
 /** No prompts for credentials, and no Git LFS downloads during checkout. */
 const GIT_ENV: Record<string, string> = { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_LFS_SKIP_SMUDGE: '1' }
+
+/**
+ * For the steps that touch only the local copy: none of your own git
+ * configuration or attributes, so a `.gitattributes` in the candidate cannot
+ * select a filter program you have configured. The network steps keep your
+ * configuration for proxies and certificates.
+ */
+const ISOLATED_ENV: Record<string, string> = { ...GIT_ENV, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_ATTR_NOSYSTEM: '1' }
 
 /** Names git gives its own refs; a branch or tag with one is a trap. */
 const SPECIAL_REFS = new Set(['HEAD', 'FETCH_HEAD', 'ORIG_HEAD', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'REBASE_HEAD', 'BISECT_HEAD', 'AUTO_MERGE'])
@@ -174,43 +183,67 @@ export async function fetchPinned(host: Host, spec: RemoteSpec, onStage?: (stage
   const cleanup = () => removeTempDir(host, dir)
   try {
     const work = `${dir}/repo`
-    await must(git(host, ['init', '-q', work]), 'could not prepare a folder for the fetch')
+    await must(git(host, ['init', '-q', '--template=', work], 60_000, ISOLATED_ENV), 'could not prepare a folder for the fetch')
     await onStage?.(`fetching ${pinned.sha.slice(0, 12)}`)
     await must(
       git(host, ['-C', work, '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', 'fetch', '--depth', '1', '--no-tags', '--no-recurse-submodules', '-q', spec.url, pinned.sha], 300_000),
       `could not fetch ${pinned.sha}`,
     )
-    const counted = await must(git(host, ['-C', work, 'count-objects', '-v']), 'could not measure the fetch')
+    const counted = await must(git(host, ['-C', work, 'count-objects', '-v'], 60_000, ISOLATED_ENV), 'could not measure the fetch')
     const kib = ['size', 'size-pack'].reduce((sum, key) => sum + Number(new RegExp(`^${key}:\\s*(\\d+)`, 'm').exec(counted.stdout)?.[1] ?? 0), 0)
     if (kib * 1024 > MAX_FETCH_BYTES) throw new Error(`the commit weighs more than ${MAX_FETCH_BYTES / 1024 / 1024} MB, too much to scan`)
+    // What the checkout will write, measured before it is written: a small
+    // pack can hold files that compress to almost nothing.
+    const tree = await must(git(host, ['-C', work, 'ls-tree', '-r', '-z', '-l', '--full-tree', pinned.sha], 60_000, ISOLATED_ENV), 'could not list the commit')
+    const entries = parseLsTree(tree.stdout)
+    const bytes = entries.reduce((sum, entry) => sum + (entry.size ?? 0), 0)
+    if (entries.length > LIMITS.maxEntries) throw new Error(`the commit holds more than ${LIMITS.maxEntries} files`)
+    if (bytes > LIMITS.maxTotalBytes) throw new Error(`the commit's files add up to more than ${LIMITS.maxTotalBytes / 1024 / 1024} MB, too much to scan`)
     await must(
       git(
         host,
         ['-C', work, '-c', 'core.autocrlf=false', '-c', 'core.symlinks=true', '-c', 'filter.lfs.smudge=', '-c', 'filter.lfs.process=', '-c', 'filter.lfs.required=false', 'checkout', '-q', '--detach', pinned.sha],
         120_000,
+        ISOLATED_ENV,
       ),
       `could not check out ${pinned.sha}`,
     )
     // The assertion that closes Plugin4Shell: what HEAD is, not what was asked.
-    const head = (await must(git(host, ['-C', work, 'rev-parse', '--verify', 'HEAD']), 'could not read the checkout')).stdout.trim()
+    const head = (await must(git(host, ['-C', work, 'rev-parse', '--verify', 'HEAD'], 60_000, ISOLATED_ENV), 'could not read the checkout')).stdout.trim()
     if (head !== pinned.sha) throw new Error(`the checkout landed on ${safeLine(head)}, not on the pinned commit ${pinned.sha}`)
-    const tree = await must(git(host, ['-C', work, 'ls-tree', '-r', '-z', '--full-tree', 'HEAD']), 'could not list the commit')
     const source: PinnedSource = { url: spec.url, ...pinned, defaultBranch: listed.defaultBranch?.replace(/^refs\/heads\//, ''), subdir: spec.subdir }
     let root = work
-    if (spec.subdir !== undefined) {
-      root = `${work}/${spec.subdir}`
+    // Every step of the folder must be a plain folder: a link anywhere on the
+    // way could lead out of the checkout to your own files.
+    for (const part of spec.subdir?.split('/') ?? []) {
+      root = `${root}/${part}`
       const stat = await host.stat(root, { resolve: false }).catch(() => undefined)
-      if (stat === undefined || stat.kind !== 'dir' || stat.isLink) throw new Error(`the commit has no folder "${safeLine(spec.subdir)}"`)
+      if (stat?.isLink === true) throw new Error(`"${safeLine(spec.subdir ?? '')}" passes through a symbolic link, which could lead outside the repository`)
+      if (stat === undefined || stat.kind !== 'dir') throw new Error(`the commit has no folder "${safeLine(spec.subdir ?? '')}"`)
     }
-    return { root, source, results: [sourceRow(source), refsRow(listed), checkoutRow(tree.stdout, spec.subdir)], cleanup }
+    return { root, source, results: [sourceRow(source), refsRow(listed), checkoutRow(entries, spec.subdir)], cleanup }
   } catch (error) {
     await cleanup().catch(() => undefined)
     throw error
   }
 }
 
-function git(host: Host, args: readonly string[], timeoutMs = 60_000): Promise<RunResult> {
-  return host.run(['git', ...args], { timeoutMs, env: GIT_ENV })
+function git(host: Host, args: readonly string[], timeoutMs = 60_000, env: Record<string, string> = GIT_ENV): Promise<RunResult> {
+  return host.run(['git', ...args], { timeoutMs, env })
+}
+
+type TreeEntry = { mode: string; type: string; oid: string; size?: number; path: string }
+
+/** `git ls-tree -r -z -l` output: one entry per NUL, with each blob's size. */
+function parseLsTree(stdout: string): TreeEntry[] {
+  const out: TreeEntry[] = []
+  for (const entry of stdout.split(String.fromCharCode(0))) {
+    const match = /^(\d{6}) (\w+) ([0-9a-f]{40,64}) +(\d+|-)\t([\s\S]+)$/.exec(entry)
+    if (match === null) continue
+    const [, mode, type, oid, size, path] = match as unknown as [string, string, string, string, string, string]
+    out.push({ mode, type, oid, size: size === '-' ? undefined : Number(size), path })
+  }
+  return out
 }
 
 async function must(result: Promise<RunResult>, what: string): Promise<RunResult> {
@@ -288,7 +321,6 @@ function refsRow(listed: RemoteRefs): CheckResult {
     if (FULL_SHA.test(short.toLowerCase())) evidence.push({ file: '-', excerpt: `${label} is named like a commit id, which can make a pinned install check out other code`, status: 'fail' })
     else if (SPECIAL_REFS.has(short)) evidence.push({ file: '-', excerpt: `${label} is named like git's own ${short}, which can make a pinned install check out other code`, status: 'fail' })
     else if (SHORT_SHA.test(short) && /\d/.test(short) && /[a-f]/.test(short)) evidence.push({ file: '-', excerpt: `${label} is named like a short commit id`, status: 'warn' })
-    if (evidence.length >= 20) break
   }
   return row(
     {
@@ -297,22 +329,18 @@ function refsRow(listed: RemoteRefs): CheckResult {
       title: 'Branch and tag names',
       advice: 'A branch named like a commit id or like FETCH_HEAD lets the repository swap in other code when a client checks out a pinned commit by name. Treat the repository as hostile.',
     },
-    evidence,
+    capEvidence(evidence, 20),
   )
 }
 
-/** What a plain checkout would leave out or replace: submodules and filters. */
-function checkoutRow(lsTree: string, subdir: string | undefined): CheckResult {
+/** What a plain checkout leaves out: submodules, whose code lives elsewhere. */
+function checkoutRow(entries: readonly TreeEntry[], subdir: string | undefined): CheckResult {
   const evidence: Evidence[] = []
-  const inside = (path: string) => subdir === undefined || path === subdir || path.startsWith(`${subdir}/`)
-  const shown = (path: string) => (subdir === undefined ? path : path.slice(subdir.length + 1))
-  for (const entry of lsTree.split('\0')) {
-    const match = /^(\d{6}) (\w+) ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(entry)
-    if (match === null) continue
-    const [, mode, , oid, path] = match as unknown as [string, string, string, string, string]
-    if (!inside(path)) continue
-    if (mode === '160000') evidence.push({ file: shown(path) || '.', excerpt: `a submodule at commit ${oid.slice(0, 12)}: its code is fetched separately and is not part of this scan`, status: 'warn' })
-    if (evidence.length >= 20) break
+  for (const { mode, oid, path } of entries) {
+    if (mode !== '160000') continue
+    if (subdir !== undefined && path !== subdir && !path.startsWith(`${subdir}/`)) continue
+    const shown = subdir === undefined ? path : path.slice(subdir.length + 1) || '.'
+    evidence.push({ file: shown, excerpt: `a submodule at commit ${oid.slice(0, 12)}: its code is fetched separately and is not part of this scan`, status: 'warn' })
   }
   return row(
     {
@@ -321,6 +349,6 @@ function checkoutRow(lsTree: string, subdir: string | undefined): CheckResult {
       title: 'Code outside the commit',
       advice: 'A submodule pulls code from another repository at install time. That code was not scanned.',
     },
-    evidence,
+    capEvidence(evidence, 20),
   )
 }

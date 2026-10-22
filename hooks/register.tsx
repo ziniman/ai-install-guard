@@ -77,7 +77,7 @@ async function scan($: EngineInterface, target: string, details: boolean, flags:
     const report = spec === undefined ? await scanFolder(host, target, await expandHome(host, target), options) : await scanRemote(host, target, spec, options)
     // A tree you already decided on shows that decision, not the buttons
     // again, unless it now judges worse than when you approved it.
-    const earlier = report.inventory === undefined ? undefined : await decisionFor($, report.inventory.treeHash, report.verdict.kind).catch(() => undefined)
+    const earlier = report.inventory === undefined ? undefined : await decisionFor($, { treeHash: report.inventory.treeHash, sha: report.source?.sha }, report.verdict.kind).catch(() => undefined)
     const view = earlier === undefined ? viewOf(report, 'approve') : { ...viewOf(report, 'approve'), decision: earlier.decision, decidedAt: earlier.decidedAt }
     const text = formatReport(report, { details: true })
     // The report text is stored before the pane shows the verdict, so Copy
