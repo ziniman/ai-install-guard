@@ -8,6 +8,10 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 **`checks`** - A right-to-left plugin is no longer told Do not install just for defining a direction mark as a constant: a bidirectional control that is the whole of a one-line string, with nothing after it on its line but `;`, `,` or a comment, is a warning that names the escape to write instead, since it cannot reorder any code. Anywhere else, in a language the tokenizer does not know, and for tag characters, it still fails, and a file full of such constants cannot crowd out a real one
 
+**`verdict`** - The middle verdict is now **Review what it can do**, formerly Install with caution. It means the candidate has powerful access worth knowing about, which a trustworthy tool may need too, not that it is a lesser kind of safe. The badge uses the new words, and a badge with the old words still counts as that verdict
+
+**`pane`** - The mod capability rows now say in plain words what a mod can do and whether its README says why, which programs it starts (read from its code, with shells and other risky ones called out), and the README's own explanation, quoted and marked as the plugin's words
+
 **`provenance`** - For a repository on GitHub, the report now says how old it and its owner's account are, its stars, forks and contributors, whether it is archived or a fork, and whether the scanned commit is signed and on the default branch. A brand-new account, a new repository with one author and few stars, and a commit named by id that is not on the default branch (it may come from a fork) are warnings; a lookup that fails is only noted
 
 **`outsideLookups`** - A new setting, off by default. Turned on, the packages a plugin's MCP servers start or its manifests pin are checked against OSV, where malware (MAL ids, or advisories marked CWE-506) fails and a pinned version's known vulnerabilities warn, and its name is compared with Anthropic's official plugins, where a near miss warns
