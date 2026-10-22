@@ -94,7 +94,7 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
       }
     }
     const mode = front.permissionMode ?? front['permission-mode']
-    if (mode !== undefined && /bypassPermissions|acceptEdits/i.test(mode)) {
+    if (mode !== undefined && /\b(?:bypassPermissions|acceptEdits)\b/i.test(mode)) {
       tools.push({ file: path, line: lineOfKey(text, 'permissionMode'), excerpt: `permissionMode: ${mode}`, status: cap('fail') })
     }
 

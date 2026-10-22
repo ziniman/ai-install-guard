@@ -109,11 +109,15 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
   // The README must spell the call or event out as a name of its own; a wildcard is never explained.
   const isExplained = (name: string): boolean => {
     if (name.length < 5 || !/^[a-z]+\.[a-zA-Z.]+$/.test(name)) return false
-    const mention = new RegExp(`(?<![\\w.$])${name.replace(/\./g, '\\.')}(?![\\w])`, 'i')
-    // A sentence that says it does not use the call explains nothing.
-    return explained
-      .split(/(?<=[.!?])\s+|\n{2,}/)
-      .some(sentence => mention.test(sentence) && !/\b(?:never|not|no|without|don['’]t|doesn['’]t|won['’]t|cannot|can['’]t)\b/i.test(sentence))
+    const escaped = name.replace(/\./g, '\\.')
+    const mention = new RegExp(`(?<![\\w.$])${escaped}(?![\\w])`, 'gi')
+    // A mention right after a negation ("we never call process.run",
+    // "no process.run") says it does not use the call, so it explains nothing.
+    for (const found of explained.matchAll(mention)) {
+      const before = explained.slice(Math.max(0, (found.index ?? 0) - 40), found.index).split(/[.!?|\n]/).pop() ?? ''
+      if (!/\b(?:never|not|no|without|don['’]t|doesn['’]t|won['’]t|cannot|can['’]t)\b(?:\W+\w+){0,3}\W*$/i.test(before)) return true
+    }
+    return false
   }
 
   const inventory: Evidence[] = uses.map(({ use, kind, capability }) => ({
