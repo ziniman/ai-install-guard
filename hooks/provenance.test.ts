@@ -6,6 +6,7 @@ import { githubProvenance } from './scan/github'
 import type { FetchInit, FetchResult, Host } from './scan/host'
 import { takeInventory } from './scan/inventory'
 import { OFFICIAL_MARKETPLACE, OSV_BATCH, OSV_VULN, outsideLookups, packagesOf } from './scan/lookups'
+import { scanFolder } from './scan/scan'
 import type { PinnedSource } from './scan/remote'
 import { FIXTURES } from './test-support/fixtures.gen'
 import { memoryHost, serveFixture, serveUi, typed, type FixtureFiles } from './test-support/memfs'
@@ -127,7 +128,7 @@ describe('outside lookups', () => {
 
   test('malware fails, whether filed as MAL or as an advisory marked CWE-506', async () => {
     const ctx = await ctxOf({ '.mcp.json': b64(JSON.stringify({ mcpServers: { a: { command: 'npx', args: ['-y', 'crossenv'] }, b: { command: 'npx', args: ['-y', 'evil@1.0.0'] } } })) })
-    const results = await outsideLookups(netHost(osv([{ vulns: [{ id: 'GHSA-c2m4-w5hm-vqjw' }] }, { vulns: [{ id: 'MAL-2025-1' }] }], { 'GHSA-c2m4-w5hm-vqjw': { database_specific: { cwe_ids: ['CWE-506'] } } })), ctx)
+    const results = await outsideLookups(netHost(osv([{ vulns: [{ id: 'GHSA-c2m4-w5hm-vqjw' }] }, { vulns: [{ id: 'MAL-2025-1' }] }], { 'GHSA-c2m4-w5hm-vqjw': { id: 'GHSA-c2m4-w5hm-vqjw', database_specific: { cwe_ids: ['CWE-506'] } } })), ctx)
     const row = results.find(result => result.id === 'provenance.packages')
     expect(row?.status).toBe('fail')
     expect(row?.evidence.filter(item => item.status === 'fail')).toHaveLength(2)
@@ -135,7 +136,8 @@ describe('outside lookups', () => {
 
   test('a pinned version with advisories warns; an unpinned one only counts malware', async () => {
     const ctx = await ctxOf({ '.mcp.json': b64(JSON.stringify({ mcpServers: { a: { command: 'npx', args: ['-y', 'old@1.0.0'] }, b: { command: 'npx', args: ['-y', 'any'] } } })) })
-    const results = await outsideLookups(netHost(osv([{ vulns: [{ id: 'GHSA-aaaa-bbbb-cccc' }] }, { vulns: [{ id: 'GHSA-dddd-eeee-ffff' }] }])), ctx)
+    const details = { 'GHSA-aaaa-bbbb-cccc': { id: 'GHSA-aaaa-bbbb-cccc', summary: 'ReDoS in old' }, 'GHSA-dddd-eeee-ffff': { id: 'GHSA-dddd-eeee-ffff', summary: 'Prototype pollution in any' } }
+    const results = await outsideLookups(netHost(osv([{ vulns: [{ id: 'GHSA-aaaa-bbbb-cccc' }] }, { vulns: [{ id: 'GHSA-dddd-eeee-ffff' }] }], details)), ctx)
     const row = results.find(result => result.id === 'provenance.packages')
     expect(row?.status).toBe('warn')
     expect(row?.evidence).toHaveLength(1)
@@ -291,5 +293,104 @@ describe('a later OSV batch that fails', () => {
     const row = (await outsideLookups(netHost(answers), ctx)).find(result => result.id === 'provenance.packages')
     expect(row?.status).toBe('fail')
     expect(row?.summary?.[1]).toBe('Checked 1000 packages against OSV; 500 more were not looked up (could not reach OSV: reset)')
+  })
+})
+
+describe('lookups, PR #9 review fixes', () => {
+  const ctxOf = async (files: FixtureFiles) => buildContext(await takeInventory(memoryHost('/p', { ...fixture('clean-plugin'), ...files }), '/p'))
+  const mcp = (servers: Record<string, unknown>) => ({ '.mcp.json': b64(JSON.stringify({ mcpServers: servers })) })
+  const names = async (servers: Record<string, unknown>) => packagesOf(await ctxOf(mcp(servers))).map(pkg => `${pkg.name}@${pkg.version ?? '*'}`)
+  const table = (batch: (queries: unknown[]) => unknown, details: Record<string, unknown> = {}, official: unknown = { plugins: [] }) => (url: string, init?: FetchInit): FetchResult => {
+    if (url === OSV_BATCH) return json({ results: batch((JSON.parse(init?.body ?? '{}') as { queries: unknown[] }).queries) })
+    if (url.startsWith(OSV_VULN)) {
+      const id = decodeURIComponent(url.slice(OSV_VULN.length))
+      return json(details[id] ?? { id, summary: 'An ordinary bug' })
+    }
+    if (url === OFFICIAL_MARKETPLACE) return json(official)
+    return json({}, 404)
+  }
+  const packagesRow = async (ctx: Awaited<ReturnType<typeof ctxOf>>, answers: ReturnType<typeof table>) => (await outsideLookups(netHost(answers), ctx)).find(result => result.id === 'provenance.packages')
+
+  test('an option with a file does not hide the package, and --with only adds one', async () => {
+    expect(await names({ a: { command: 'uvx', args: ['--with-requirements', 'requirements.txt', 'ruff'] } })).toEqual(['ruff@*'])
+    expect(await names({ a: { command: 'uvx', args: ['--with', 'requests', 'evil-tool'] } })).toEqual(['requests@*', 'evil-tool@*'])
+    expect(await names({ a: { command: 'npx', args: ['-p', '@acme/cli@1.0.0', 'acme'] } })).toEqual(['@acme/cli@1.0.0'])
+    expect(await names({ a: { command: 'uvx', args: ['-p', '3.12', 'tool'] } })).toEqual(['tool@*'])
+  })
+
+  test('Python extras name the same package', async () => {
+    expect(await names({ a: { command: 'uvx', args: ['httpx[cli]==0.27.0'] } })).toEqual(['httpx@0.27.0'])
+  })
+
+  test('an empty advisory answer leaves it unresolved', async () => {
+    const ctx = await ctxOf(mcp({ a: { command: 'npx', args: ['-y', 'unpinned'] } }))
+    const row = await packagesRow(ctx, table(() => [{ vulns: [{ id: 'GHSA-aaaa-bbbb-cccc' }] }], { 'GHSA-aaaa-bbbb-cccc': {} }))
+    expect(row?.status).toBe('warn')
+    expect(row?.evidence[0]?.excerpt).toContain('may be malware')
+  })
+
+  test('an advisory far down the list is still read for malware', async () => {
+    const ids = Array.from({ length: 50 }, (_, index) => `GHSA-${String(index).padStart(4, '0')}-bbbb-cccc`)
+    const ctx = await ctxOf(mcp({ a: { command: 'npx', args: ['-y', 'busy@1.0.0'] } }))
+    const malware = ids[44] as string
+    const row = await packagesRow(ctx, table(() => [{ vulns: ids.map(id => ({ id })) }], { [malware]: { id: malware, database_specific: { cwe_ids: ['CWE-506'] } } }))
+    expect(row?.status).toBe('fail')
+  })
+
+  test('a package whose answer is not an object counts as not looked up', async () => {
+    const ctx = await ctxOf(mcp({ a: { command: 'npx', args: ['-y', 'one@1.0.0'] }, b: { command: 'npx', args: ['-y', 'two@1.0.0'] } }))
+    const row = await packagesRow(ctx, table(() => [{}, null]))
+    expect(row?.summary?.at(-1)).toContain('1 more was not looked up')
+  })
+
+  test('every marketplace name is compared', async () => {
+    const plugins = Array.from({ length: 250 }, (_, index) => ({ name: index === 240 ? 'code-reveiw' : `plugin-${index}`, source: `./p${index}` }))
+    const ctx = await ctxOf({ '.claude-plugin/marketplace.json': b64(JSON.stringify({ name: 'm', owner: { name: 'o' }, plugins })) })
+    const results = await outsideLookups(netHost(table(() => [], {}, { plugins: [{ name: 'code-review' }] })), ctx)
+    expect(status(results, 'provenance.names')).toBe('warn')
+  })
+
+  const marketplace = (count: number, extra: FixtureFiles = {}) => {
+    const files: FixtureFiles = {
+      ...fixture('clean-plugin'),
+      '.claude-plugin/marketplace.json': b64(JSON.stringify({ name: 'm', owner: { name: 'o' }, plugins: Array.from({ length: count }, (_, index) => ({ name: `p${index}`, source: `./plugins/p${index}` })) })),
+      ...extra,
+    }
+    for (let index = 0; index < count; index += 1) {
+      for (const [path, file] of Object.entries(fixture('clean-plugin'))) files[`plugins/p${index}/${path}`] = file
+      files[`plugins/p${index}/.mcp.json`] = b64(JSON.stringify({ mcpServers: { s: { command: 'npx', args: ['-y', `shared@1.0.0`] } } }))
+    }
+    return files
+  }
+
+  test('a scan asks the official list once, and each advisory once, however many plugins it lists', async () => {
+    const host = Object.assign(memoryHost('/m', marketplace(3)), { fetch: async (url: string, init?: FetchInit) => (asked.push(url), table(() => [{ vulns: [{ id: 'GHSA-same-same-same' }] }])(url, init)) })
+    const asked: string[] = []
+    await scanFolder(host, 'm', '/m', { validate: false, lookups: true })
+    expect(asked.filter(url => url === OFFICIAL_MARKETPLACE)).toHaveLength(1)
+    expect(asked.filter(url => url.startsWith(OSV_VULN))).toHaveLength(1)
+  })
+
+  test("a listed plugin's malware gives the marketplace's package row its reason", async () => {
+    const files = marketplace(1, { 'package.json': b64(JSON.stringify({ name: 'm', dependencies: { old: '1.0.0' } })) })
+    const host = Object.assign(memoryHost('/m', files), {
+      fetch: async (url: string, init?: FetchInit) =>
+        table(queries => queries.map(query => ((query as { package: { name: string } }).package.name === 'shared' ? { vulns: [{ id: 'MAL-2026-3' }] } : { vulns: [{ id: 'GHSA-old0-old0-old0' }] })))(url, init),
+    })
+    const report = await scanFolder(host, 'm', '/m', { validate: false, lookups: true })
+    const row = report.results.find(result => result.id === 'provenance.packages')
+    expect(row?.status).toBe('fail')
+    expect(row?.summary?.[0]).toBe('plugins/p0: Uses a package listed as malware: shared@1.0.0 (npm)')
+  })
+})
+
+describe('GitHub, PR #9 review fixes', () => {
+  test("a request that fails late keeps the warnings already found", async () => {
+    const base = github({ repoDays: 900, ownerDays: 4, stars: 120, people: 6 })
+    const answers = (url: string): FetchResult | Error => (url.includes('/contributors') || url.includes('/commits/') ? new Error('reset by peer') : base(url))
+    const results = await githubProvenance(netHost(answers), SOURCE, NOW)
+    expect(status(results, 'provenance.repository')).toBe('warn')
+    expect(results[0]?.evidence.map(item => item.excerpt)).toContain('not checked, its contributors: could not reach GitHub: reset by peer')
+    expect(results[1]?.evidence[0]?.excerpt).toContain('not checked')
   })
 })
