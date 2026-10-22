@@ -170,3 +170,69 @@ describe('the verdict pane', () => {
     await pane.unmount()
   })
 })
+
+describe('pane review fixes', () => {
+  test('a scan that could not read the folder can be closed, and offers nothing to approve', async ($, on) => {
+    mock.store(on)
+    const ui = serveUi(on)
+    serveFixture(on, ROOT, fixture('clean-plugin'))
+    await $.command.run(typed('guard', 'scan /work/missing'))
+    const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+
+    expect(await pane.find({ type: 'Text', text: /^Could not verify$/ })).toBeDefined()
+    expect(await pane.find({ key: 'install' })).toBeUndefined()
+    await pane.press({ key: 'reject' })
+    expect(ui.closed).toEqual([PANE_ID])
+    expect((await $.command.run(typed('guard', 'list'))).text).toContain('no decisions yet')
+    await pane.unmount()
+  })
+
+  test('a reopened report shows the decision, not the buttons', async ($, on) => {
+    mock.store(on)
+    serveUi(on)
+    serveFixture(on, ROOT, fixture('clean-plugin'))
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    const first = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+    await first.press({ key: 'install' })
+    await first.unmount()
+
+    await $.command.run(typed('guard', 'report'))
+    const again = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+    expect(await again.find({ key: 'install' })).toBeUndefined()
+    expect(await again.find({ type: 'Text', text: /^Approved\./ })).toBeDefined()
+    await again.unmount()
+  })
+
+  test('a scan that fails part way leaves a finished pane, not a scanning one', async ($, on) => {
+    mock.store(on)
+    serveUi(on)
+    on('process.run', ($, e, next) => (e.argv[0] === 'printenv' ? { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } : next(e)))
+    const { text } = await $.command.run(typed('guard', 'scan ~/x'))
+    const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+
+    expect(text).toContain('could not find the home folder')
+    expect(await pane.find({ type: 'Text', text: /^Scanning/ })).toBeUndefined()
+    expect(await pane.find({ type: 'Text', text: /^Could not verify$/ })).toBeDefined()
+    await pane.unmount()
+  })
+
+  test('a headless scan answers with every finding and its advice', async ($, on) => {
+    mock.store(on)
+    serveUi(on, { placed: false })
+    serveFixture(on, ROOT, fixture('curl-hook'))
+    const { text } = await $.command.run(typed('guard', `scan ${ROOT}`))
+
+    expect(text).toContain('Advice:')
+  })
+
+  test('forget matches a whole name, not part of another', async ($, on) => {
+    mock.store(on, {
+      decisions: [
+        { target: '/w/tool', root: '/w/tool', treeHash: 'sha256:a', verdict: 'Safe to install', decision: 'approved', overridden: false, decidedAt: 1 },
+        { target: '/w/my-tool-2', root: '/w/my-tool-2', treeHash: 'sha256:b', verdict: 'Safe to install', decision: 'approved', overridden: false, decidedAt: 2 },
+      ],
+    })
+    expect((await $.command.run(typed('guard', 'forget tool'))).text).toContain('forgot 1 decision')
+    expect((await $.command.run(typed('guard', 'list'))).text).toContain('my-tool-2')
+  })
+})

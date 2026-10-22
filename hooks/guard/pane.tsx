@@ -4,7 +4,7 @@ import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 import type { GuardRow, GuardStatus, GuardView } from '../../types'
 import { GROUPS } from '../scan/checks/types'
 import { locate } from '../scan/verdict'
-import { recordDecision } from './decisions'
+import { recordDecision, saveLastView } from './decisions'
 import { needsConfirmation, PANE_ID, primaryLabel } from './view'
 
 const viewAtom = atom({ plugin: 'ai-install-guard', key: 'view' } as const, null)
@@ -44,17 +44,24 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
 
   const decide = (decision: 'approved' | 'rejected', overridden: boolean) => async () => {
     const current = await read($, viewAtom)
-    if (current === null || current.treeHash === undefined || current.verdict === undefined) return
-    await recordDecision($, {
-      target: current.target,
-      root: current.root,
-      treeHash: current.treeHash,
-      verdict: current.verdict.recommendation,
-      decision,
-      overridden,
-      decidedAt: Date.now(),
-    })
-    await update($, viewAtom, latest => (latest === null ? latest : { ...latest, decision, confirming: false }))
+    if (current === null || current.verdict === undefined) return
+    // A scan that never read the files has no tree hash to pin a decision to:
+    // the pane closes and nothing is remembered.
+    if (current.treeHash !== undefined) {
+      await recordDecision($, {
+        target: current.target,
+        root: current.root,
+        treeHash: current.treeHash,
+        verdict: current.verdict.recommendation,
+        decision,
+        overridden,
+        decidedAt: Date.now(),
+      })
+    }
+    const decided = { ...current, decision, confirming: false }
+    await update($, viewAtom, () => decided)
+    // The reopened report shows the outcome, not the buttons again.
+    await saveLastView($, decided).catch(() => undefined)
     $.ui.toast(`AI Install Guard: ${decision === 'approved' ? 'approved' : 'rejected'} ${current.target}`)
     await $.ui.close({ id: PANE_ID })
   }
@@ -151,7 +158,9 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
 
       {verdict !== undefined && view.decision === undefined && !view.confirming && (
         <Box key="actions" flexDirection="row" gap={1} marginTop={1}>
-          <Button key="install" label={primaryLabel(view)} hotkey="i" variant={needsConfirmation(view) ? 'secondary' : 'primary'} onPress={primary} />
+          {view.treeHash !== undefined && (
+            <Button key="install" label={primaryLabel(view)} hotkey="i" variant={needsConfirmation(view) ? 'secondary' : 'primary'} onPress={primary} />
+          )}
           <Button key="reject" label="Reject" hotkey="r" variant={needsConfirmation(view) ? 'primary' : 'secondary'} onPress={decide('rejected', false)} />
           <Button key="details" label={view.details ? 'Fewer details' : 'Details'} hotkey="d" onPress={() => update($, viewAtom, current => (current === null ? current : { ...current, details: !current.details }))} />
           <Button key="copy" label="Copy report" hotkey="c" onPress={copy} />

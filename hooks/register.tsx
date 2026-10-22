@@ -1,7 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
-import { forgetDecisions, loadDecisions, loadLastView, saveLastView } from './guard/decisions'
+import { forgetDecisions, loadDecisions, loadLastView, MAX_REPORT_CHARS, saveLastView } from './guard/decisions'
 import { drawPane, REPORT_TEXT } from './guard/pane'
 import { PANE_ID, scanningView, viewOf } from './guard/view'
 import { modHost } from './mod-host'
@@ -61,18 +61,26 @@ async function scan($: EngineInterface, target: string, details: boolean): Promi
   $.ui.status(`AI Install Guard: scanning ${safeLine(target)}`)
   try {
     const report = await scanFolder(host, target, await expandHome(host, target), {
-      onStage: stage => update($, viewAtom, current => (current === null ? current : { ...current, stage })).then(() => undefined),
+      // Stage names can carry a candidate's own words (a plugin's name).
+      onStage: stage => update($, viewAtom, current => (current === null ? current : { ...current, stage: safeLine(stage) })).then(() => undefined),
     })
     const view = viewOf(report, 'approve')
     await update($, viewAtom, () => view)
-    await saveLastView($, view)
     const text = formatReport(report, { details: true })
-    await $.store.set(REPORT_TEXT, text)
+    // The report text first, held well inside the store's limit, then the
+    // view; a failed write leaves the pane as it is and the answer intact.
+    const stored = text.length > MAX_REPORT_CHARS ? `${text.slice(0, MAX_REPORT_CHARS)}\n… the report was cut here to fit the store` : text
+    await $.store.set(REPORT_TEXT, stored).catch(() => undefined)
+    await saveLastView($, view).catch(() => undefined)
     $.ui.toast(`AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}`)
-    if (!opened.isPlaced || details) return details ? text : formatReport(report)
+    // Where no pane shows, the answer is the whole report: findings and advice.
+    if (!opened.isPlaced || details) return text
     return `AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}. The report is in the pane; /guard report reopens it.`
   } catch (error) {
-    return `Could not verify ${safeLine(target)}: ${safeLine(reasonOf(error))}`
+    const reason = `Could not verify ${safeLine(target)}: ${safeLine(reasonOf(error))}`
+    // The pane must not keep saying it is scanning.
+    await update($, viewAtom, current => (current === null ? current : { ...current, stage: '', verdict: { kind: 'unverified' as const, recommendation: 'Could not verify', reasons: [reason], counts: { pass: 0, warn: 0, fail: 0, info: 0 } } })).catch(() => undefined)
+    return reason
   } finally {
     $.ui.status(undefined)
   }
