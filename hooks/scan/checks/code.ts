@@ -508,7 +508,8 @@ function domainsCheck(ctx: ScanContext): CheckResult {
       const authority = /\/\/([^/?#]{0,300})/.exec(match.text)?.[1] ?? ''
       const hasUserInfo = authority.includes('@')
       const host = (/(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+)/.exec(authority.slice(authority.lastIndexOf('@') + 1))?.[1] ?? '').toLowerCase()
-      if (host === '') continue
+      // A one-word host (https://x) is a placeholder, not a place on the internet.
+      if (host === '' || (!host.includes('.') && !host.startsWith('['))) continue
       if (hasUserInfo) evidence.push(judged(file, match, 'warn', `an address whose real host hides after "@": ${host}`))
       if (/^(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|example\.(?:com|org|net))$/.test(host)) continue
       if (!hosts.has(host)) hosts.set(host, { file: file.path, line: match.line })

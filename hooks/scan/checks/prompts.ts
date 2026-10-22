@@ -25,7 +25,8 @@ const INJECTION: readonly RegExp[] = [
 /** Text that talks to a security scanner instead of to a person. */
 const SCANNER_ADDRESS: readonly RegExp[] = [
   /\bnote\s+(?:to|for)\s+(?:the\s+|any\s+)?(?:security\s+|ai\s+|automated\s+)?(?:scanners?|reviewers?|auditors?|analy[sz]ers?)\b/i,
-  /\b(?:security\s+)?(?:scanners?|reviewers?|auditors?|analy[sz]ers?|llms?|language\s+models?|ai\s+(?:assistants?|models?|reviewers?))\b[^\n]{0,80}?\b(?:report|mark|classify|treat|consider|rate|flag|score)\b[^\n]{0,40}?\b(?:safe|pass(?:ed|ing)?|clean|benign|trusted|harmless|low[- ]risk|no\s+(?:issues|findings))\b/i,
+  // "Reviewer" or "auditor" alone is usually a person; it counts only as a tool.
+  /\b(?:(?:security|ai|automated|static|code)\s+(?:scanners?|reviewers?|auditors?|analy[sz]ers?)|scanners?|analy[sz]ers?|llms?|language\s+models?|ai\s+(?:assistants?|models?))\b[^\n]{0,80}?\b(?:report|mark|classify|treat|consider|rate|flag|score)\b[^\n]{0,40}?\b(?:safe|pass(?:ed|ing)?|clean|benign|trusted|harmless|low[- ]risk|no\s+(?:issues|findings))\b/i,
   /\b(?:this|the)\s+(?:plugin|skill|mod|code|package|repo(?:sitory)?|extension)\s+(?:is|has\s+been)\s+(?:completely\s+|totally\s+|fully\s+|100%\s+)?(?:safe|benign|harmless|verified|audited|approved)\b[^\n]{0,60}?\b(?:report|mark|pass|ignore|skip|approve)\b/i,
 ]
 
@@ -101,7 +102,9 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
       credentials.push({ file: path, line: match.line, excerpt: `names ${secretName(match)}`, status: cap(/\b(?:echo|print|printenv|cat|send|include|output)\b/i.test(lineText) ? 'fail' : 'warn') })
     }
 
-    for (const match of findAll(text, REMOTE_INSTRUCTIONS, 3)) {
+    // A local address (a preview server the skill starts) is not remote.
+    const remoteOnly = (index: number) => !/^[^\n]{0,120}?https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)(?![\w.-])/i.test(text.slice(index, index + 200))
+    for (const match of findAll(text, REMOTE_INSTRUCTIONS, 3, remoteOnly)) {
       remote.push({ file: path, line: match.line, excerpt: match.excerpt, status: cap('warn') })
     }
     // Telling the model to download and run code fails; a sentence warning

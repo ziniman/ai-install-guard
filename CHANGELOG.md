@@ -14,6 +14,8 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 **`structure`** - Flags Git LFS pointers and git filters, whose real content is filled in at install and could not be scanned
 
+**`checks`** - Fewer false alarms, found by scanning a real skill: a standalone skill is no longer failed for having no plugin manifest, a local preview address is not a remote instruction, a person called a reviewer is not a security scanner, a browser's program path is not its profile data, and one-word placeholder hosts are not listed
+
 ---
 
 ## v0.1.0 &nbsp;·&nbsp; 2026-10-22

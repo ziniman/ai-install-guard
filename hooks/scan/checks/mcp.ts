@@ -55,20 +55,25 @@ function commandLine(server: McpServer): string {
 
 /**
  * Every remote address a server talks to or is given: its own URL, and any
- * address in its arguments, inside a shell script too. Local ones are left out.
+ * address in its arguments (inside a shell script too), environment and
+ * headers. Local ones are left out. All are judged; the rows cap what they list.
  */
 function remoteUrls(server: McpServer): { url: URL; given: boolean }[] {
   const found: { url: URL; given: boolean }[] = []
-  const texts = server.url !== undefined ? [{ text: server.url, given: false }] : server.args.map(text => ({ text, given: true }))
+  const texts = [
+    ...(server.url === undefined ? [] : [{ text: server.url, given: false }]),
+    ...[...server.args, ...Object.values(server.env), ...Object.values(server.headers)].map(text => ({ text, given: true })),
+  ]
   for (const { text, given } of texts) {
     for (const match of text.matchAll(ADDRESS)) {
+      // Bounded work for a config written to exhaust it.
+      if (found.length >= 500) return found
       try {
         const url = new URL(match[0])
         if (!isLocal(url.hostname)) found.push({ url, given })
       } catch {
         continue
       }
-      if (found.length >= 20) return found
     }
   }
   return found
@@ -154,7 +159,7 @@ function remoteCheck(servers: readonly McpServer[]): CheckResult {
   for (const server of servers) {
     for (const { url, given } of remoteUrls(server)) {
       const host = url.hostname.toLowerCase()
-      const via = given ? ' (an address in its command)' : ''
+      const via = given ? ' (an address in its configuration)' : ''
       if (url.protocol === 'http:' || url.protocol === 'ws:') {
         evidence.push(place(server, `talks to ${host}${via} without encryption`, 'fail'))
       } else if (COLLECTION_HOST.test(`${host}${url.pathname}`)) {

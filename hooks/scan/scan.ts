@@ -109,7 +109,10 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
 }
 
 async function checksFor(host: Host, ctx: ScanContext, options: ScanOptions): Promise<CheckResult[]> {
-  const validator = options.validate === false || ctx.kind === 'folder' ? undefined : await runValidator(host, ctx.tree.inventory.root)
+  // Claude Code validates plugins and marketplaces; a standalone skill or a
+  // plain folder has no manifest for it to read.
+  const hasManifest = ctx.files.some(file => file.path === '.claude-plugin/plugin.json' || file.path === '.claude-plugin/marketplace.json')
+  const validator = options.validate === false || ctx.kind === 'folder' || (ctx.kind === 'skill' && !hasManifest) ? undefined : await runValidator(host, ctx.tree.inventory.root)
   return [
     licenseCheck(ctx),
     ...marketplacePinsCheck(ctx),

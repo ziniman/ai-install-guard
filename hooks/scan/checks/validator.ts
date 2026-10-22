@@ -31,7 +31,7 @@ export async function runValidator(host: Host, root: string): Promise<ValidatorR
     const reason = result.stderr.trim().split('\n')[0] ?? ''
     return { ran: false, reason: reason === '' ? `exit code ${result.exitCode}` : reason.slice(0, 200) }
   }
-  const report = parseValidatorReport(parsed.value)
+  const report = relativeTo(root, parseValidatorReport(parsed.value))
   if (report.ran && parsed.value.success === false && report.errors.length === 0) {
     report.errors.push({ file: '-', message: `claude plugin validate failed (exit code ${result.exitCode})` })
   }
@@ -94,4 +94,18 @@ function splitList(text: string): string[] {
   }
   if (current.trim() !== '') out.push(current.trim())
   return out
+}
+
+/**
+ * The report with the scanned folder's own path taken out of file names and
+ * messages: a remote scan's folder is a temporary one, and every other place
+ * in the report is relative to the candidate.
+ */
+function relativeTo(root: string, report: ValidatorReport): ValidatorReport {
+  if (!report.ran) return report
+  const roots = [root, `/private${root}`].map(path => path.replace(/\/+$/, ''))
+  const strip = (text: string): string =>
+    roots.reduce((out, path) => out.split(`${path}/`).join('').split(path).join('.'), text)
+  const fix = (item: ValidatorProblem): ValidatorProblem => ({ file: strip(item.file), message: strip(item.message) })
+  return { ...report, errors: report.errors.map(fix), warnings: report.warnings.map(fix) }
 }

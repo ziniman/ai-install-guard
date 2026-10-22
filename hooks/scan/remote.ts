@@ -13,6 +13,11 @@ export type RemoteSpec = {
   url: string
   ref?: string
   subdir?: string
+  /**
+   * The part of a GitHub link after /tree/: a ref, which may itself hold
+   * slashes, then a folder. Split once the repository's refs are known.
+   */
+  treePath?: string
 }
 
 /** What was actually scanned: one commit, named however it was asked for. */
@@ -37,6 +42,9 @@ export type FetchedSource = {
 
 /** The most a fetched commit may weigh before the scan gives up. */
 export const MAX_FETCH_BYTES = 50 * 1024 * 1024
+
+/** How long a fetch may take, which also bounds how much it can write. */
+const FETCH_TIMEOUT_MS = 120_000
 
 /** No prompts for credentials, and no Git LFS downloads during checkout. */
 const GIT_ENV: Record<string, string> = { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_LFS_SKIP_SMUDGE: '1' }
@@ -88,15 +96,16 @@ export function parseRemote(target: string, options: { ref?: string; subdir?: st
     if (url.hostname.toLowerCase() === 'github.com' && parts.length >= 2) {
       const repo = (parts[1] as string).replace(/\.git$/, '')
       spec = { url: `https://github.com/${parts[0]}/${repo}.git` }
-      if (parts[2] === 'tree' && parts[3] !== undefined) {
-        spec.ref = decodeURIComponent(parts[3])
-        if (parts.length > 4) spec.subdir = parts.slice(4).map(decodeURIComponent).join('/')
-      }
+      if (parts[2] === 'tree' && parts[3] !== undefined) spec.treePath = parts.slice(3).map(decodeURIComponent).join('/')
     } else {
       spec = { url: `${url.origin}${url.pathname}` }
     }
   }
-  if (options.ref !== undefined) spec.ref = options.ref
+  // A ref named outright replaces the link's own ref and folder.
+  if (options.ref !== undefined) {
+    spec.ref = options.ref
+    delete spec.treePath
+  }
   if (options.subdir !== undefined) spec.subdir = options.subdir
   if (spec.subdir !== undefined) spec.subdir = safeSubdir(spec.subdir)
   return spec
@@ -109,6 +118,21 @@ function safeSubdir(subdir: string): string | undefined {
   return parts.length === 0 ? undefined : parts.join('/')
 }
 
+/**
+ * Splits a GitHub link's `<ref>/<folder>` at the longest leading part that
+ * names a branch or tag, so a branch called feature/foo is not read as
+ * branch feature, folder foo.
+ */
+export function splitTreePath(listed: RemoteRefs, treePath: string): { ref: string; subdir?: string } {
+  const parts = treePath.split('/').filter(part => part !== '')
+  for (let count = parts.length; count >= 1; count -= 1) {
+    const ref = parts.slice(0, count).join('/')
+    const known = listed.refs.has(`refs/heads/${ref}`) || listed.refs.has(`refs/tags/${ref}`) || (count === 1 && FULL_SHA.test(ref.toLowerCase()))
+    if (known) return { ref, subdir: count < parts.length ? safeSubdir(parts.slice(count).join('/')) : undefined }
+  }
+  throw new Error(`no branch or tag of the repository matches the link's "${safeLine(treePath)}"`)
+}
+
 /** Why a ref name cannot be fetched safely, or undefined when it can. */
 function unsafeRef(ref: string): string | undefined {
   if (ref.startsWith('-')) return 'starts with a dash'
@@ -117,7 +141,7 @@ function unsafeRef(ref: string): string | undefined {
   return undefined
 }
 
-type RemoteRefs = {
+export type RemoteRefs = {
   head?: string
   defaultBranch?: string
   /** Full ref name to commit: a tag's own commit when the tag is annotated. */
@@ -178,7 +202,9 @@ export async function fetchPinned(host: Host, spec: RemoteSpec, onStage?: (stage
   const listing = await git(host, ['ls-remote', '--symref', spec.url, 'HEAD', 'refs/heads/*', 'refs/tags/*'], 60_000)
   if (listing.exitCode !== 0) throw failure(listing, `could not reach ${spec.url}`)
   const listed = parseLsRemote(listing.stdout)
-  const pinned = resolveRef(listed, spec.ref)
+  const fromLink = spec.treePath !== undefined && spec.ref === undefined ? splitTreePath(listed, spec.treePath) : undefined
+  const subdir = spec.subdir ?? fromLink?.subdir
+  const pinned = resolveRef(listed, spec.ref ?? fromLink?.ref)
   const dir = await makeTempDir(host)
   const cleanup = () => removeTempDir(host, dir)
   try {
@@ -186,7 +212,9 @@ export async function fetchPinned(host: Host, spec: RemoteSpec, onStage?: (stage
     await must(git(host, ['init', '-q', '--template=', work], 60_000, ISOLATED_ENV), 'could not prepare a folder for the fetch')
     await onStage?.(`fetching ${pinned.sha.slice(0, 12)}`)
     await must(
-      git(host, ['-C', work, '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', 'fetch', '--depth', '1', '--no-tags', '--no-recurse-submodules', '-q', spec.url, pinned.sha], 300_000),
+      // git cannot cap the size of what a fetch receives, so its time is
+      // capped instead; the folder is removed whatever happens.
+      git(host, ['-C', work, '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', 'fetch', '--depth', '1', '--no-tags', '--no-recurse-submodules', '-q', spec.url, pinned.sha], FETCH_TIMEOUT_MS),
       `could not fetch ${pinned.sha}`,
     )
     const counted = await must(git(host, ['-C', work, 'count-objects', '-v'], 60_000, ISOLATED_ENV), 'could not measure the fetch')
@@ -211,17 +239,17 @@ export async function fetchPinned(host: Host, spec: RemoteSpec, onStage?: (stage
     // The assertion that closes Plugin4Shell: what HEAD is, not what was asked.
     const head = (await must(git(host, ['-C', work, 'rev-parse', '--verify', 'HEAD'], 60_000, ISOLATED_ENV), 'could not read the checkout')).stdout.trim()
     if (head !== pinned.sha) throw new Error(`the checkout landed on ${safeLine(head)}, not on the pinned commit ${pinned.sha}`)
-    const source: PinnedSource = { url: spec.url, ...pinned, defaultBranch: listed.defaultBranch?.replace(/^refs\/heads\//, ''), subdir: spec.subdir }
+    const source: PinnedSource = { url: spec.url, ...pinned, defaultBranch: listed.defaultBranch?.replace(/^refs\/heads\//, ''), subdir: subdir }
     let root = work
     // Every step of the folder must be a plain folder: a link anywhere on the
     // way could lead out of the checkout to your own files.
-    for (const part of spec.subdir?.split('/') ?? []) {
+    for (const part of subdir?.split('/') ?? []) {
       root = `${root}/${part}`
       const stat = await host.stat(root, { resolve: false }).catch(() => undefined)
-      if (stat?.isLink === true) throw new Error(`"${safeLine(spec.subdir ?? '')}" passes through a symbolic link, which could lead outside the repository`)
-      if (stat === undefined || stat.kind !== 'dir') throw new Error(`the commit has no folder "${safeLine(spec.subdir ?? '')}"`)
+      if (stat?.isLink === true) throw new Error(`"${safeLine(subdir ?? '')}" passes through a symbolic link, which could lead outside the repository`)
+      if (stat === undefined || stat.kind !== 'dir') throw new Error(`the commit has no folder "${safeLine(subdir ?? '')}"`)
     }
-    return { root, source, results: [sourceRow(source), refsRow(listed), checkoutRow(entries, spec.subdir)], cleanup }
+    return { root, source, results: [sourceRow(source), refsRow(listed), checkoutRow(entries, subdir)], cleanup }
   } catch (error) {
     await cleanup().catch(() => undefined)
     throw error

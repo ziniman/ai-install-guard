@@ -26,7 +26,7 @@ export const SHELL_EVAL = /(?:^|[\s;&|(])eval\s|\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\
 
 /** Places that hold credentials. */
 export const CREDENTIAL_PATH =
-  /\.ssh(?:\/|\b)|\bid_(?:rsa|dsa|ecdsa|ed25519)\b|\.aws\/(?:credentials|config)\b|\.(?:netrc|git-credentials|pypirc)\b|\.npmrc\b|\.docker\/config\.json|\.kube\/config\b|\.config\/gh\/hosts|\.gnupg\b|\.claude\/\.credentials|Library\/Keychains|\bsecurity\s+(?:find|dump)-(?:generic|internet)-password|\bdump-keychain\b|\bLogin Data\b|Cookies\.binarycookies|\/Google\/Chrome\/|\.mozilla\/firefox|BraveSoftware|Microsoft\/Edge\//
+  /\.ssh(?:\/|\b)|\bid_(?:rsa|dsa|ecdsa|ed25519)\b|\.aws\/(?:credentials|config)\b|\.(?:netrc|git-credentials|pypirc)\b|\.npmrc\b|\.docker\/config\.json|\.kube\/config\b|\.config\/gh\/hosts|\.gnupg\b|\.claude\/\.credentials|Library\/Keychains|\bsecurity\s+(?:find|dump)-(?:generic|internet)-password|\bdump-keychain\b|\bLogin Data\b|Cookies\.binarycookies|(?:Application Support|\.config)\/(?:Google\/Chrome|google-chrome|chromium|BraveSoftware|Microsoft Edge)\b|\/(?:Google\/Chrome|Chromium|BraveSoftware\/Brave-Browser|Microsoft\/Edge)\/User Data\b|\.mozilla\/firefox/
 
 /** Environment variables that hold secrets, and dumps of the whole environment. */
 export const SECRET_ENV =
