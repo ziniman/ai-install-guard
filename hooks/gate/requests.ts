@@ -59,14 +59,14 @@ export function readShellCommand(command: string): Reading {
 
 function readShell(command: string): Reading {
   const found: Reading[] = []
-  const { unseen, others } = collectInstalls(command, found, 0)
+  const { unseen, opaque, others } = collectInstalls(command, found, 0, true)
   const installs = found.filter(reading => reading.kind !== 'pass')
   if (installs.length > 1) return { kind: 'unreadable', label: 'several installs', reason: 'the command installs more than one thing; run each install as a command of its own' }
   const [only] = installs
   if (only !== undefined) {
     if (only.kind !== 'install') return only
     // Approving the install approves the whole command, so nothing else may ride along.
-    if (unseen) return { kind: 'unreadable', label: only.label, reason: `part of the command is only known as it runs, so approving it could run more than the install; run ${only.label} as a command of its own` }
+    if (unseen || opaque) return { kind: 'unreadable', label: only.label, reason: `part of the command is only known as it runs, so approving it could run more than the install; run ${only.label} as a command of its own` }
     if (others > 0) return { kind: 'unreadable', label: only.label, reason: `the command runs more than the install; run ${only.label} as a command of its own, so approving it approves only the install` }
     // The guard cannot see the shell's current folder, so a source named
     // relative to it could be another folder than the one the guard scans.
@@ -79,7 +79,11 @@ function readShell(command: string): Reading {
     }
     return only
   }
-  if (unseen && MAY_INSTALL.test(command)) {
+  // A shell or eval told to run text only known as it runs could run anything, an install included.
+  if (opaque) {
+    return { kind: 'unreadable', label: 'a command built as it runs', reason: 'it runs a command only known as it runs (as in bash -c "$CMD" or eval "$X"), so the guard cannot tell whether it installs anything; run the command itself instead' }
+  }
+  if (unseen && (MAY_INSTALL.test(command) || /\bclaude\b/i.test(command))) {
     return { kind: 'unreadable', label: 'a claude plugin command', reason: 'part of the command is only known as it runs, so the guard cannot tell what it installs; run claude plugin install <name>@<marketplace> as a plain command' }
   }
   return PASS
@@ -97,26 +101,24 @@ const CLAUDE = new Set(['claude', 'claude.exe', 'claude-code'])
 /** Programs that run their `-c` argument as a script. */
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'])
 
-/** Programs that run code given inline, with the option that takes it. */
-const INTERPRETERS: Record<string, readonly string[]> = {
-  python: ['-c'],
-  python3: ['-c'],
-  node: ['-e', '--eval', '-p', '--print'],
-  deno: ['eval'],
-  bun: ['-e', '--eval'],
-  perl: ['-e', '-E'],
-  ruby: ['-e'],
-  php: ['-r'],
-  osascript: ['-e'],
-  pwsh: ['-c', '-command'],
-  powershell: ['-c', '-command'],
-}
+/**
+ * Programs that run code in another language: given inline, from their
+ * input or from a file, it is code the guard does not read.
+ */
+const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'osascript', 'pwsh', 'powershell', 'lua', 'tclsh', 'rscript', 'julia', 'swift', 'groovy', 'jshell'])
 
 /**
  * Programs that only print, read or wait: an install's words among their
  * arguments are text, and running one beside an install adds nothing to it.
  */
-const QUIET = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'less', 'more', 'jq', 'sort', 'uniq', 'wc', 'tr', 'cut', 'tee', 'ls', 'pwd', 'true', 'false', 'sleep', 'test', '[', 'date', 'which', 'type', 'column', 'nl', 'fold'])
+const QUIET = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'less', 'more', 'jq', 'sort', 'uniq', 'wc', 'tr', 'cut', 'ls', 'pwd', 'true', 'false', 'sleep', 'test', '[', 'date', 'which', 'type', 'column', 'nl', 'fold'])
+
+/** A quiet program that writes a file all the same: `sort -o`, `uniq in out`. */
+function writesAnyway(program: string, args: readonly string[]): boolean {
+  if (program === 'sort') return args.some(arg => /^--output/.test(arg) || /^-[A-Za-z]*o/.test(arg))
+  if (program === 'uniq') return args.filter(arg => !arg.startsWith('-')).length > 1
+  return false
+}
 
 /**
  * Programs that run the command that follows their own options: the options
@@ -147,15 +149,39 @@ const WRAPPERS: Record<string, Wrapper> = {
   xargs: { values: ['-I', '-i', '-n', '-P', '-L', '-l', '-s', '-d', '-E', '-e', '-a', '--max-args', '--max-procs', '--max-lines', '--max-chars', '--delimiter', '--eof', '--arg-file', '--replace'], fromInput: true },
 }
 
-/** Programs whose text arguments are messages and names, never commands: a commit message may quote an install. */
+/** Programs whose text arguments are messages and names, never commands: a commit message or a pull request may quote an install. */
 const TEXT_ARGUMENTS = new Set(['git', 'gh'])
+
+/**
+ * The shell text git itself runs, from its arguments: a configuration value
+ * (`-c alias.x='!…'`, `-c core.pager=…`), `rebase --exec`, `bisect run` and
+ * `submodule foreach`. Everything else git takes is text.
+ */
+function gitScripts(args: readonly string[]): string[] {
+  const out: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] as string
+    const value = (name: string): string | undefined => (arg === name ? args[index + 1] : arg.startsWith(`${name}=`) ? arg.slice(name.length + 1) : undefined)
+    const config = arg === '-c' ? args[index + 1] : /^-c./.test(arg) ? arg.slice(2) : undefined
+    if (config !== undefined && config.includes('=')) out.push(config.slice(config.indexOf('=') + 1).replace(/^!/, ''))
+    const exec = value('-x') ?? value('--exec')
+    if (exec !== undefined) out.push(exec)
+    if (arg === 'foreach' || (arg === 'run' && args[index - 1] === 'bisect')) {
+      out.push(args.slice(index + 1).join(' '))
+      break
+    }
+  }
+  return out
+}
 
 /** How deep `sh -c "sh -c '…'"` is followed before the guard gives up reading it. */
 const MAX_DEPTH = 4
 
 type Collected = {
-  /** Part of what runs is only known as it runs, or comes from input the guard does not see. */
+  /** Part of what runs is only known as it runs, or comes from input or a file the guard does not read. */
   unseen: boolean
+  /** A shell or eval is told to run a command whose program is only known as it runs. */
+  opaque: boolean
   /** Simple commands that run something other than an install, a quiet program or a shell the guard read into. */
   others: number
 }
@@ -231,16 +257,19 @@ function claudePlugin(words: readonly string[], index: number): Reading | undefi
 
 /**
  * Adds every install `command` asks for to `found`, and says whether part of
- * what runs is unseen and how many other commands run beside it.
+ * what runs is unseen or opaque and how many other commands run beside it.
+ * `asScript` is set for text a shell runs as commands; an argument of another
+ * program, read only for installs it may run, cannot be opaque.
  */
-function collectInstalls(command: string, found: Reading[], depth: number): Collected {
-  const out: Collected = { unseen: false, others: 0 }
-  if (depth > MAX_DEPTH) return { unseen: true, others: 0 }
-  const nested = (script: string): void => {
-    const inner = collectInstalls(script, found, depth + 1)
+function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean): Collected {
+  const out: Collected = { unseen: false, opaque: false, others: 0 }
+  if (depth > MAX_DEPTH) return { unseen: true, opaque: asScript, others: 0 }
+  const merge = (inner: Collected, counts: boolean): void => {
     out.unseen ||= inner.unseen
-    out.others += inner.others
+    out.opaque ||= inner.opaque
+    if (counts) out.others += inner.others
   }
+  const nested = (script: string): void => merge(collectInstalls(script, found, depth + 1, true), true)
   for (const { words, input, scripts: substitutions, writes } of splitShell(command).commands) {
     // What its substitutions run comes first, and is read as commands too.
     substitutions?.forEach(nested)
@@ -248,30 +277,31 @@ function collectInstalls(command: string, found: Reading[], depth: number): Coll
     if (writes === true) out.others += 1
     const { index, scripts, fromInput } = programAt(words)
     scripts.forEach(nested)
+    // xargs fills in words from its input, which the guard does not see.
+    if (fromInput) out.unseen = true
     const word = words[index]
     // Only NAME=value words: nothing runs.
     if (word === undefined) continue
     const program = programName(word)
-    // `claude` with a subcommand only known as it runs could be an install.
-    if (CLAUDE.has(program) && isDynamic(words[index + 1] ?? '')) {
-      found.push({ kind: 'unreadable', label: 'a claude command', reason: 'what it asks claude to do is only known as it runs; run claude plugin install <name>@<marketplace> as a plain command' })
-      continue
-    }
-    // A program only known as it runs.
-    if (isDynamic(word)) {
-      out.unseen = true
-      out.others += 1
-      continue
-    }
-    if (isClaudePlugin(words, index)) {
-      const reading = claudePlugin(words, index)
-      if (reading === undefined) {
-        out.others += 1
+    if (CLAUDE.has(program)) {
+      // `claude` asked to do something only known as it runs could be installing.
+      const at = words.findIndex((item, place) => place > index && /^plugins?$/i.test(item))
+      const next = (offset: number): string => words[at + offset] ?? ''
+      if (isDynamic(words[index + 1] ?? '') || (at !== -1 && (isDynamic(next(1)) || (/^marketplace$/i.test(next(1)) && isDynamic(next(2)))))) {
+        found.push({ kind: 'unreadable', label: 'a claude command', reason: 'what it asks claude to do is only known as it runs; run claude plugin install <name>@<marketplace> as a plain command' })
         continue
       }
-      // Its plugin may come from input (xargs), which the guard does not see.
-      if (fromInput) out.unseen = true
-      found.push(reading)
+      // `claude plugin …`, also after global options (`claude --debug plugin install …`).
+      const reading = at === -1 ? undefined : claudePlugin(words, at - 1)
+      if (reading !== undefined) found.push(reading)
+      else out.others += 1
+      continue
+    }
+    // A program only known as it runs; inside a script a shell runs, nothing can be told about it.
+    if (isDynamic(word)) {
+      out.unseen = true
+      if (asScript && depth > 0) out.opaque = true
+      out.others += 1
       continue
     }
     if (SHELLS.has(program)) {
@@ -291,9 +321,9 @@ function collectInstalls(command: string, found: Reading[], depth: number): Coll
       nested(words.slice(index + 1).join(' '))
       continue
     }
-    const inline = INTERPRETERS[program.replace(/\.exe$/, '').replace(/^python3\.\d+$/, 'python3')]
-    if (inline !== undefined && words.slice(index + 1).some(item => inline.includes(item.toLowerCase()))) out.unseen = true
-    if (QUIET.has(program)) continue
+    // Code in another language, inline, from input or from a file, is not read.
+    if (INTERPRETERS.has(program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1'))) out.unseen = true
+    if (QUIET.has(program) && !writesAnyway(program, words.slice(index + 1))) continue
     // Any other program may run an install among its arguments (`watch`,
     // `flock`), and may run it again and again: the program around it counts
     // as more than the install, so it is held.
@@ -304,13 +334,11 @@ function collectInstalls(command: string, found: Reading[], depth: number): Coll
       out.others += 1
       continue
     }
-    // Or run an argument as a script (`su -c '…'`, `watch '…'`): an install
-    // there is found, and the program around it counts as more than it.
-    if (!TEXT_ARGUMENTS.has(program)) {
-      for (const argument of words.slice(index + 1)) {
-        if (/\s/.test(argument)) out.unseen = collectInstalls(argument, found, depth + 1).unseen || out.unseen
-      }
-    }
+    // Or run an argument as a script (`su -c '…'`, `watch '…'`, git's own
+    // `-c alias.x='!…'`): an install there is found, and the program around
+    // it counts as more than it.
+    const texts = program === 'git' ? gitScripts(words.slice(index + 1)) : TEXT_ARGUMENTS.has(program) ? [] : words.slice(index + 1).filter(argument => /\s/.test(argument))
+    for (const text of texts) merge(collectInstalls(text, found, depth + 1, program === 'git'), false)
     out.others += 1
   }
   return out
@@ -415,6 +443,8 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   let current: ShellCommand = { words: [] }
   let word = ''
   let inWord = false
+  /** Part of the word was quoted or escaped: a here-document marker so written keeps its body as it is. */
+  let quoted = false
   let dynamic = false
   /** What the next word is: a word, a redirection's target, a here-document's end marker, or a here-string. */
   let next: 'word' | 'target' | 'marker' | 'herestring' = 'word'
@@ -422,16 +452,17 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   let writing = false
   let duplicating = false
   let stripTabs = false
-  const heredocs: { marker: string; stripTabs: boolean; command: ShellCommand }[] = []
+  const heredocs: { marker: string; stripTabs: boolean; quoted: boolean; command: ShellCommand }[] = []
   const endWord = (): void => {
     if (!inWord) return
-    if (next === 'marker') heredocs.push({ marker: word, stripTabs, command: current })
+    if (next === 'marker') heredocs.push({ marker: word, stripTabs, quoted, command: current })
     else if (next === 'herestring') current.input = word
     else if (next === 'word') current.words.push(word)
     else if (writing && word !== '/dev/null' && !(duplicating && /^(?:\d+|-)$/.test(word))) current.writes = true
     next = 'word'
     word = ''
     inWord = false
+    quoted = false
   }
   const endCommand = (): void => {
     endWord()
@@ -459,10 +490,12 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       word += text.slice(index + 1, end === -1 ? text.length : end)
       index = end === -1 ? text.length : end
       inWord = true
+      quoted = true
       continue
     }
     if (char === '"') {
       inWord = true
+      quoted = true
       index += 1
       while (index < text.length && text[index] !== '"') {
         const inner = text[index] as string
@@ -490,6 +523,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       if (index + 1 < text.length && text[index + 1] !== '\n') {
         word += text[index + 1]
         inWord = true
+        quoted = true
       }
       index += 1
       continue
@@ -534,6 +568,12 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
           end = start
         }
         heredoc.command.input = lines.join('\n')
+        // An unquoted marker means the shell expands the body: its substitutions run.
+        if (!heredoc.quoted) {
+          const bodies = substitutionsIn(heredoc.command.input)
+          if (bodies.length > 0) (heredoc.command.scripts ??= []).push(...bodies)
+          if (/[$`]/.test(heredoc.command.input)) dynamic = true
+        }
         index = end
       }
       continue
@@ -593,6 +633,25 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   }
   endCommand()
   return { commands, dynamic }
+}
+
+/** The bodies of the `$(…)` and backquoted substitutions in text a shell expands, such as an unquoted here-document. */
+function substitutionsIn(text: string): string[] {
+  const out: string[] = []
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === '\\') {
+      index += 1
+    } else if (text[index] === '$' && text[index + 1] === '(') {
+      const close = closingParen(text, index + 1)
+      if (text[index + 2] !== '(') out.push(text.slice(index + 2, close === -1 ? text.length : close))
+      index = close === -1 ? text.length : close
+    } else if (text[index] === '`') {
+      const close = closingBackquote(text, index)
+      out.push(text.slice(index + 1, close === -1 ? text.length : close))
+      index = close === -1 ? text.length : close
+    }
+  }
+  return out
 }
 
 /** Where the `(` at `open` is closed, past quotes and nested parentheses; -1 if it never is. */

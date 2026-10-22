@@ -31,7 +31,7 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
   const options = { action: 'install' as const, request, lookups }
   if (reading.kind === 'unreadable') {
     const shown = await showUnverified($, reading.label, reading.reason, options)
-    return hold(request, 'Could not verify', '', shown.placed)
+    return shown.superseded ? superseded(request) : hold(request, 'Could not verify', '', shown.placed)
   }
   const name = nameOf(reading.request)
   const host = modHost($)
@@ -41,7 +41,7 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
       return { kind: 'allow', note: BROWSE_NOTE }
     case 'unverifiable': {
       const shown = await showUnverified($, name, target.reason, options)
-      return hold(request, 'Could not verify', '', shown.placed)
+      return shown.superseded ? superseded(request) : hold(request, 'Could not verify', '', shown.placed)
     }
     case 'remote': {
       // The commit the install would take now. A rejection of it stands

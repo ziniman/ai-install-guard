@@ -134,6 +134,43 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('echo claude plugin install notes@acme')).toEqual({ kind: 'pass', browse: false })
   })
 
+  test('PR review: what runs only once the shell has expanded it is held', () => {
+    // xargs fills in the plugin from its input, after the guard has read the command.
+    expect(readShellCommand(`echo evil | xargs -I good sh -c 'claude plugin install good@m'`).kind).toBe('unreadable')
+    // A shell or eval told to run a variable could run anything.
+    expect(readShellCommand('bash -c "$CMD"')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('bash -c "$CMD"') })
+    expect(readShellCommand('eval "$X"').kind).toBe('unreadable')
+    expect(readShellCommand('bash -c "cd $HOME && make"')).toEqual({ kind: 'pass', browse: false })
+    // An unquoted here-document's substitutions run; a quoted one's do not.
+    expect(readShellCommand('cat <<EOF\n$(claude plugin install notes@acme)\nEOF').kind).not.toBe('pass')
+    expect(readShellCommand("cat <<'EOF'\n$(claude plugin install notes@acme)\nEOF")).toEqual({ kind: 'pass', browse: false })
+    // What claude is asked to do, only known as it runs.
+    expect(readShellCommand('SUB=install; claude plugin "$SUB" notes@acme').kind).toBe('unreadable')
+    expect(readShellCommand('claude plugin marketplace "$VERB" https://github.com/acme/market').kind).toBe('unreadable')
+    expect(readShellCommand('claude --debug plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
+  })
+
+  test('PR review: code for another language that mentions claude is held', () => {
+    expect(readShellCommand('python3 - <<EOF\nimport os\nos.system("claude plugin install evil@m")\nEOF').kind).toBe('unreadable')
+    expect(readShellCommand(`echo 'claude plugin install evil@m' | python3`).kind).toBe('unreadable')
+    expect(readShellCommand(`python3 -Sc 'import os; os.system("claude plugin install evil@m")'`).kind).toBe('unreadable')
+    expect(readShellCommand(`node -pe '1 + 1'`)).toEqual({ kind: 'pass', browse: false })
+    expect(readShellCommand('python3 scripts/build.py')).toEqual({ kind: 'pass', browse: false })
+  })
+
+  test('PR review: the shell text git runs is read; its messages are not', () => {
+    expect(readShellCommand(`git -c 'alias.x=!claude plugin install evil@m' x`).kind).toBe('unreadable')
+    expect(readShellCommand(`git rebase -x 'claude plugin install evil@m' HEAD~1`).kind).toBe('unreadable')
+    expect(readShellCommand('git submodule foreach claude plugin install evil@m').kind).toBe('unreadable')
+    expect(readShellCommand(`git -c user.name='A Person' commit -m "claude plugin install notes@acme"`)).toEqual({ kind: 'pass', browse: false })
+  })
+
+  test('PR review: tee and sort -o write files beside an install', () => {
+    expect(readShellCommand('claude plugin install notes@acme | tee out.txt').kind).toBe('unreadable')
+    expect(readShellCommand('sort -o out.txt list && claude plugin install notes@acme').kind).toBe('unreadable')
+    expect(readShellCommand('claude plugin install notes@acme | sort | uniq').kind).toBe('install')
+  })
+
   test('splits like a shell: quotes, separators, redirections and here-documents', () => {
     expect(splitShell(`a 'b c' "d \\"e\\"" f\\ g; h && i | j 2>&1 > out < in`).commands.map(item => item.words)).toEqual([['a', 'b c', 'd "e"', 'f g'], ['h'], ['i'], ['j']])
     expect(splitShell('cat <<-END\n\tbody\n\tEND\nnext').commands).toEqual([{ words: ['cat'], input: 'body' }, { words: ['next'] }])
@@ -353,6 +390,39 @@ describe('gate A: /plugin install', () => {
     await Promise.all([pane.press({ key: 'install' }), pane.press({ key: 'install' })])
     expect(state.core).toEqual(['install notes@acme'])
     await pane.unmount()
+  })
+
+  test('the same source listed with its fields in another order is one source', async ($, on) => {
+    seededStore(on)
+    serveUi(on)
+    const state = world(on)
+    state.listing = {
+      installed: [],
+      available: [
+        { name: 'notes', marketplaceName: 'acme', source: { source: 'git-subdir', url: 'https://github.com/acme/tools.git', path: 'plugins/notes', sha: SHA } },
+        { name: 'notes', marketplaceName: 'mirror', source: { sha: SHA, path: 'plugins/notes', url: 'https://github.com/acme/tools.git', source: 'git-subdir' } },
+      ],
+    }
+    const answer = await $.command.run(typed('plugin', 'install notes'))
+    expect(answer.text).toContain('Safe to install for /plugin install notes at commit aaaaaaaaaaaa')
+  })
+
+  test('an install allowed once is shown as allowed when the report is reopened, not offered again', async ($, on) => {
+    seededStore(on)
+    serveUi(on)
+    const state = world(on)
+    await $.command.run(typed('plugin', 'install packed@acme'))
+    const pane = await mountPane($)
+    await pane.press({ key: 'install' })
+    await pane.press({ key: 'confirm' })
+    await pane.unmount()
+    expect(state.core).toEqual(['install packed@acme'])
+
+    await $.command.run(typed('guard', 'report'))
+    const reopened = await mountPane($)
+    expect(await reopened.find({ key: 'install' })).toBeUndefined()
+    expect(await reopened.find({ type: 'Text', text: /^Allowed once on/ })).toBeDefined()
+    await reopened.unmount()
   })
 
   test('a version you rejected stays rejected', async ($, on) => {

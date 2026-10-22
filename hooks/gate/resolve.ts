@@ -73,9 +73,22 @@ function ambiguous(plugin: string, marketplaces: readonly string[]): Target {
   }
 }
 
-/** A relative source belongs to its marketplace, so two marketplaces' `./x` are never the same. */
+/**
+ * A source's identity: a relative source belongs to its marketplace, so two
+ * marketplaces' `./x` are never the same; an object source is its fields in
+ * name order, however a listing orders them.
+ */
 function sourceKey(item: Listed): string {
-  return typeof item.source === 'string' ? `${String(item.marketplaceName)}:${item.source}` : JSON.stringify(item.source ?? null)
+  if (typeof item.source === 'string') return `${String(item.marketplaceName)}:${item.source}`
+  return JSON.stringify(canonical(item.source ?? null))
+}
+
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical)
+  if (!isRecord(value)) return value
+  return Object.keys(value)
+    .sort()
+    .map(key => [key, canonical(value[key])])
 }
 
 /** Where a catalog entry's `source` says the plugin comes from; `marketOf` finds its marketplace when a relative source needs it. */

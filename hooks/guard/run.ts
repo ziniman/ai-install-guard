@@ -10,8 +10,7 @@ import type { RemoteSpec } from '../scan/remote'
 import { formatReport } from '../scan/report'
 import { safeLine } from '../scan/safe-text'
 import { scanFolder, scanRemote, type ScanReport } from '../scan/scan'
-import { decisionFor, MAX_REPORT_CHARS, saveLastView } from './decisions'
-import { REPORT_TEXT } from './pane'
+import { decisionFor, saveLastView, saveReport } from './decisions'
 import { PANE_ID, scanningView, viewOf } from './view'
 
 const viewAtom = atom({ plugin: 'ai-install-guard', key: 'view' } as const, null)
@@ -31,21 +30,25 @@ export type Shown =
 
 let scans = 0
 
-/** A name for one scan, unique in this session. */
+/**
+ * A name for one scan, unique in this session, that sorts after every scan
+ * started before it: the time, then a count for scans in the same moment.
+ */
 function newScanId(): string {
   scans += 1
-  return `${Date.now().toString(36)}-${scans}`
+  return `${Date.now().toString(36).padStart(10, '0')}-${scans.toString(36).padStart(6, '0')}`
 }
 
 /** Opens the pane on a scan of `how`, and leaves the verdict in it. */
 export async function showScan($: EngineInterface, target: string, how: ScanHow | (() => Promise<ScanHow>), options: ShowOptions): Promise<Shown> {
+  // Named before anything waits, so a scan asked for later is always the newer one.
+  const scanId = newScanId()
   const host = modHost($)
   const opened = await openPane($)
-  const scanId = newScanId()
-  // Until this scan's report is stored, Copy report has nothing to copy, never
-  // the previous scan's report.
-  await $.store.delete(REPORT_TEXT).catch(() => undefined)
-  await update($, viewAtom, () => ({ ...withRequest(scanningView(target, options.action), options.request), scanId }))
+  const scanning = { ...withRequest(scanningView(target, options.action), options.request), scanId }
+  if (!(await takePane($, scanning))) {
+    return { kind: 'failed', reason: `Could not verify ${safeLine(target)}: a newer scan has the pane`, view: scanning, placed: opened, superseded: true }
+  }
   $.ui.status(`AI Install Guard: scanning ${safeLine(target)}`)
   try {
     const scanOptions = {
@@ -61,21 +64,12 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
     const base = { ...withRequest(viewOf(report, options.action), options.request), scanId }
     const view = earlier === undefined ? base : { ...base, decision: earlier.decision, decidedAt: earlier.decidedAt }
     const text = formatReport(report, { details: true })
-    // A scan started since owns the pane now: this one leaves it, its report
-    // and the reopened report alone, so no press lands on the wrong scan.
-    if (!(await owns($, scanId))) return { kind: 'done', report, view, text, placed: opened, superseded: true }
-    // The report text is stored before the pane shows the verdict, so Copy
-    // report always copies this scan's report. It is held well inside the
-    // store's limit; a failed write leaves Copy with nothing, not old text.
-    const stored = text.length > MAX_REPORT_CHARS ? `${text.slice(0, MAX_REPORT_CHARS)}\n… the report was cut here to fit the store` : text
-    await $.store.set(REPORT_TEXT, stored).catch(() => undefined)
-    let shown = false
-    await update($, viewAtom, current => {
-      shown = current?.scanId === scanId
-      return shown ? view : current
-    })
-    if (!shown) return { kind: 'done', report, view, text, placed: opened, superseded: true }
-    await saveLastView($, view).catch(() => undefined)
+    // The report is stored under this scan's name before the pane shows the
+    // verdict, so Copy report copies it, and never another scan's.
+    await saveReport($, scanId, text)
+    // A scan started since owns the pane now: this one leaves it and the
+    // reopened report alone, so no press lands on the wrong scan.
+    if (!(await showOwn($, view))) return { kind: 'done', report, view, text, placed: opened, superseded: true }
     $.ui.toast(`AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}`)
     return { kind: 'done', report, view, text, placed: opened, superseded: false }
   } catch (error) {
@@ -90,14 +84,15 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
 /**
  * Opens the pane on an install the guard could not scan: Could not verify,
  * with the reason, and Install anyway behind a second confirmation.
+ * `superseded` says a newer scan has the pane instead.
  */
-export async function showUnverified($: EngineInterface, target: string, reason: string, options: ShowOptions): Promise<{ view: GuardView; placed: boolean }> {
-  const placed = await openPane($)
+export async function showUnverified($: EngineInterface, target: string, reason: string, options: ShowOptions): Promise<{ view: GuardView; placed: boolean; superseded: boolean }> {
   const scanId = newScanId()
-  // Copy report never copies the previous scan's report in this one's place.
-  await $.store.delete(REPORT_TEXT).catch(() => undefined)
-  await update($, viewAtom, () => ({ ...withRequest(scanningView(target, options.action), options.request), scanId }))
-  return { view: (await showFailure($, target, `Could not verify ${safeLine(target)}: ${safeLine(reason)}`, options, scanId)).view, placed }
+  const placed = await openPane($)
+  const scanning = { ...withRequest(scanningView(target, options.action), options.request), scanId }
+  if (!(await takePane($, scanning))) return { view: scanning, placed, superseded: true }
+  const failed = await showFailure($, target, `Could not verify ${safeLine(target)}: ${safeLine(reason)}`, options, scanId)
+  return { view: failed.view, placed, superseded: !failed.shown }
 }
 
 /**
@@ -112,20 +107,37 @@ async function showFailure($: EngineInterface, target: string, reason: string, o
     stage: '',
     verdict: { kind: 'unverified', recommendation: 'Could not verify', reasons: [reason], counts: { pass: 0, warn: 0, fail: 0, info: 0 } },
   }
-  if (!(await owns($, scanId).catch(() => false))) return { view: failed, shown: false }
-  await $.store.set(REPORT_TEXT, reason).catch(() => $.store.delete(REPORT_TEXT).catch(() => undefined))
-  let shown = false
-  await update($, viewAtom, current => {
-    shown = current?.scanId === scanId
-    return shown ? failed : current
-  }).catch(() => undefined)
-  if (shown) await saveLastView($, failed).catch(() => undefined)
-  return { view: failed, shown }
+  await saveReport($, scanId, reason)
+  return { view: failed, shown: await showOwn($, failed).catch(() => false) }
 }
 
-/** Whether the pane still shows this scan. */
-async function owns($: EngineInterface, scanId: string): Promise<boolean> {
-  return (await read($, viewAtom))?.scanId === scanId
+/** Takes the pane for a scan just started, unless a newer scan already has it. */
+async function takePane($: EngineInterface, view: GuardView): Promise<boolean> {
+  let taken = false
+  await update($, viewAtom, current => {
+    taken = current === null || current.scanId === undefined || view.scanId === undefined || current.scanId <= view.scanId
+    return taken ? view : current
+  })
+  return taken
+}
+
+/**
+ * Shows a scan's finished view while the pane still shows that scan, and
+ * saves it for /guard report. Should a newer scan take the pane while it is
+ * saved, the newer view is saved instead, so the reopened report is always
+ * the pane's.
+ */
+async function showOwn($: EngineInterface, view: GuardView): Promise<boolean> {
+  let shown = false
+  await update($, viewAtom, current => {
+    shown = current?.scanId === view.scanId
+    return shown ? view : current
+  })
+  if (!shown) return false
+  await saveLastView($, view).catch(() => undefined)
+  const now = await read($, viewAtom).catch(() => null)
+  if (now !== null && now.scanId !== view.scanId) await saveLastView($, now).catch(() => undefined)
+  return true
 }
 
 /** Opens the pane; false where no surface can show it (a headless run). */

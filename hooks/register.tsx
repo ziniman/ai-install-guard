@@ -5,8 +5,8 @@ import { BROWSE_NOTE, judge } from './gate/gate'
 import { readPluginArgs, readShellCommand } from './gate/requests'
 import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
-import { forgetDecisions, loadDecisions, loadLastView } from './guard/decisions'
-import { drawPane, REPORT_TEXT } from './guard/pane'
+import { forgetDecisions, loadDecisions, loadLastView, loadReport } from './guard/decisions'
+import { drawPane } from './guard/pane'
 import { showScan } from './guard/run'
 import { PANE_ID } from './guard/view'
 import { modHost } from './mod-host'
@@ -118,8 +118,7 @@ async function reopen($: EngineInterface): Promise<string> {
   await update($, viewAtom, () => ({ ...view, confirming: false, deciding: false }))
   const opened = await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => ({ isPlaced: false }))
   if (opened.isPlaced) return `AI Install Guard: reopened the report for ${safeLine(view.target)}.`
-  const text = await $.store.get(REPORT_TEXT)
-  return typeof text === 'string' ? text : 'AI Install Guard: the last report is no longer stored.'
+  return (await loadReport($, view.scanId)) ?? 'AI Install Guard: the last report is no longer stored.'
 }
 
 async function badge($: EngineInterface): Promise<string> {

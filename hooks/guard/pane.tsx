@@ -8,13 +8,12 @@ import { locate } from '../scan/verdict'
 import { badgeFor } from './badge'
 import { changedSinceScan } from '../gate/recheck'
 import { modHost } from '../mod-host'
-import { recordDecision, saveLastView } from './decisions'
+import { loadReport, recordDecision, saveLastView } from './decisions'
 import { grantPass, takePass } from './passes'
 import { needsConfirmation, PANE_ID, primaryLabel } from './view'
 
 const viewAtom = atom({ plugin: 'ai-install-guard', key: 'view' } as const, null)
 
-export const REPORT_TEXT = 'last-report-text'
 
 const ICON: Record<GuardStatus, string> = { fail: '✖', warn: '⚠', pass: '✔', info: '·' }
 const COLOR: Record<GuardStatus, string> = { fail: 'error', warn: 'warning', pass: 'success', info: 'subtle' }
@@ -83,7 +82,11 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     if (current.treeHash === undefined) {
       if (held !== undefined && decision === 'approved') {
         await grantPass($, { origin: held.origin, args: held.args })
-        await carryOut($, held, current)
+        // The pass is spent on this request: the reopened report shows it allowed, not the buttons again.
+        const allowed = { ...current, decision, decidedAt: Date.now(), confirming: false, deciding: false }
+        await update($, viewAtom, latest => (latest === null || latest.scanId !== current.scanId ? latest : allowed))
+        await saveLastView($, allowed).catch(() => undefined)
+        await carryOut($, held, allowed)
         return
       }
       $.ui.toast(held !== undefined ? 'AI Install Guard: rejected; nothing was installed' : 'AI Install Guard: closed; the scan read nothing, so there is no decision to remember')
@@ -146,8 +149,9 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
   const offersBadge = view.treeHash !== undefined && (view.verdict?.kind === 'safe' || view.verdict?.kind === 'caution')
 
   const copy = async () => {
-    const text = await $.store.get(REPORT_TEXT)
-    const result = await $.ui.copy({ text: typeof text === 'string' ? text : 'No report yet.', surface: e.surface })
+    // Only this scan's own report: never another scan's in its place.
+    const text = await loadReport($, view.scanId)
+    const result = await $.ui.copy({ text: text ?? 'No report yet.', surface: e.surface })
     $.ui.toast(result.isCopied ? 'AI Install Guard: report copied' : 'AI Install Guard: could not copy the report here')
   }
 
@@ -274,8 +278,9 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
 
       {view.decision !== undefined && (
         <Text color={view.decision === 'approved' ? 'success' : 'error'}>
-          {view.decision === 'approved' ? 'Approved' : 'Rejected'}
-          {view.decidedAt === undefined ? '' : ` on ${new Date(view.decidedAt).toISOString().slice(0, 10)}`}. The decision is saved for this exact version; /guard forget clears it.
+          {view.treeHash === undefined ? 'Allowed once' : view.decision === 'approved' ? 'Approved' : 'Rejected'}
+          {view.decidedAt === undefined ? '' : ` on ${new Date(view.decidedAt).toISOString().slice(0, 10)}`}
+          {view.treeHash === undefined ? '. Nothing could be pinned, so nothing is remembered; the same install is held again next time.' : '. The decision is saved for this exact version; /guard forget clears it.'}
         </Text>
       )}
       {view.decision !== undefined && offersBadge && (

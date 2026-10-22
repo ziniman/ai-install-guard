@@ -22,6 +22,8 @@ export type Decision = {
 const DECISIONS = 'decisions'
 /** Room for the report text, well inside the store's 4 MiB in all. */
 export const MAX_REPORT_CHARS = 1_000_000
+/** The last report as text, under the name of the scan that wrote it. */
+const REPORT_TEXT = 'last-report-text'
 const LAST_VIEW = 'last-view'
 /** The store is capped at 4 MiB in all: keep the newest decisions only. */
 const MAX_DECISIONS = 500
@@ -88,6 +90,23 @@ export async function decisionFor($: EngineInterface, version: { treeHash: strin
  */
 export async function pinnedDecision($: EngineInterface, pin: { root: string; sha: string }): Promise<Decision | undefined> {
   return (await loadDecisions($)).find(item => item.sha === pin.sha && item.root === pin.root)
+}
+
+/**
+ * Stores the text report of one scan, held well inside the store's limit. A
+ * failed write leaves no report, never another scan's.
+ */
+export async function saveReport($: EngineInterface, scanId: string, text: string): Promise<void> {
+  const kept = text.length > MAX_REPORT_CHARS ? `${text.slice(0, MAX_REPORT_CHARS)}\n… the report was cut here to fit the store` : text
+  await $.store.set(REPORT_TEXT, { scanId, text: kept }).catch(() => $.store.delete(REPORT_TEXT).catch(() => undefined))
+}
+
+/** The text report of the scan `scanId` names, if it is still the one stored. */
+export async function loadReport($: EngineInterface, scanId: string | undefined): Promise<string | undefined> {
+  const stored = await $.store.get(REPORT_TEXT)
+  if (stored === null || typeof stored !== 'object') return undefined
+  const { scanId: storedId, text } = stored as { scanId?: unknown; text?: unknown }
+  return storedId === scanId && typeof text === 'string' ? text : undefined
 }
 
 /**
