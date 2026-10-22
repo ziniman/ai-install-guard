@@ -59,6 +59,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
         root: current.root,
         treeHash: current.treeHash,
         verdict: current.verdict.recommendation,
+        verdictKind: current.verdict.kind,
         decision,
         overridden,
         decidedAt,

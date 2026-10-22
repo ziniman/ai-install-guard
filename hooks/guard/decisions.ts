@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { GuardView } from '../../types'
+import type { GuardVerdict, GuardView } from '../../types'
 import { safeLine } from '../scan/safe-text'
 
 /** One decision, remembered across sessions so the same tree is never judged twice. */
@@ -9,6 +9,8 @@ export type Decision = {
   root?: string
   treeHash: string
   verdict: string
+  /** The verdict the decision was made on; an approval holds up to this one. */
+  verdictKind: GuardVerdict['kind']
   decision: 'approved' | 'rejected'
   /** Approved although the verdict was Do not install or Could not verify. */
   overridden: boolean
@@ -21,6 +23,8 @@ export const MAX_REPORT_CHARS = 1_000_000
 const LAST_VIEW = 'last-view'
 /** The store is capped at 4 MiB in all: keep the newest decisions only. */
 const MAX_DECISIONS = 500
+/** How serious each verdict is, to tell whether an approval still covers it. */
+const SEVERITY: Record<GuardVerdict['kind'], number> = { safe: 0, caution: 1, unverified: 2, reject: 3 }
 
 export async function loadDecisions($: EngineInterface): Promise<Decision[]> {
   const stored = await $.store.get(DECISIONS)
@@ -55,8 +59,17 @@ export async function forgetDecisions($: EngineInterface, name: string): Promise
   return forgotten
 }
 
-export async function decisionFor($: EngineInterface, treeHash: string): Promise<Decision | undefined> {
-  return (await loadDecisions($)).find(item => item.treeHash === treeHash)
+/**
+ * The decision that still holds for this tree at this verdict. A rejection
+ * always holds. An approval holds only while the verdict is no worse than the
+ * one it was given on: the same files can judge worse in another place (a
+ * copy whose absolute link now leaves the folder), and that needs a new look.
+ */
+export async function decisionFor($: EngineInterface, treeHash: string, kind: GuardVerdict['kind']): Promise<Decision | undefined> {
+  const found = (await loadDecisions($)).find(item => item.treeHash === treeHash)
+  if (found === undefined || found.decision === 'rejected') return found
+  const approvedUpTo = SEVERITY[found.verdictKind] as number | undefined
+  return approvedUpTo !== undefined && SEVERITY[kind] <= approvedUpTo ? found : undefined
 }
 
 /**

@@ -67,8 +67,9 @@ async function scan($: EngineInterface, target: string, details: boolean): Promi
       // Stage names can carry a candidate's own words (a plugin's name).
       onStage: stage => update($, viewAtom, current => (current === null ? current : { ...current, stage: safeLine(stage) })).then(() => undefined),
     })
-    // A tree you already decided on shows that decision, not the buttons again.
-    const earlier = report.inventory === undefined ? undefined : await decisionFor($, report.inventory.treeHash).catch(() => undefined)
+    // A tree you already decided on shows that decision, not the buttons
+    // again, unless it now judges worse than when you approved it.
+    const earlier = report.inventory === undefined ? undefined : await decisionFor($, report.inventory.treeHash, report.verdict.kind).catch(() => undefined)
     const view = earlier === undefined ? viewOf(report, 'approve') : { ...viewOf(report, 'approve'), decision: earlier.decision, decidedAt: earlier.decidedAt }
     const text = formatReport(report, { details: true })
     // The report text is stored before the pane shows the verdict, so Copy

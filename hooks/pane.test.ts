@@ -1,5 +1,7 @@
-import { describe, expect, mock, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 
+import type { GuardView } from '../types'
 import { PANE_ID } from './guard/view'
 import { FIXTURES } from './test-support/fixtures.gen'
 import { paneProps, serveFixture, serveUi, typed, type FixtureFiles } from './test-support/memfs'
@@ -266,8 +268,8 @@ describe('pane review fixes', () => {
   test('forget matches a whole name, not part of another', async ($, on) => {
     mock.store(on, {
       decisions: [
-        { target: '/w/tool', root: '/w/tool', treeHash: 'sha256:a', verdict: 'Safe to install', decision: 'approved', overridden: false, decidedAt: 1 },
-        { target: '/w/my-tool-2', root: '/w/my-tool-2', treeHash: 'sha256:b', verdict: 'Safe to install', decision: 'approved', overridden: false, decidedAt: 2 },
+        { target: '/w/tool', root: '/w/tool', treeHash: 'sha256:a', verdict: 'Safe to install', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 1 },
+        { target: '/w/my-tool-2', root: '/w/my-tool-2', treeHash: 'sha256:b', verdict: 'Safe to install', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 2 },
       ],
     })
     expect((await $.command.run(typed('guard', 'forget tool'))).text).toContain('forgot 1 decision')
@@ -350,7 +352,65 @@ describe('pane review fixes, round three', () => {
   })
 
   test('forget finds a folder by its name with a trailing slash', async ($, on) => {
-    mock.store(on, { decisions: [{ target: '/w/tool', root: '/w/tool', treeHash: 'sha256:a', verdict: 'Safe to install', decision: 'approved', overridden: false, decidedAt: 1 }] })
+    mock.store(on, { decisions: [{ target: '/w/tool', root: '/w/tool', treeHash: 'sha256:a', verdict: 'Safe to install', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 1 }] })
     expect((await $.command.run(typed('guard', 'forget tool/'))).text).toContain('forgot 1 decision')
+  })
+})
+
+describe('pane review fixes, round four', () => {
+  // A store the test can read and seed: the decision is set on the tree the
+  // first scan saw.
+  const serveStore = (on: On) => {
+    const store = new Map<string, unknown>()
+    on('store.get', ($, e) => ({ value: store.get(e.key) }))
+    on('store.set', ($, e) => (store.set(e.key, e.value), { value: undefined }))
+    on('store.delete', ($, e) => (store.delete(e.key), { value: undefined }))
+    return store
+  }
+  const seed = (store: Map<string, unknown>, decision: 'approved' | 'rejected', verdictKind?: string) => {
+    const view = store.get('last-view') as GuardView
+    store.set('decisions', [{ target: ROOT, root: ROOT, treeHash: view.treeHash, verdict: 'Safe to install', verdictKind, decision, overridden: false, decidedAt: 1 }])
+  }
+  const rescan = async ($: Engine) => {
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    return $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+  }
+
+  test('an approval does not carry over to a worse verdict for the same tree', async ($, on) => {
+    const store = serveStore(on)
+    serveUi(on)
+    serveFixture(on, ROOT, fixture('curl-hook'))
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    seed(store, 'approved', 'safe')
+    const pane = await rescan($)
+
+    expect(await pane.find({ key: 'install' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /^Approved on/ })).toBeUndefined()
+    await pane.unmount()
+  })
+
+  test('an approval with no recorded verdict is not trusted', async ($, on) => {
+    const store = serveStore(on)
+    serveUi(on)
+    serveFixture(on, ROOT, fixture('clean-plugin'))
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    seed(store, 'approved')
+    const pane = await rescan($)
+
+    expect(await pane.find({ key: 'install' })).toBeDefined()
+    await pane.unmount()
+  })
+
+  test('a rejection holds whatever the verdict', async ($, on) => {
+    const store = serveStore(on)
+    serveUi(on)
+    serveFixture(on, ROOT, fixture('curl-hook'))
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    seed(store, 'rejected', 'safe')
+    const pane = await rescan($)
+
+    expect(await pane.find({ key: 'install' })).toBeUndefined()
+    expect(await pane.find({ type: 'Text', text: /^Rejected on/ })).toBeDefined()
+    await pane.unmount()
   })
 })
