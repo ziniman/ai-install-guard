@@ -44,6 +44,27 @@ const BUILT_IN_COMMANDS = new Set([
 
 const CLAIMS_ANTHROPIC = /\b(?:by|from|made\s+by|official(?:ly)?|verified\s+by|endorsed\s+by|approved\s+by)\s+anthropic\b|\banthropic[-\s]?(?:official|verified|certified)\b|\bofficial\s+claude\b/i
 
+/**
+ * What is wrong with a piece of model-facing text on its own (a prompt or
+ * agent hook): injection fails when it reaches out, reading credentials
+ * fails, anything else is a warning, as any model hook is.
+ */
+export function promptConcerns(text: string): { status: Status; reasons: string[] } {
+  const reachesOut = NETWORK_COMMAND.test(text) || NETWORK_CODE.test(text) || /https?:\/\//.test(text) || CREDENTIAL_PATH.test(text)
+  const reasons: string[] = []
+  let status: Status = 'warn'
+  if (INJECTION.some(pattern => pattern.test(text))) {
+    reasons.push('prompt injection')
+    if (reachesOut) status = 'fail'
+  }
+  if (CREDENTIAL_PATH.test(text) && READ_VERB.test(text)) {
+    reasons.push('reads credentials')
+    status = 'fail'
+  }
+  if (SCANNER_ADDRESS.some(pattern => pattern.test(text))) reasons.push('talks to the scanner')
+  return { status, reasons }
+}
+
 export function promptChecks(ctx: ScanContext): CheckResult[] {
   const injection: Evidence[] = []
   const credentials: Evidence[] = []
@@ -138,7 +159,7 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
   const results = [
     row({ id: 'prompts.injection', group: GROUP, title: 'Prompt injection', advice: 'Skills, commands and agents are instructions the model follows. Text that tells it to ignore you, hide what it does or send data out is an attack, more so when it names a URL or your keys.' }, injection),
     row({ id: 'prompts.credentials', group: GROUP, title: 'Instructions that touch credentials', advice: 'A skill has no reason to read your keys, tokens or browser data. Do not install one that asks the model to.' }, credentials),
-    row({ id: 'prompts.tools', group: GROUP, title: 'Tool permissions it grants itself', advice: 'allowed-tools runs those tools without asking you. Bash with no pattern, a wildcard or an interpreter is the same as giving it your shell.' }, tools),
+    row({ id: 'prompts.tools', group: GROUP, title: 'Tool permissions it grants itself', advice: 'allowed-tools runs those tools without asking you. Bash with no pattern, a wildcard, an interpreter or a package runner is the same as giving it your shell.' }, tools),
     row({ id: 'prompts.remote', group: GROUP, title: 'Instructions fetched at run time', advice: 'Instructions loaded from a URL can change after this scan, so they were never checked. Prefer skills that ship their instructions.' }, remote),
     row({ id: 'prompts.names', group: GROUP, title: 'Names and claims', advice: 'A name that shadows a built-in command or claims to be from Anthropic is a common way to be trusted by mistake.' }, names),
     row({ id: 'prompts.scanner', group: GROUP, title: 'Text addressed to a security scanner', advice: 'Legitimate plugins do not talk to scanners. This text cannot change the verdict here; treat it as a sign of intent.' }, addressed),
@@ -159,7 +180,8 @@ function judgeTool(tool: string): { status: Status; why: string } | undefined {
   const bash = /^Bash\s*(?:\(([\s\S]*)\))?$/i.exec(tool.trim())
   if (bash === null) return undefined
   const pattern = bash[1]?.trim()
-  if (pattern === undefined) return { status: 'warn', why: 'any shell command, no pattern' }
+  // Bash with no pattern runs any command unasked, exactly as Bash(*) does.
+  if (pattern === undefined) return { status: 'fail', why: 'any shell command: no pattern narrows it' }
   if (/^\*+\s*(?::\s*\*+)?$/.test(pattern) || pattern === '') return { status: 'fail', why: 'a wildcard: any shell command' }
   // The program the pattern allows, without its path: `/bin/sh:*` is `sh`.
   const program = basename(/^[^\s:]+/.exec(pattern)?.[0] ?? '').toLowerCase()

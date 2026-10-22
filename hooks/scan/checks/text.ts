@@ -136,31 +136,52 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
   const mark = (from: number, to: number, kind: number): void => {
     kinds.fill(kind, from, Math.min(to, text.length))
   }
-  /** A comment starting at `at` fills its line when only blanks precede it. */
-  const commentKind = (at: number): number => {
-    const lineStart = text.lastIndexOf('\n', at - 1) + 1
-    return /^[ \t]*$/.test(text.slice(lineStart, at)) ? COMMENT : TRAILING
+  // What ends a line comment: JavaScript also ends one at a lone CR, U+2028
+  // and U+2029, Python at a lone CR. Missing one would read a whole
+  // CR-only file as one comment.
+  const isLineEnd = (char: string | undefined): boolean =>
+    char === '\n' || (language !== 'shell' && char === '\r') || (language === 'js' && (char === '\u2028' || char === '\u2029'))
+  const lineEndFrom = (from: number): number => {
+    let j = from
+    while (j < text.length && !isLineEnd(text[j])) j += 1
+    return j
   }
+  // Whether anything but blanks came earlier on the current line, kept as
+  // the scan goes, so telling a whole-line comment from a trailing one is
+  // constant time however many comments share a line.
+  let lineHasCode = false
+  const commentKind = (): number => (lineHasCode ? TRAILING : COMMENT)
+
   let i = 0
   let lastSignificant = ''
   let lastWord = ''
   // After a `/` that opened no literal on its line, the rest of that line is
   // not tried again: one pass per line, so `[/[/[/...` cannot stall the scan.
   let noRegexBefore = 0
+  // Which `(` were opened by if, while, for or with: after their `)` a
+  // statement starts, so a slash there opens a pattern, not a division.
+  const parens: boolean[] = []
+
   while (i < text.length) {
     const char = text[i] as string
     const next = text[i + 1]
+    if (isLineEnd(char)) {
+      lineHasCode = false
+      i += 1
+      continue
+    }
     if (language === 'js' && char === '/' && next === '/') {
-      const end = text.indexOf('\n', i)
-      const stop = end === -1 ? text.length : end
-      mark(i, stop, commentKind(i))
+      const stop = lineEndFrom(i)
+      mark(i, stop, commentKind())
       i = stop
       continue
     }
     if (language === 'js' && char === '/' && next === '*') {
-      const end = text.indexOf('*/', i + 2)
-      const stop = end === -1 ? text.length : end + 2
-      mark(i, stop, commentKind(i))
+      const close = text.indexOf('*/', i + 2)
+      const stop = close === -1 ? text.length : close + 2
+      mark(i, stop, commentKind())
+      // A block comment may end mid-line: what follows on that line is code.
+      if (text.slice(i, stop).includes('\n')) lineHasCode = false
       i = stop
       continue
     }
@@ -168,17 +189,20 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
     // unescaped blank (`echo \ #` keeps the `#` in the word) or a line start.
     const isShellComment = language === 'shell' && (i === 0 || (/\s/.test(text[i - 1] as string) && text[i - 2] !== '\\'))
     if (char === '#' && (language === 'python' || isShellComment)) {
-      const end = text.indexOf('\n', i)
-      const stop = end === -1 ? text.length : end
-      mark(i, stop, commentKind(i))
+      const stop = lineEndFrom(i)
+      mark(i, stop, commentKind())
       i = stop
       continue
     }
+    if (/[ \t\f\v]/.test(char)) {
+      i += 1
+      continue
+    }
+    lineHasCode = true
     if (char === '`' && language === 'js') {
       // A template literal: its text is a string, each `${...}` inside it is
       // code (and may hold strings and templates of its own).
-      const end = templateEnd(text, i, mark, STRING, CODE)
-      i = end
+      i = templateEnd(text, i, mark, STRING, CODE)
       lastSignificant = '`'
       continue
     }
@@ -208,7 +232,7 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
     if (language === 'js' && char === '/' && i >= noRegexBefore && regexCanStart(lastSignificant, lastWord)) {
       let j = i + 1
       let inClass = false
-      while (j < text.length && text[j] !== '\n') {
+      while (j < text.length && !isLineEnd(text[j])) {
         if (text[j] === '\\') {
           j += 2
           continue
@@ -218,9 +242,6 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
         else if (text[j] === '/' && !inClass) break
         j += 1
       }
-      // Only a literal with an escape inside counts as a pattern: real
-      // patterns nearly always have one, and code dressed up as a regex by
-      // stray slashes rarely does, so it stays code.
       if (text[j] === '/') {
         // The literal is skipped as one unit either way, so a `/*` inside it
         // never opens a comment. Only one with an escape counts as a pattern;
@@ -235,21 +256,21 @@ export function spanKinds(text: string, language: 'js' | 'python' | 'shell' | 'o
       }
       noRegexBefore = j
     }
-    if (!/\s/.test(char)) {
-      const before = lastSignificant
-      // `x++ / y` and `x-- / y` divide: a postfix operator ends an operand.
-      lastSignificant = (char === '+' || char === '-') && text[i - 1] === char ? 'a' : char
-      if (/[A-Za-z_$]/.test(char)) {
-        let j = i
-        while (j < text.length && /[\w$]/.test(text[j] as string)) j += 1
-        // `obj.in` or `x.return` is a property, an operand, never a keyword.
-        lastWord = before === '.' ? '' : text.slice(i, j)
-        lastSignificant = 'a'
-        i = j
-        continue
-      }
-      lastWord = ''
+    const before = lastSignificant
+    // `x++ / y` and `x-- / y` divide: a postfix operator ends an operand.
+    lastSignificant = (char === '+' || char === '-') && text[i - 1] === char ? 'a' : char
+    if (char === '(') parens.push(/^(?:if|while|for|with)$/.test(lastWord))
+    if (char === ')' && parens.pop() === true) lastSignificant = ';'
+    if (/[A-Za-z_$]/.test(char)) {
+      let j = i
+      while (j < text.length && /[\w$]/.test(text[j] as string)) j += 1
+      // `obj.in` or `x.return` is a property, an operand, never a keyword.
+      lastWord = before === '.' ? '' : text.slice(i, j)
+      lastSignificant = 'a'
+      i = j
+      continue
     }
+    lastWord = ''
     i += 1
   }
   return index => (['code', 'string', 'comment', 'regex', 'trailing-comment'] as const)[kinds[index] ?? CODE] as SpanKind

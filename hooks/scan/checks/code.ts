@@ -16,6 +16,7 @@ import {
   PYTHON_PROCESS,
   SECRET_ENV,
   SHELL_EVAL,
+  UNPINNED_RUNNER,
   WRITE_CODE,
   WRITE_SHELL,
 } from './patterns'
@@ -109,10 +110,15 @@ function judged(file: CodeFile, match: Match, status: Status, excerpt: string): 
 }
 
 /** Matches of `pattern` in the file's code and strings, not its comments or patterns. */
+/**
+ * Matches of `pattern` that may run: everything but whole-line comments and
+ * real patterns. A trailing comment counts here, since a tokenizer can be
+ * fooled into one, and gates such as "does it write files" must not be.
+ */
 function active(file: CodeFile, pattern: RegExp, limit = 20): Match[] {
   return findAll(file.text, pattern, limit, index => {
     const kind = file.kindAt(index)
-    return kind === 'code' || kind === 'string'
+    return kind !== 'comment' && kind !== 'regex'
   })
 }
 
@@ -250,22 +256,39 @@ function obfuscationCheck(ctx: ScanContext): CheckResult {
     for (const match of liveFirst(/(?:^[ \t]*['"`]?[A-Za-z0-9+/]{40,120}={0,2}['"`]?[ \t]*[,+\\]?[ \t]*\r?\n){4,}/gm)) found.push({ match, what: 'base64 wrapped over several lines' })
     for (const match of liveFirst(/String\.fromCharCode\s*\(\s*(?:\d+\s*,\s*){8,}|\bchr\s*\(\s*\d+\s*\)\s*\+\s*chr\s*\(/g)) found.push({ match, what: `text built from character codes: ${match.excerpt}` })
     for (const match of liveFirst(/(?:\\x[0-9a-fA-F]{2}){16,}|(?:\\u00[0-9a-fA-F]{2}){12,}/g)) found.push({ match, what: 'long run of escaped bytes' })
-    // Adjacent literals joined, whatever their quotes: "child" + '_process'.
-    const joined = text.replace(/(['"`])[ \t]*\+[ \t]*(['"`])/g, '')
+    // Adjacent literals joined, whatever their quotes and across line breaks:
+    // "child" + '_process', or 'child'⏎+ '_process'.
+    const JOIN = /(['"`])\s*\+\s*(['"`])/g
+    const liveJoins = findAll(text, JOIN, Number.MAX_SAFE_INTEGER, index => {
+      const plus = text.indexOf('+', index)
+      return !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(plus))
+    })
+    // Only the live joins are joined: one in a comment or pattern stays as written.
+    let joined = text
+    if (liveJoins.length > 0) {
+      let rebuilt = ''
+      let from = 0
+      for (const join of liveJoins) {
+        rebuilt += text.slice(from, join.index)
+        from = join.index + join.text.length
+      }
+      joined = rebuilt + text.slice(from)
+    }
     if (joined !== text) {
       // A dangerous name that only appears once adjacent strings are joined
-      // was split to hide it. Joining keeps lines intact, so each join is
-      // judged where its `+` sits: one inside a comment or pattern is only
-      // reported, like any other mention there.
-      const joins = findAll(text, /(['"`])[ \t]*\+[ \t]*(['"`])/g, Number.MAX_SAFE_INTEGER, index => {
-        const plus = text.indexOf('+', index)
-        return !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(plus))
-      })
-      const liveJoinLines = new Set(joins.map(join => join.line))
-      const before = new Set(findAll(text, SPLIT_NAMES, Number.MAX_SAFE_INTEGER).map(match => `${match.line}:${match.text}`))
-      for (const match of findAll(joined, SPLIT_NAMES, Number.MAX_SAFE_INTEGER)) {
-        if (!liveJoinLines.has(match.line)) continue
-        if (!before.has(`${match.line}:${match.text}`)) {
+      // was split to hide it: compare how often each name appears before and
+      // after (joins in comments and patterns do not count), and report it at
+      // the first live join.
+      const count = (source: string): Map<string, number> => {
+        const counts = new Map<string, number>()
+        for (const match of findAll(source, SPLIT_NAMES, Number.MAX_SAFE_INTEGER)) counts.set(match.text, (counts.get(match.text) ?? 0) + 1)
+        return counts
+      }
+      const beforeCounts = count(text)
+      const firstJoin = liveJoins[0] as Match
+      for (const [name, after] of count(joined)) {
+        if (after > (beforeCounts.get(name) ?? 0)) {
+          const match = { ...firstJoin, text: name }
           // A split name is a warning; once joined, if the code runs programs or
           // builds code (require("child" + '_process').exec), it fails.
           const runsJoined = [PROCESS_CODE, PYTHON_PROCESS, CODE_FROM_TEXT, SHELL_EVAL, PYTHON_CODE_FROM_TEXT].some(pattern => pattern.test(joined))
@@ -428,7 +451,7 @@ function installScriptsCheck(ctx: ScanContext): CheckResult {
     for (const name of LIFECYCLE_SCRIPTS) {
       const script = parsed.value.scripts[name]
       if (typeof script !== 'string') continue
-      const remote = NETWORK_COMMAND.test(script) || DOWNLOAD_AND_RUN.test(script) || /\bnode\s+-e\b|\|\s*(?:ba|z)?sh\b|https?:\/\//.test(script)
+      const remote = NETWORK_COMMAND.test(script) || DOWNLOAD_AND_RUN.test(script) || UNPINNED_RUNNER.test(script) || /\bnode\s+-e\b|\|\s*(?:ba|z)?sh\b|https?:\/\//.test(script)
       const line = findFirst(raw, new RegExp(`"${name}"\\s*:`))?.line
       evidence.push({ file: file.path, line, excerpt: `${name}: ${script}`, status: cap(remote ? 'fail' : 'warn') })
     }

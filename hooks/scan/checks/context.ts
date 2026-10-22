@@ -87,6 +87,8 @@ export type ScanContext = {
   readme?: { path: string; text: string }
   modules: ModuleInfo[]
   hookCommands: HookCommand[]
+  /** Every file a classic hook command names, whatever role it ends up with. */
+  hookScripts: Set<string>
   hookConfigErrors: { file: string; error: string }[]
   mcpServers: McpServer[]
   /** Markdown the model reads: skills, commands, agents, output styles. */
@@ -251,7 +253,15 @@ export function buildContext(tree: ScannedTree): ScanContext {
     }
   }
   if (manifest !== undefined && isRecord(manifest.hooks) && realManifest !== undefined) {
-    collectHookCommands(manifest.hooks, realManifest, text(realManifest) ?? '', hookCommands)
+    // Inline hooks: `{ "hooks": { Event: [...] } }` or the event map itself,
+    // and hooks modules named there (relative to the plugin root).
+    const inline = manifest.hooks
+    const events = isRecord(inline.hooks) ? inline : { hooks: Object.fromEntries(Object.entries(inline).filter(([key]) => key !== 'modules' && key !== 'description')) }
+    collectHookCommands(events, realManifest, text(realManifest) ?? '', hookCommands)
+    for (const entry of stringList(inline.modules)) {
+      const resolved = joinPath('', entry)
+      if (resolved !== undefined) moduleEntries.push({ path: resolved, declaredAs: entry })
+    }
   }
 
   const modules = moduleEntries.map(entry => readModule(entry.path, entry.declaredAs, realOf, text))
@@ -273,15 +283,19 @@ export function buildContext(tree: ScannedTree): ScanContext {
 
   // Files (and links) that hooks, servers or prompts name are run, not just shipped.
   const linkPaths = tree.inventory.entries.filter(entry => entry.kind === 'link').map(entry => entry.path)
-  const referenced = (haystack: string, role: FileRole, skipMarkdown: boolean): void => {
-    // `hooks//run.sh`, `"hooks/run.sh"` and `cd hooks && sh run.sh` all name
-    // hooks/run.sh: paths are compared with quotes and doubled slashes
-    // removed, and a bare file name counts when one file has it.
+  // `hooks//run.sh`, `"hooks/run.sh"` and `cd hooks && sh run.sh` all name
+  // hooks/run.sh: paths are compared with quotes and doubled slashes
+  // removed, and a bare file name counts when one file has it.
+  const namedIn = (haystack: string, path: string): boolean => {
     const normalized = haystack.replace(/["']/g, ' ').replace(/\/{2,}/g, '/')
+    if (normalized.includes(path)) return true
     const words = new Set(normalized.split(/[\s;&|()<>=]+/).map(word => word.split('/').pop() ?? word))
+    return words.has(basename(path)) && nameCount.get(basename(path)) === 1
+  }
+  const referenced = (haystack: string, role: FileRole, skipMarkdown: boolean): void => {
     for (const path of [...paths, ...linkPaths]) {
       if (skipMarkdown && isMarkdown(path)) continue
-      const named = normalized.includes(path) || (words.has(basename(path)) && nameCount.get(basename(path)) === 1)
+      const named = namedIn(haystack, path)
       if (!named) continue
       assign(path, role)
       const real = aliases.get(path)
@@ -290,7 +304,11 @@ export function buildContext(tree: ScannedTree): ScanContext {
   }
   const nameCount = new Map<string, number>()
   for (const path of [...paths, ...linkPaths]) nameCount.set(basename(path), (nameCount.get(basename(path)) ?? 0) + 1)
-  for (const hook of hookCommands) referenced(hook.command, 'hook-script', false)
+  const hookScripts = new Set<string>()
+  for (const hook of hookCommands) {
+    referenced(hook.command, 'hook-script', false)
+    for (const path of [...paths, ...linkPaths]) if (namedIn(hook.command, path)) hookScripts.add(aliases.get(path) ?? path)
+  }
   for (const server of mcpServers) referenced([server.command ?? '', ...server.args].join(' '), 'server', false)
   for (const prompt of prompts) {
     const body = text(prompt) ?? ''
@@ -345,6 +363,7 @@ export function buildContext(tree: ScannedTree): ScanContext {
     readme: readmePath !== undefined && readmeText !== undefined ? { path: readmePath, text: readmeText } : undefined,
     modules,
     hookCommands,
+    hookScripts,
     hookConfigErrors,
     mcpServers,
     prompts,

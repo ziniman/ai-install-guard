@@ -18,6 +18,7 @@ import {
   WRITE_SHELL,
 } from './patterns'
 import { languageOf, secretName } from './code'
+import { promptConcerns } from './prompts'
 import { findAll, findFirst, spanKinds, type Match } from './text'
 import { row, type CheckResult, type Evidence } from './types'
 
@@ -62,13 +63,21 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
         status: isLocal ? 'warn' : 'fail',
       })
     } else {
-      commands.push({ file: hook.file, line: hook.line, excerpt: `on ${where}: asks a model (${hook.type}): ${hook.command}`, status: 'warn' })
+      // A prompt or agent hook is instructions the model follows: judged as a prompt.
+      const concerns = promptConcerns(hook.command)
+      commands.push({
+        file: hook.file,
+        line: hook.line,
+        excerpt: `on ${where}: asks a model (${hook.type}): ${hook.command}${concerns.reasons.length > 0 ? `  [${concerns.reasons.join('; ')}]` : ''}`,
+        status: concerns.status,
+      })
     }
   }
 
   // Scripts the hooks run are part of the hook. A match in a comment is only reported.
   for (const file of ctx.files) {
-    if (ctx.roleOf(file.path) !== 'hook-script') continue
+    // Every script a hook runs, even one a hooks module also imports.
+    if (!ctx.hookScripts.has(file.path) && ctx.roleOf(file.path) !== 'hook-script') continue
     const text = ctx.text(file.path)
     if (text === undefined) continue
     const kindAt = spanKinds(text, languageOf(file.path, text))
@@ -81,7 +90,9 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
       if (kind === 'trailing-comment') return { file: file.path, line: match.line, excerpt: `${shown} (in a comment after code)`, status: 'warn' }
       return { file: file.path, line: match.line, excerpt: shown, status: 'fail' }
     }
-    const live = (pattern: RegExp): boolean => findAll(text, pattern, 10_000).some(match => !isInert(match))
+    // Gates (does the script write at all?) count every match but those in
+    // whole-line comments or real patterns: a trailing comment is no proof.
+    const live = (pattern: RegExp): boolean => findAll(text, pattern, 1, index => !['comment', 'regex'].includes(kindAt(index))).length > 0
     // Live matches first, so comments cannot crowd out a real command.
     const matches = (pattern: RegExp): Match[] => {
       const all = findAll(text, pattern, 10_000)

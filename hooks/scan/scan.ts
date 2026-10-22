@@ -50,16 +50,16 @@ export async function scanFolder(host: Host, target: string, path: string, optio
     // checked from its own folder, as Claude Code would read it.
     for (const source of marketplaceSources(ctx)) {
       if (source.kind === 'overflow') {
-        results.push(overflowRow(source.count))
+        results = mergeResults(results, [overflowRow(source.count)])
         continue
       }
       if (source.kind === 'remote') {
-        results.push(remoteSourceNote(source.name, source.description))
+        results = mergeResults(results, [remoteSourceNote(source.name, source.description)])
         continue
       }
       const nested = await subTree(tree, source.path)
       if (nested === undefined) {
-        results.push(missingSourceRow(source.name, source.path))
+        results = mergeResults(results, [missingSourceRow(source.name, source.path)])
         continue
       }
       results = mergeResults(results, prefixed(await checksFor(host, buildContext(nested), options), source.path))
@@ -141,6 +141,7 @@ async function subTree(tree: ScannedTree, prefix: string): Promise<ScannedTree |
       if (entry.kind !== 'link' || !entry.isInside || entry.landsAt === undefined) return { ...entry, path }
       // A link's landing, seen from the nested plugin: inside it, or outside
       // it (once installed on its own, the plugin no longer holds that file).
+      if (entry.landsAt === prefix) return { ...entry, path, landsAt: '.' }
       return entry.landsAt.startsWith(`${prefix}/`)
         ? { ...entry, path, landsAt: entry.landsAt.slice(prefix.length + 1) }
         : { ...entry, path, landsAt: `${tree.inventory.root}/${entry.landsAt}`, isInside: false }

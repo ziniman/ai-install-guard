@@ -26,6 +26,7 @@ export function formatReport(report: ScanReport, options: { details?: boolean } 
     const files = inventory.entries.filter(entry => entry.kind === 'file').length
     lines.push(`${report.kind === undefined ? '' : `A ${report.kind} · `}${files} files (${formatBytes(inventory.totalBytes)}) · tree ${inventory.treeHash}`)
     lines.push(`Folder: ${safeLine(inventory.root)}`)
+    if (inventory.skipped.length > 0) lines.push(`Not read: ${inventory.skipped.map(safeLine).join(', ')}`)
   }
   if (report.results.length === 0) return lines.join('\n')
 

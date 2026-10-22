@@ -16,7 +16,7 @@ export const DOWNLOAD_AND_RUN =
 export const UNPINNED_RUNNER = /\b(?:npx|bunx|pnpx)\s+(?:-y\b|--yes\b)|\b(?:uvx|pipx\s+run)\s+(?!\S+(?:==|@)\d)/
 
 /** Shell `eval` and piping into a shell. */
-export const SHELL_EVAL = /(?:^|[\s;&|(])eval\s|\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\s*(?:$|[;&|)])/
+export const SHELL_EVAL = /(?:^|[\s;&|(])eval\s|\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\s*(?:$|[;&|)])/m
 
 /** Places that hold credentials. */
 export const CREDENTIAL_PATH =
@@ -24,7 +24,7 @@ export const CREDENTIAL_PATH =
 
 /** Environment variables that hold secrets, and dumps of the whole environment. */
 export const SECRET_ENV =
-  /\b(?:ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|GITLAB_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AZURE_CLIENT_SECRET|GOOGLE_APPLICATION_CREDENTIALS|SLACK_BOT_TOKEN|SLACK_TOKEN|STRIPE_SECRET_KEY|HF_TOKEN|HUGGING_FACE_HUB_TOKEN)\b|\bJSON\.stringify\s*\(\s*process\.env\s*\)|\bObject\.(?:entries|keys|values)\s*\(\s*process\.env\s*\)|\bjson\.dumps\s*\(\s*(?:dict\s*\(\s*)?os\.environ|(?:^|[\s;&|])printenv\s*(?:$|[|>;&])|(?:^|[\s;&|])env\s*\|/
+  /\b(?:ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|GITLAB_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AZURE_CLIENT_SECRET|GOOGLE_APPLICATION_CREDENTIALS|SLACK_BOT_TOKEN|SLACK_TOKEN|STRIPE_SECRET_KEY|HF_TOKEN|HUGGING_FACE_HUB_TOKEN)\b|\bJSON\.stringify\s*\(\s*process\.env\s*\)|\bObject\.(?:entries|keys|values)\s*\(\s*process\.env\s*\)|\bjson\.dumps\s*\(\s*(?:dict\s*\(\s*)?os\.environ|(?:^|[\s;&|])printenv[ \t]*(?:$|[|>;&])|(?:^|[\s;&|])env[ \t]*\|/m
 
 /** Places whose change persists past the session or grants itself more. */
 export const PERSISTENCE_TARGET =
