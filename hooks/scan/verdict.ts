@@ -45,8 +45,13 @@ function severityRank(result: CheckResult): number {
   return order[result.severity] * 10 + rankOf(result.status)
 }
 
-/** `Title: file:line what` from the row's worst piece of evidence. */
+/**
+ * `Title: what it means` from the row's plain summary, or `Title: file:line
+ * what` from its worst piece of evidence when it has none.
+ */
 export function reasonOf(result: CheckResult): string {
+  const headline = result.summary?.[0]
+  if (headline !== undefined) return `${result.title}: ${headline}`
   const worst = [...result.evidence].sort((a, b) => rankOf(b.status ?? result.status) - rankOf(a.status ?? result.status))[0]
   if (worst === undefined) return result.title
   return `${result.title}: ${locate(worst.file, worst.line)}${worst.excerpt}`

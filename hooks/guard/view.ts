@@ -61,6 +61,7 @@ function rowOf(result: CheckResult): GuardRow {
     })),
     more: Math.max(0, result.evidence.length - EVIDENCE_PER_ROW),
     advice: result.advice,
+    ...(result.summary === undefined || result.summary.length === 0 ? {} : { summary: result.summary.slice(0, 8).map(line => clip(safeLine(redactSecrets(line)))) }),
   }
 }
 

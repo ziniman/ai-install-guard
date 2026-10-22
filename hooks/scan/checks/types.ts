@@ -50,6 +50,11 @@ export type CheckResult = {
   severity: Severity
   evidence: Evidence[]
   advice: string
+  /**
+   * What the evidence means, in plain words for a person: a headline, then a
+   * few lines. Shown before the evidence, which stays one step further in.
+   */
+  summary?: string[]
 }
 
 const RANK: Record<Status, number> = { info: 0, pass: 1, warn: 2, fail: 3 }
@@ -83,13 +88,14 @@ export function capEvidence(evidence: Evidence[], max: number, fallback: Status 
  * there is no evidence at all.
  */
 export function row(
-  base: { id: string; group: GroupId; title: string; advice: string },
+  base: { id: string; group: GroupId; title: string; advice: string; summary?: string[] },
   evidence: Evidence[],
   fallback: Status = 'warn',
   severity?: Severity,
 ): CheckResult {
   if (evidence.length === 0) {
-    return { ...base, status: 'pass', severity: 'none', evidence: [] }
+    const { summary: _unused, ...rest } = base
+    return { ...rest, status: 'pass', severity: 'none', evidence: [] }
   }
   const status = evidence.reduce<Status>((acc, item) => worse(acc, item.status ?? fallback), 'info')
   const worstFirst = [...evidence]

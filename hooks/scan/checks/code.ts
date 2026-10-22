@@ -21,6 +21,7 @@ import {
   WRITE_SHELL,
 } from './patterns'
 import { basename, extension, findAll, findFirst, spanKinds, type Match, type SpanKind } from './text'
+import { describePrograms, programsIn, type ProgramUse } from './programs'
 import { row, worse, type CheckResult, type Evidence, type Status } from './types'
 
 const GROUP = 'code' as const
@@ -213,6 +214,9 @@ function codePoints(text: string): string {
 
 function execCheck(ctx: ScanContext): CheckResult {
   const evidence: Evidence[] = []
+  const uses: ProgramUse[] = []
+  let buildsCode = 0
+  let downloads = 0
   for (const file of codeFiles(ctx)) {
     // Code files, and anything live code runs or loads whatever its name.
     if (!isCodeFile(file.path, file.text) && !LIVE_ROLES.has(file.role)) continue
@@ -227,13 +231,22 @@ function execCheck(ctx: ScanContext): CheckResult {
       evidence.push(...evidenceFor(file, pattern, inModule ? 'fail' : 'warn', match => `${what}: ${match.excerpt}`, 3))
     }
     evidence.push(...evidenceFor(file, DOWNLOAD_AND_RUN, 'fail', match => `downloads or decodes code and runs it: ${match.excerpt}`, 3))
+    // The summary counts live code only: tests and docs are only reported.
+    if (isLive(file.role)) {
+      const keep = (index: number) => !['comment', 'regex', 'trailing-comment'].includes(file.kindAt(index))
+      uses.push(...programsIn(file.path, file.text, file.language, keep))
+      for (const pattern of [CODE_FROM_TEXT, PYTHON_CODE_FROM_TEXT, SHELL_EVAL]) buildsCode += findAll(file.text, pattern, 50, keep).length
+      downloads += findAll(file.text, DOWNLOAD_AND_RUN, 50, keep).length
+    }
   }
   return row(
     {
       id: 'code.execution',
       group: GROUP,
       title: 'Running programs and building code at run time',
-      advice: 'Inside a mod this is a red flag: mods reach the machine only through $. In a script, check that each command it runs is one its purpose needs.',
+      advice:
+        'Check that each program fits what it says it does. Shells, compilers and programs chosen while it runs can do anything, so look at those first. Inside a mod any of this is a red flag: a mod reaches your machine only through Claude Code.',
+      summary: describePrograms(uses, { buildsCode, downloads }),
     },
     evidence,
   )
@@ -402,14 +415,35 @@ function denseLine(text: string): Match | undefined {
 
 function credentialsCheck(ctx: ScanContext): CheckResult {
   const evidence: Evidence[] = []
+  const secrets = new Set<string>()
+  const places = new Set<string>()
+  const files = new Set<string>()
+  const sending = new Set<string>()
   for (const file of codeFiles(ctx)) {
     // Hook scripts and MCP configuration are judged where their target is
     // known: the hooks check, and mcp.credentials with the server's host.
     if (file.role === 'hook-script' || file.role === 'mcp-config') continue
     const sends = [NETWORK_CODE, NETWORK_COMMAND, COLLECTION_HOST].some(pattern => active(file, pattern, 1).length > 0)
     const lead = sends ? 'with network code in the same file: ' : ''
-    evidence.push(...evidenceFor(file, CREDENTIAL_PATH, sends ? 'fail' : 'warn', match => `${lead}${match.excerpt}`, 3))
-    evidence.push(...evidenceFor(file, SECRET_ENV, sends ? 'fail' : 'warn', match => `${lead}reads ${secretName(match)}`, 3))
+    const paths = evidenceFor(file, CREDENTIAL_PATH, sends ? 'fail' : 'warn', match => `${lead}${match.excerpt}`, 3)
+    const names = evidenceFor(file, SECRET_ENV, sends ? 'fail' : 'warn', match => `${lead}reads ${secretName(match)}`, 3)
+    evidence.push(...paths, ...names)
+    if (!isLive(file.role)) continue
+    for (const match of active(file, CREDENTIAL_PATH, 20)) places.add(match.text.trim().replace(/\/$/, ''))
+    for (const match of active(file, SECRET_ENV, 20)) secrets.add(secretName(match))
+    if (paths.length + names.length > 0) {
+      files.add(file.path)
+      if (sends) sending.add(file.path)
+    }
+  }
+  const summary: string[] = []
+  const things = [...secrets, ...places]
+  if (things.length > 0) {
+    summary.push(`Reads ${things.slice(0, 5).join(', ')}${things.length > 5 ? ` and ${things.length - 5} more` : ''}${sending.size > 0 ? ', in code that can also reach the network' : ''}`)
+    if (secrets.size > 0) summary.push(`Secrets from your environment: ${[...secrets].join(', ')}`)
+    if (places.size > 0) summary.push(`Credential files and stores: ${[...places].join(', ')}`)
+    if (sending.size > 0) summary.push(`Worth a look: ${[...sending].slice(0, 4).join(', ')} can also send data over the network`)
+    summary.push(`In ${files.size} file${files.size === 1 ? '' : 's'}: ${[...files].slice(0, 4).join(', ')}${files.size > 4 ? ` and ${files.size - 4} more` : ''}`)
   }
   return row(
     {
@@ -417,6 +451,7 @@ function credentialsCheck(ctx: ScanContext): CheckResult {
       group: GROUP,
       title: 'Credentials and secrets read by code',
       advice: 'Code that reads your keys, tokens or browser data and can reach the network can steal them. Do not install it unless that is plainly its job.',
+      summary,
     },
     evidence,
   )

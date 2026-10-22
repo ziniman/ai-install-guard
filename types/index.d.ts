@@ -20,6 +20,8 @@ export type GuardRow = {
   /** How many more pieces of evidence the full report holds. */
   more: number
   advice: string
+  /** What the evidence means in plain words: a headline, then a few lines. */
+  summary?: string[]
 }
 
 export type GuardVerdict = {
@@ -49,6 +51,8 @@ export type GuardView = {
   expanded: string[]
   /** Every row open. */
   details: boolean
+  /** Rows whose code lines are shown under their summary. */
+  codeOpen?: string[]
   /** "Install anyway" was pressed once and waits for its confirmation. */
   confirming: boolean
   decision?: 'approved' | 'rejected'

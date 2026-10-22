@@ -476,3 +476,23 @@ describe('a remote scan in the pane', () => {
     expect(answer.text).toContain('apply to a repository')
   })
 })
+
+describe('a row explains itself before it shows code', () => {
+  for (const surface of SURFACES) {
+    test(`${surface}: the summary first, the code behind its own toggle`, async ($, on) => {
+      mock.store(on)
+      serveUi(on)
+      serveFixture(on, ROOT, fixture('script-exec'))
+      await $.command.run(typed('guard', `scan ${ROOT}`))
+      const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface, component: 'Pane', requestId: PANE_ID, props: paneProps() })
+      await pane.press({ key: 'toggle-code.execution' })
+
+      expect(await pane.find({ type: 'Text', text: /^Starts / })).toBeDefined()
+      expect(await pane.find({ type: 'Text', text: /runs programs:/ })).toBeUndefined()
+      await pane.press({ key: 'code-code.execution' })
+      expect(await pane.find({ type: 'Text', text: /runs programs:/ })).toBeDefined()
+      expect(await pane.find({ type: 'Text', text: /^Hide the code$/ })).toBeDefined()
+      await pane.unmount()
+    })
+  }
+})

@@ -73,6 +73,8 @@ Approvals are remembered by commit and content hash, so the same version is neve
 
 A remote scan resolves the ref to one commit, fetches only that commit (no hooks, submodules, Git LFS downloads or filters), checks it out by its id and confirms that `HEAD` is that commit before reading a file. The report and the pane name the commit, and your decision is recorded against it and the tree hash.
 
+Each row opens to say what it found in plain words first: which programs the candidate starts and what each is for, which secrets its code reads, and what is worth a closer look. The code lines that back it up sit behind **Show the code**.
+
 In the pane, **Approve** (`i`) and **Reject** (`r`) record your decision for that exact content (its tree hash). When the verdict is Do not install or Could not verify, the button reads **Approve anyway** and asks a second time. **Details** (`d`) opens every row, and **Copy report** (`c`) copies the full report as text. Where no pane can show (a headless `claude -p` run), `/guard scan` prints the report instead.
 
 ## What the guard itself can do

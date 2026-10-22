@@ -45,6 +45,13 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     update($, viewAtom, current =>
       current === null ? current : { ...current, expanded: current.expanded.includes(id) ? current.expanded.filter(item => item !== id) : [...current.expanded, id] },
     )
+  const codeOpen = (row: GuardRow): boolean => (view.codeOpen ?? []).includes(row.id)
+  const toggleCode = (id: string) => () =>
+    update($, viewAtom, current => {
+      if (current === null) return current
+      const open = current.codeOpen ?? []
+      return { ...current, codeOpen: open.includes(id) ? open.filter(item => item !== id) : [...open, id] }
+    })
 
   const decide = (decision: 'approved' | 'rejected', overridden: boolean) => async () => {
     const current = await read($, viewAtom)
@@ -143,7 +150,11 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
           <Text bold>{group.title}</Text>
           {rowsOf(group.id).map(row => {
             const first = row.evidence[0]
-            const summary = first === undefined ? '' : `: ${locate(first.file, first.line)}${first.excerpt}`
+            const headline = row.summary?.[0]
+            const summary = headline !== undefined ? `: ${headline}` : first === undefined ? '' : `: ${locate(first.file, first.line)}${first.excerpt}`
+            const places = row.evidence.length + row.more
+            // With a summary, the code lines are one step further in.
+            const showCode = row.summary === undefined || codeOpen(row)
             return (
               <Box key={`row-${row.id}`} flexDirection="column">
                 <Button key={`toggle-${row.id}`} plain onPress={toggle(row.id)}>
@@ -152,18 +163,31 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
                 </Button>
                 {isOpen(row) && (
                   <Box key={`detail-${row.id}`} flexDirection="column" paddingLeft={2}>
-                    {row.evidence.map(item => (
-                      <Text wrap="wrap" color={item.status === undefined ? undefined : COLOR[item.status]}>
-                        {locate(item.file, item.line)}
-                        {item.excerpt}
+                    {row.summary?.map((line, index) => (
+                      <Text wrap="wrap" bold={index === 0}>
+                        {line}
                       </Text>
                     ))}
-                    {row.more > 0 && <Text dimColor>… and {row.more} more in the copied report</Text>}
                     {(row.status === 'fail' || row.status === 'warn') && (
                       <Text dimColor wrap="wrap">
                         {row.advice}
                       </Text>
                     )}
+                    {row.summary !== undefined && places > 0 && (
+                      <Button key={`code-${row.id}`} plain onPress={toggleCode(row.id)}>
+                        <Text color="suggestion">
+                          {codeOpen(row) ? 'Hide the code' : `Show the code (${places} place${places === 1 ? '' : 's'})`}
+                        </Text>
+                      </Button>
+                    )}
+                    {showCode &&
+                      row.evidence.map(item => (
+                        <Text wrap="wrap" color={item.status === undefined ? undefined : COLOR[item.status]}>
+                          {locate(item.file, item.line)}
+                          {item.excerpt}
+                        </Text>
+                      ))}
+                    {showCode && row.more > 0 && <Text dimColor>… and {row.more} more in the copied report</Text>}
                   </Box>
                 )}
               </Box>

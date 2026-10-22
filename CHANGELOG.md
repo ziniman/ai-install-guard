@@ -14,6 +14,8 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 **`structure`** - Flags Git LFS pointers and git filters, whose real content is filled in at install and could not be scanned
 
+**`pane`** - A row now says what it found in plain words before any code: which programs a candidate starts and what each is for, with shells, compilers and programs chosen at run time called out as worth a look, and which secrets or credential files its code reads. The code lines sit behind their own Show the code toggle, and the verdict's reasons use the same plain headline
+
 **`checks`** - Fewer false alarms, found by scanning a real skill: a standalone skill is no longer failed for having no plugin manifest, a local preview address is not a remote instruction, a person called a reviewer is not a security scanner, a browser's program path is not its profile data, and one-word placeholder hosts are not listed
 
 ---

@@ -51,13 +51,18 @@ export function countsLine(report: ScanReport): string {
 function formatRow(result: CheckResult, details: boolean): string[] {
   const shown = details ? result.evidence : result.evidence.slice(0, 1)
   const head = `  ${LABEL[result.status]}  ${result.title}`
+  const summary = (result.summary ?? []).map(line => safeLine(redactSecrets(line)))
   if (!details) {
+    if (summary[0] !== undefined) return [`${head}: ${summary[0]}`]
     const first = shown[0]
     const more = result.evidence.length > 1 ? ` (+${result.evidence.length - 1} more)` : ''
     return [first === undefined ? head : `${head}: ${evidenceLine(first)}${more}`]
   }
   const out = [head]
-  for (const item of shown) out.push(`        ${item.status === undefined || item.status === result.status ? '' : `${LABEL[item.status]} `}${evidenceLine(item)}`)
+  // What it means first, then where, then what to do.
+  for (const line of summary) out.push(`        ${line}`)
+  if (summary.length > 0 && shown.length > 0) out.push('        Where:')
+  for (const item of shown) out.push(`        ${summary.length > 0 ? '  ' : ''}${item.status === undefined || item.status === result.status ? '' : `${LABEL[item.status]} `}${evidenceLine(item)}`)
   if (result.status === 'fail' || result.status === 'warn') out.push(`        Advice: ${result.advice}`)
   return out
 }

@@ -43,8 +43,25 @@ export type FetchedSource = {
 /** The most a fetched commit may weigh before the scan gives up. */
 export const MAX_FETCH_BYTES = 50 * 1024 * 1024
 
-/** How long a fetch may take, which also bounds how much it can write. */
+/** How long a fetch may take. */
 const FETCH_TIMEOUT_MS = 120_000
+
+/** The same limit in the 512-byte blocks a shell's `ulimit -f` counts. */
+const FETCH_LIMIT_BLOCKS = Math.ceil(MAX_FETCH_BYTES / 512)
+
+/**
+ * Runs the fetch under a file-size limit, so a commit far over the limit is
+ * stopped as it arrives rather than measured after it has filled the disk.
+ * fetch.unpackLimit=1 keeps everything in the one pack the limit applies to.
+ * Where there is no `sh` (Windows), the fetch is bounded by its time alone.
+ */
+async function boundedFetch(host: Host, args: readonly string[]): Promise<RunResult> {
+  const capped = await host
+    .run(['sh', '-c', `ulimit -f ${FETCH_LIMIT_BLOCKS} && exec git "$@"`, 'sh', ...args], { timeoutMs: FETCH_TIMEOUT_MS, env: GIT_ENV })
+    .catch(() => undefined)
+  if (capped !== undefined && capped.exitCode !== 127) return capped
+  return git(host, args, FETCH_TIMEOUT_MS)
+}
 
 /** No prompts for credentials, and no Git LFS downloads during checkout. */
 const GIT_ENV: Record<string, string> = { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_LFS_SKIP_SMUDGE: '1' }
@@ -211,12 +228,16 @@ export async function fetchPinned(host: Host, spec: RemoteSpec, onStage?: (stage
     const work = `${dir}/repo`
     await must(git(host, ['init', '-q', '--template=', work], 60_000, ISOLATED_ENV), 'could not prepare a folder for the fetch')
     await onStage?.(`fetching ${pinned.sha.slice(0, 12)}`)
-    await must(
-      // git cannot cap the size of what a fetch receives, so its time is
-      // capped instead; the folder is removed whatever happens.
-      git(host, ['-C', work, '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', 'fetch', '--depth', '1', '--no-tags', '--no-recurse-submodules', '-q', spec.url, pinned.sha], FETCH_TIMEOUT_MS),
-      `could not fetch ${pinned.sha}`,
-    )
+    const fetched = await boundedFetch(host, [
+      '-C', work, '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', '-c', 'fetch.unpackLimit=1',
+      'fetch', '--depth', '1', '--no-tags', '--no-recurse-submodules', '-q', spec.url, pinned.sha,
+    ])
+    if (fetched.exitCode !== 0) {
+      // git exits 128 when it gives up on its own; anything else with nothing
+      // said is the size limit stopping it.
+      if (fetched.exitCode !== 128 && fetched.stderr.trim() === '') throw new Error(`the commit weighs more than ${MAX_FETCH_BYTES / 1024 / 1024} MB, too much to scan`)
+      throw failure(fetched, `could not fetch ${pinned.sha}`)
+    }
     const counted = await must(git(host, ['-C', work, 'count-objects', '-v'], 60_000, ISOLATED_ENV), 'could not measure the fetch')
     const kib = ['size', 'size-pack'].reduce((sum, key) => sum + Number(new RegExp(`^${key}:\\s*(\\d+)`, 'm').exec(counted.stdout)?.[1] ?? 0), 0)
     if (kib * 1024 > MAX_FETCH_BYTES) throw new Error(`the commit weighs more than ${MAX_FETCH_BYTES / 1024 / 1024} MB, too much to scan`)
