@@ -118,7 +118,12 @@ export function memoryHost(root: string, files: FixtureFiles): Host {
  * `files` under `root`; a path outside `root` goes on to the next answer.
  * With `platform: 'windows'` there is no `readlink`, only PowerShell.
  */
-export function serveFixture(on: On, root: string, files: FixtureFiles, options: { platform?: 'posix' | 'windows' } = {}): void {
+export function serveFixture(
+  on: On,
+  root: string,
+  files: FixtureFiles,
+  options: { platform?: 'posix' | 'windows'; homeFails?: () => boolean } = {},
+): void {
   const isWindows = options.platform === 'windows'
   const host = memoryHost(root, files) as Host & { owns: (path: string) => boolean }
   const toBase64 = (bytes: Uint8Array): string => {
@@ -146,6 +151,9 @@ export function serveFixture(on: On, root: string, files: FixtureFiles, options:
   })
   on('process.run', async ($, e, next) => {
     const done = (result: RunResult) => ({ value: { ...result, isStdoutTruncated: false, isStderrTruncated: false } })
+    if (e.argv[0] === 'printenv' && options.homeFails?.() === true) {
+      return done({ exitCode: 1, stdout: '', stderr: '' })
+    }
     if (e.argv[0] === 'readlink' && isWindows) {
       return done({ exitCode: 127, stdout: '', stderr: 'readlink: command not found' })
     }

@@ -35,14 +35,20 @@ export async function recordDecision($: EngineInterface, decision: Decision): Pr
  * Removes the decisions about `name`: its target as typed, its folder, or the
  * last part of either. A name inside another (tool in my-tool-2) does not count.
  */
-export async function forgetDecisions($: EngineInterface, name: string): Promise<number> {
+export async function forgetDecisions($: EngineInterface, name: string): Promise<Decision[]> {
   const all = await loadDecisions($)
   const last = (path: string): string => path.replace(/\/+$/, '').split('/').pop() ?? path
   const matches = (item: Decision): boolean =>
     [item.target, item.root ?? '', last(item.target), last(item.root ?? '')].some(candidate => candidate !== '' && candidate === name)
   const kept = all.filter(item => !matches(item))
   await $.store.set(DECISIONS, kept)
-  return all.length - kept.length
+  // The last report must not keep claiming a decision that is gone.
+  const forgotten = all.filter(matches)
+  const view = await loadLastView($)
+  if (view?.decision !== undefined && forgotten.some(item => item.treeHash === view.treeHash)) {
+    await saveLastView($, { ...view, decision: undefined, confirming: false })
+  }
+  return forgotten
 }
 
 export async function decisionFor($: EngineInterface, treeHash: string): Promise<Decision | undefined> {

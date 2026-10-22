@@ -39,7 +39,7 @@ export const register: Register = on => {
     if (sub === 'report') return { text: await reopen($) }
     if (sub === 'list') return { text: await list($) }
     if (sub === 'forget' && rest !== '') {
-      const count = await forgetDecisions($, rest)
+      const count = (await forgetDecisions($, rest)).length
       return { text: `AI Install Guard: forgot ${count} decision${count === 1 ? '' : 's'} about ${safeLine(rest)}.` }
     }
     return { text: USAGE }
@@ -83,8 +83,11 @@ async function scan($: EngineInterface, target: string, details: boolean): Promi
   } catch (error) {
     const reason = `Could not verify ${safeLine(target)}: ${safeLine(reasonOf(error))}`
     await $.store.set(REPORT_TEXT, reason).catch(() => undefined)
-    // The pane must not keep saying it is scanning.
-    await update($, viewAtom, current => (current === null ? current : { ...current, stage: '', verdict: { kind: 'unverified' as const, recommendation: 'Could not verify', reasons: [reason], counts: { pass: 0, warn: 0, fail: 0, info: 0 } } })).catch(() => undefined)
+    // The pane, and the report /guard report reopens, show this failure: never
+    // a scanning pane, and never an older verdict in its place.
+    const failed = { ...scanningView(target, 'approve'), stage: '', verdict: { kind: 'unverified' as const, recommendation: 'Could not verify', reasons: [reason], counts: { pass: 0, warn: 0, fail: 0, info: 0 } } }
+    await update($, viewAtom, () => failed).catch(() => undefined)
+    await saveLastView($, failed).catch(() => undefined)
     return reason
   } finally {
     $.ui.status(undefined)
