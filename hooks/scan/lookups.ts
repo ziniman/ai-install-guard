@@ -328,6 +328,8 @@ async function namesCheck(host: Host, ctx: ScanContext, cache: LookupCache): Pro
   const evidence: Evidence[] = []
   const near: string[] = []
   // Said first, so no cap on the evidence can drop it.
+  const skipped = all.length - compared.length
+  if (skipped > 0) evidence.push({ file: '-', excerpt: `${skipped} more names were not compared`, status: 'warn' })
   for (const name of compared) {
     if (official.includes(name)) {
       evidence.push({ file: '-', excerpt: `${safeLine(name)} has the same name as an official plugin: make sure this is that plugin, from its own source`, status: 'info' })
@@ -346,8 +348,6 @@ async function namesCheck(host: Host, ctx: ScanContext, cache: LookupCache): Pro
       evidence.push({ file: '-', excerpt, status: 'warn' })
     }
   }
-  const skipped = all.length - compared.length
-  if (skipped > 0) evidence.push({ file: '-', excerpt: `${skipped} more names were not compared`, status: 'warn' })
   return [
     row(
       {
