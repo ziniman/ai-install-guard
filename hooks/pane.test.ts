@@ -237,7 +237,7 @@ describe('pane review fixes', () => {
     await $.command.run(typed('guard', 'report'))
     const again = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
     expect(await again.find({ key: 'install' })).toBeUndefined()
-    expect(await again.find({ type: 'Text', text: /^Approved\./ })).toBeDefined()
+    expect(await again.find({ type: 'Text', text: /^Approved on / })).toBeDefined()
     await again.unmount()
   })
 
@@ -303,8 +303,54 @@ describe('pane review fixes, round two', () => {
     await $.command.run(typed('guard', 'report'))
     const again = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
 
-    expect(await again.find({ type: 'Text', text: /^Approved\./ })).toBeUndefined()
+    expect(await again.find({ type: 'Text', text: /^Approved/ })).toBeUndefined()
     expect(await again.find({ key: 'install' })).toBeDefined()
     await again.unmount()
+  })
+})
+
+describe('pane review fixes, round three', () => {
+  test('rescanning a tree you already approved shows that decision', async ($, on) => {
+    mock.store(on)
+    serveUi(on)
+    serveFixture(on, ROOT, fixture('clean-plugin'))
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    const first = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+    await first.press({ key: 'install' })
+    await first.unmount()
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    const again = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+
+    expect(await again.find({ key: 'install' })).toBeUndefined()
+    expect(await again.find({ type: 'Text', text: /^Approved on \d{4}-\d{2}-\d{2}\./ })).toBeDefined()
+    await again.unmount()
+  })
+
+  test('a failed save says so and keeps the pane open', async ($, on) => {
+    let failWrites = false
+    const store = new Map<string, unknown>()
+    on('store.get', ($, e) => ({ value: store.get(e.key) }))
+    on('store.set', ($, e) => {
+      if (failWrites && e.key === 'decisions') return { deny: 'test: store full' }
+      store.set(e.key, e.value)
+      return { value: undefined }
+    })
+    on('store.delete', ($, e) => (store.delete(e.key), { value: undefined }))
+    const ui = serveUi(on)
+    serveFixture(on, ROOT, fixture('clean-plugin'))
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    failWrites = true
+    const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+    await pane.press({ key: 'install' })
+
+    expect(ui.toasts.at(-1)).toContain('could not save the decision')
+    expect(ui.closed).toEqual([])
+    expect(await pane.find({ key: 'install' })).toBeDefined()
+    await pane.unmount()
+  })
+
+  test('forget finds a folder by its name with a trailing slash', async ($, on) => {
+    mock.store(on, { decisions: [{ target: '/w/tool', root: '/w/tool', treeHash: 'sha256:a', verdict: 'Safe to install', decision: 'approved', overridden: false, decidedAt: 1 }] })
+    expect((await $.command.run(typed('guard', 'forget tool/'))).text).toContain('forgot 1 decision')
   })
 })

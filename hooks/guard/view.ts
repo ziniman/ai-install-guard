@@ -6,6 +6,12 @@ import type { ScanReport } from '../scan/scan'
 
 /** Evidence the pane keeps per row; the full list stays in the stored report. */
 const EVIDENCE_PER_ROW = 20
+/** Characters the pane keeps per excerpt or reason: one huge hook command cannot fill the store. */
+const MAX_TEXT = 500
+
+function clip(text: string): string {
+  return text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT - 1)}…` : text
+}
 
 export const PANE_ID = 'ai-install-guard'
 
@@ -22,7 +28,7 @@ export function viewOf(report: ScanReport, action: GuardAction): GuardView {
     stage: '',
     verdict: {
       ...report.verdict,
-      reasons: report.verdict.reasons.map(reason => safeLine(redactSecrets(reason))),
+      reasons: report.verdict.reasons.map(reason => clip(safeLine(redactSecrets(reason)))),
     },
     rows: report.results.map(rowOf),
     kind: report.kind,
@@ -41,9 +47,9 @@ function rowOf(result: CheckResult): GuardRow {
     title: result.title,
     status: result.status,
     evidence: result.evidence.slice(0, EVIDENCE_PER_ROW).map(item => ({
-      file: safeLine(redactSecrets(item.file)),
+      file: clip(safeLine(redactSecrets(item.file))),
       line: item.line,
-      excerpt: safeLine(redactSecrets(item.excerpt)),
+      excerpt: clip(safeLine(redactSecrets(item.excerpt))),
       status: item.status,
     })),
     more: Math.max(0, result.evidence.length - EVIDENCE_PER_ROW),

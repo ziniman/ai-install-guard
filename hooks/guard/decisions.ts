@@ -1,6 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { GuardView } from '../../types'
+import { safeLine } from '../scan/safe-text'
 
 /** One decision, remembered across sessions so the same tree is never judged twice. */
 export type Decision = {
@@ -38,8 +39,11 @@ export async function recordDecision($: EngineInterface, decision: Decision): Pr
 export async function forgetDecisions($: EngineInterface, name: string): Promise<Decision[]> {
   const all = await loadDecisions($)
   const last = (path: string): string => path.replace(/\/+$/, '').split('/').pop() ?? path
+  // Stored paths are display-safe; compare the name both as typed and made
+  // safe, without trailing slashes.
+  const wanted = new Set([name, safeLine(name)].map(value => value.replace(/\/+$/, '')))
   const matches = (item: Decision): boolean =>
-    [item.target, item.root ?? '', last(item.target), last(item.root ?? '')].some(candidate => candidate !== '' && candidate === name)
+    [item.target, item.root ?? '', last(item.target), last(item.root ?? '')].some(candidate => candidate !== '' && wanted.has(candidate.replace(/\/+$/, '')))
   const kept = all.filter(item => !matches(item))
   await $.store.set(DECISIONS, kept)
   // The last report must not keep claiming a decision that is gone.
@@ -55,8 +59,17 @@ export async function decisionFor($: EngineInterface, treeHash: string): Promise
   return (await loadDecisions($)).find(item => item.treeHash === treeHash)
 }
 
+/**
+ * Saves the view /guard report reopens. When it cannot be saved, the old one
+ * is removed, so a reopened report never shows an older verdict as current.
+ */
 export async function saveLastView($: EngineInterface, view: GuardView): Promise<void> {
-  await $.store.set(LAST_VIEW, view)
+  try {
+    await $.store.set(LAST_VIEW, view)
+  } catch (error) {
+    await $.store.delete(LAST_VIEW).catch(() => undefined)
+    throw error
+  }
 }
 
 export async function loadLastView($: EngineInterface): Promise<GuardView | undefined> {

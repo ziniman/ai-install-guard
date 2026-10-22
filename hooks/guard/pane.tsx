@@ -52,7 +52,8 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       await $.ui.close({ id: PANE_ID })
       return
     }
-    {
+    const decidedAt = Date.now()
+    try {
       await recordDecision($, {
         target: current.target,
         root: current.root,
@@ -60,10 +61,14 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
         verdict: current.verdict.recommendation,
         decision,
         overridden,
-        decidedAt: Date.now(),
+        decidedAt,
       })
+    } catch {
+      // Nothing was saved: say so, and leave the pane open to try again.
+      $.ui.toast('AI Install Guard: could not save the decision; nothing was recorded')
+      return
     }
-    const decided = { ...current, decision, confirming: false }
+    const decided = { ...current, decision, decidedAt, confirming: false }
     await update($, viewAtom, () => decided)
     // The reopened report shows the outcome, not the buttons again.
     await saveLastView($, decided).catch(() => undefined)
@@ -186,7 +191,8 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
 
       {view.decision !== undefined && (
         <Text color={view.decision === 'approved' ? 'success' : 'error'}>
-          {view.decision === 'approved' ? 'Approved' : 'Rejected'}. The decision is saved for this exact version.
+          {view.decision === 'approved' ? 'Approved' : 'Rejected'}
+          {view.decidedAt === undefined ? '' : ` on ${new Date(view.decidedAt).toISOString().slice(0, 10)}`}. The decision is saved for this exact version; /guard forget clears it.
         </Text>
       )}
     </Box>

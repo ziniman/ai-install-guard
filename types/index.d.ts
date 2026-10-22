@@ -50,6 +50,8 @@ export type GuardView = {
   /** "Install anyway" was pressed once and waits for its confirmation. */
   confirming: boolean
   decision?: 'approved' | 'rejected'
+  /** When the decision was made: now, or in an earlier scan of the same tree. */
+  decidedAt?: number
 }
 
 declare module 'claude-code' {
