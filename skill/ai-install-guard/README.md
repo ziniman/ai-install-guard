@@ -1,6 +1,6 @@
 # AI Install Guard for Claude chat
 
-An Agent Skill that lets Claude scan a Claude Code plugin, mod, Agent Skill, MCP server or marketplace from an ordinary chat, before you install it. It runs the same deterministic checks as the [AI Install Guard](https://github.com/ziniman/ai-install-guard) mod for Claude Code, reads the files without running any of them, and answers **Safe to install**, **Install with caution**, **Do not install** or **Could not verify**, with file and line evidence.
+An Agent Skill that lets Claude scan a Claude Code plugin, mod, Agent Skill, MCP server or marketplace from an ordinary chat, before you install it. It runs the same deterministic checks as the [AI Install Guard](https://github.com/ziniman/ai-install-guard) mod for Claude Code, reads the files without running any of them, and answers with one of four verdicts, from **Safe to install** to **Do not install**, with file and line evidence.
 
 ## Use it
 
@@ -13,7 +13,7 @@ An Agent Skill that lets Claude scan a Claude Code plugin, mod, Agent Skill, MCP
 
 Over the network, a repository scan reaches the repository's host (`github.com` for GitHub) and, for a GitHub repository, `api.github.com` for its public details. With `--lookups`, it also sends package names to `api.osv.dev` and reads Anthropic's official plugin list from `raw.githubusercontent.com`. A chat's code execution reaches only the domains its network settings allow; without them, attach a zip instead.
 
-The guard's own scan of this skill says **Install with caution**, because the script starts programs: that is the `git` fetch above.
+The guard's own scan of this skill passes every check but one, a warning that the script starts programs: that is the `git` fetch above.
 
 ## What it is not
 

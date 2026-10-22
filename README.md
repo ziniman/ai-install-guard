@@ -97,7 +97,7 @@ Claude runs the skill's `scripts/scan.js`: the same deterministic checks as `/gu
 
 To fetch a repository, the chat's code execution must be allowed to reach `github.com` (and `api.github.com` for the repository's details) in its network settings. Where it is not, Claude says so and asks for a zip instead (on GitHub: **Code > Download ZIP**).
 
-The same script runs anywhere with Node.js 18 or later: `node skill/ai-install-guard/scripts/scan.js --details <folder | zip | repository>`, with `--ref`, `--path`, `--json` and `--lookups`. Its exit status is the verdict: 0 Safe to install, 1 Install with caution, 2 Do not install, 3 Could not verify.
+The same script runs anywhere with Node.js 18 or later: `node skill/ai-install-guard/scripts/scan.js --details <folder | zip | repository>`, with `--ref`, `--path`, `--json` and `--lookups`. Its exit status is the verdict: 0 Safe to install, 1 warnings to review, 2 Do not install, 3 Could not verify.
 
 ## Review badge
 
