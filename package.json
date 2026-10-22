@@ -6,7 +6,7 @@
     "build:fixtures": "node scripts/build-fixtures.js",
     "sync:versions": "node scripts/sync-versions.js",
     "validate": "claude plugin validate --strict .",
-    "typecheck": "tsc -p .",
+    "typecheck": "tsc -p . && tsc -p cli",
     "test": "claude plugin test .",
     "check": "npm run validate && npm run typecheck && npm test",
     "version": "node scripts/sync-versions.js && git add .claude-plugin/"
@@ -44,6 +44,8 @@
     "node": ">=18"
   },
   "devDependencies": {
+    "@types/node": "^20.19.43",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.3"
   }
 }
