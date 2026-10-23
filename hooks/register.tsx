@@ -1,16 +1,18 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
+import { BROWSE_NOTE, judge } from './gate/gate'
+import { readPluginArgs, readShellCommand } from './gate/requests'
+import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
-import { decisionFor, forgetDecisions, loadDecisions, loadLastView, MAX_REPORT_CHARS, saveLastView } from './guard/decisions'
-import { drawPane, REPORT_TEXT } from './guard/pane'
-import { PANE_ID, scanningView, viewOf } from './guard/view'
+import { forgetDecisions, loadDecisions, loadLastView, loadReport } from './guard/decisions'
+import { drawPane } from './guard/pane'
+import { showScan } from './guard/run'
+import { PANE_ID } from './guard/view'
 import { modHost } from './mod-host'
 import type { Host } from './scan/host'
 import { looksRemote, parseRemote, type RemoteSpec } from './scan/remote'
-import { formatReport } from './scan/report'
 import { safeLine } from './scan/safe-text'
-import { scanFolder, scanRemote } from './scan/scan'
 
 // Claude Code reads every state reference from the file that uses it, so each
 // module declares its own atom for the pane's view.
@@ -57,6 +59,33 @@ export const register: Register = (on, options) => {
     return { text: USAGE }
   }).catch(() => ({ text: 'AI Install Guard: the command failed before it could answer.' }))
 
+  // Gate A: the person's own /plugin install and /plugin marketplace add. An
+  // install is answered in the command's place, so nothing installs, until
+  // the person approves that exact version.
+  on('command.run', { command: 'plugin' }, async ($, e, next) => {
+    const reading = readPluginArgs(e.args)
+    if (reading.kind === 'pass') {
+      if (reading.browse) $.ui.toast(BROWSE_NOTE)
+      return next(e)
+    }
+    const judged = await judge($, reading, { origin: 'command', args: e.args, label: reading.label }, lookups)
+    if (judged.kind === 'hold') return { text: judged.text }
+    if (judged.note !== undefined) $.ui.toast(judged.note)
+    return next(e)
+  }).catch(($, e, next) => (next.called ? next(e) : { text: 'AI Install Guard stopped this install: it failed before it could check it, so nothing was installed.' }))
+
+  // Gate B: Claude installing a plugin or adding a marketplace with the claude
+  // command. The command is refused, with a reason Claude reads, until the
+  // person approves that exact version in the pane.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const reading = readShellCommand(e.command)
+    if (reading.kind === 'pass') return next(e)
+    const judged = await judge($, reading, { origin: 'tool', args: e.command, label: reading.label }, lookups)
+    if (judged.kind === 'hold') return { deny: judged.text }
+    if (judged.note !== undefined) $.ui.toast(judged.note)
+    return next(e)
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'AI Install Guard stopped this command: it may install a plugin or add a marketplace, and the guard failed before it could check it. Nothing was installed.' }))
+
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($, e) => drawPane($, e))
 }
 
@@ -68,58 +97,28 @@ export const register: Register = (on, options) => {
  */
 async function scan($: EngineInterface, target: string, details: boolean, flags: { ref?: string; path?: string }, lookups: boolean): Promise<string> {
   const host = modHost($)
-  const opened = await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => ({ isPlaced: false }))
-  // Until this scan's report is stored, Copy report has nothing to copy, never
-  // the previous scan's report.
-  await $.store.delete(REPORT_TEXT).catch(() => undefined)
-  await update($, viewAtom, () => scanningView(target, 'approve'))
-  $.ui.status(`AI Install Guard: scanning ${safeLine(target)}`)
-  try {
-    const options = {
-      lookups,
-      // Stage names can carry a candidate's own words (a plugin's name).
-      onStage: (stage: string) => update($, viewAtom, current => (current === null ? current : { ...current, stage: safeLine(stage) })).then(() => undefined),
-    }
-    const spec = await remoteSpecFor(host, target, flags)
-    const report = spec === undefined ? await scanFolder(host, target, await expandHome(host, target), options) : await scanRemote(host, target, spec, options)
-    // A tree you already decided on shows that decision, not the buttons
-    // again, unless it now judges worse than when you approved it.
-    const earlier = report.inventory === undefined ? undefined : await decisionFor($, { treeHash: report.inventory.treeHash, sha: report.source?.sha }, report.verdict.kind).catch(() => undefined)
-    const view = earlier === undefined ? viewOf(report, 'approve') : { ...viewOf(report, 'approve'), decision: earlier.decision, decidedAt: earlier.decidedAt }
-    const text = formatReport(report, { details: true })
-    // The report text is stored before the pane shows the verdict, so Copy
-    // report always copies this scan's report. It is held well inside the
-    // store's limit; a failed write leaves Copy with nothing, not old text.
-    const stored = text.length > MAX_REPORT_CHARS ? `${text.slice(0, MAX_REPORT_CHARS)}\n… the report was cut here to fit the store` : text
-    await $.store.set(REPORT_TEXT, stored).catch(() => undefined)
-    await update($, viewAtom, () => view)
-    await saveLastView($, view).catch(() => undefined)
-    $.ui.toast(`AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}`)
-    // Where no pane shows, the answer is the whole report: findings and advice.
-    if (!opened.isPlaced || details) return text
-    return `AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}. The report is in the pane; /guard report reopens it.`
-  } catch (error) {
-    const reason = `Could not verify ${safeLine(target)}: ${safeLine(reasonOf(error))}`
-    await $.store.set(REPORT_TEXT, reason).catch(() => undefined)
-    // The pane, and the report /guard report reopens, show this failure: never
-    // a scanning pane, and never an older verdict in its place.
-    const failed = { ...scanningView(target, 'approve'), stage: '', verdict: { kind: 'unverified' as const, recommendation: 'Could not verify', reasons: [reason], counts: { pass: 0, warn: 0, fail: 0, info: 0 } } }
-    await update($, viewAtom, () => failed).catch(() => undefined)
-    await saveLastView($, failed).catch(() => undefined)
-    return reason
-  } finally {
-    $.ui.status(undefined)
-  }
+  const shown = await showScan(
+    $,
+    target,
+    async () => {
+      const spec = await remoteSpecFor(host, target, flags)
+      return spec === undefined ? { folder: await expandHome(host, target) } : { remote: spec }
+    },
+    { action: 'approve', lookups },
+  )
+  if (shown.kind === 'failed') return shown.reason
+  // Where no pane shows, the answer is the whole report: findings and advice.
+  if (!shown.placed || details) return shown.text
+  return `AI Install Guard: ${shown.report.verdict.recommendation} for ${safeLine(target)}. The report is in the pane; /guard report reopens it.`
 }
 
 async function reopen($: EngineInterface): Promise<string> {
   const view = await loadLastView($)
   if (view === undefined) return 'AI Install Guard: no report yet. Run /guard scan <path>.'
-  await update($, viewAtom, () => ({ ...view, confirming: false }))
+  await update($, viewAtom, () => ({ ...view, confirming: false, deciding: false }))
   const opened = await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => ({ isPlaced: false }))
   if (opened.isPlaced) return `AI Install Guard: reopened the report for ${safeLine(view.target)}.`
-  const text = await $.store.get(REPORT_TEXT)
-  return typeof text === 'string' ? text : 'AI Install Guard: the last report is no longer stored.'
+  return (await loadReport($, view.scanId)) ?? 'AI Install Guard: the last report is no longer stored.'
 }
 
 async function badge($: EngineInterface): Promise<string> {
@@ -194,20 +193,4 @@ async function remoteSpecFor(host: Host, target: string, flags: { ref?: string; 
 
 function unquote(text: string): string {
   return /^(["']).*\1$/.test(text) ? text.slice(1, -1) : text
-}
-
-async function expandHome(host: Host, path: string): Promise<string> {
-  if (path !== '~' && !path.startsWith('~/')) {
-    return path
-  }
-  const { exitCode, stdout } = await host.run(['printenv', 'HOME'])
-  const home = stdout.trim()
-  if (exitCode !== 0 || home === '') {
-    throw new Error('could not find the home folder')
-  }
-  return home + path.slice(1)
-}
-
-function reasonOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

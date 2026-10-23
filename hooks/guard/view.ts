@@ -35,7 +35,7 @@ export function viewOf(report: ScanReport, action: GuardAction): GuardView {
     // A remote scan's folder is a temporary one: its source names it instead.
     root:
       report.source !== undefined
-        ? safeLine(`${report.source.url}${report.source.subdir === undefined ? '' : `#${report.source.subdir}`}`)
+        ? sourceRoot(report.source.url, report.source.subdir)
         : report.inventory === undefined
           ? undefined
           : safeLine(report.inventory.root),
@@ -46,6 +46,11 @@ export function viewOf(report: ScanReport, action: GuardAction): GuardView {
     details: false,
     confirming: false,
   }
+}
+
+/** How a decision names a remote source: its address, and the folder in it after `#`. */
+export function sourceRoot(url: string, subdir: string | undefined): string {
+  return safeLine(`${url}${subdir === undefined ? '' : `#${subdir}`}`)
 }
 
 function rowOf(result: CheckResult): GuardRow {
