@@ -164,7 +164,7 @@ A lookup that fails or hits a rate limit is noted in the report and never fails 
 
 ## Uninstall
 
-The guard holds installs, never removals: uninstalling or disabling it, or any other plugin, always goes straight through.
+The guard holds installs, never removals: uninstalling or disabling it, or any other plugin, goes straight through when the command says so plainly. One whose action is only known as it runs, such as `claude plugin "$ACTION" …`, is held, since it could as well be an install.
 
 **Remove it** in Claude Code:
 
