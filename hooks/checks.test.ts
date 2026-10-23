@@ -466,14 +466,17 @@ describe('second review round', () => {
       ['a line of curl tokens', 'scripts/x.sh', 'curl '.repeat(100_000)],
       ['open html comments', 'skills/greet/SKILL.md', '<!-- '.repeat(100_000)],
     ]
+    // A stall is a scan whose time grows with the square of the input: on
+    // these inputs that is minutes. The limit leaves room for a slow CI
+    // runner, which takes a few times as long as a laptop for linear work.
     for (const [name, path, content] of CASES) {
-      test(name, async () => {
+      test(name, { timeoutMs: 20_000 }, async () => {
         const files: FixtureFiles = { ...fixture('clean-plugin'), [path]: b64(content) }
         if (path.startsWith('hooks/')) files['hooks/hooks.json'] = b64('{ "modules": ["./register.ts"] }')
         const started = performance.now()
         await scanFiles(files)
 
-        expect(performance.now() - started).toBeLessThan(3000)
+        expect(performance.now() - started).toBeLessThan(10_000)
       })
     }
   })

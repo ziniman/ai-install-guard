@@ -31,6 +31,20 @@ describe('reading /plugin', () => {
     expect(readPluginArgs('uninstall notes@acme')).toEqual({ kind: 'pass', browse: false })
   })
 
+  test('removing or turning off a plugin, the guard included, is never held', () => {
+    for (const args of ['uninstall ai-install-guard@ai-install-guard', 'remove ai-install-guard@ai-install-guard', 'disable ai-install-guard@ai-install-guard', 'marketplace remove ai-install-guard']) {
+      expect(readPluginArgs(args)).toEqual({ kind: 'pass', browse: false })
+    }
+    for (const command of [
+      'claude plugin uninstall ai-install-guard@ai-install-guard',
+      'claude plugin uninstall --scope project ai-install-guard@ai-install-guard',
+      'claude plugin disable ai-install-guard@ai-install-guard',
+      'claude plugin marketplace remove ai-install-guard',
+    ]) {
+      expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
+    }
+  })
+
   test('what the guard cannot scan is held as unreadable, with the reason', () => {
     expect(readPluginArgs('install notes --marketplace acme/market')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('/plugin marketplace add acme/market') })
     expect(readPluginArgs('install notes other')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('more than one plugin') })

@@ -16,6 +16,8 @@
 /plugin install ai-install-guard --marketplace ziniman/ai-install-guard
 ```
 
+To turn it off or remove it, see [Uninstall](#uninstall).
+
 </div>
 
 > **Status: early development.** `/plugin install` and `/plugin marketplace add`, and the same installs when Claude runs `claude plugin` itself, are held until you approve the exact version the guard scanned. `/guard scan` checks a folder or a repository before you install it anywhere. The other gates are being built in stages; see [Where it steps in](#where-it-steps-in) and [Roadmap](#roadmap).
@@ -28,7 +30,7 @@ AI Install Guard is a Claude Code mod that stops every new plugin, mod, skill, M
 
 You, before you add something to Claude Code. It runs inside your own session, needs no account, server or agent, and is open source, so you can read every check it makes. It reaches the network only to fetch the candidate from where it lives and to read that repository's public details; any outside lookup stays optional and off by default.
 
-Company security platforms such as AIR, Pluto and Neo watch a whole fleet of agents and enforce policy across it. The guard does not replace them: it is an open, local check for one developer's installs, and it works the same whether or not your company runs one.
+Company-wide security platforms watch a whole fleet of agents and enforce policy across it. The guard does not replace them: it is an open, local check for one developer's installs, and it works the same whether or not your company runs one.
 
 ## How it works
 
@@ -159,6 +161,40 @@ claude plugin configure ai-install-guard
 ```
 
 A lookup that fails or hits a rate limit is noted in the report and never fails the scan.
+
+## Uninstall
+
+The guard holds installs, never removals: uninstalling or disabling it, or any other plugin, goes straight through when the command says so plainly. One whose action is only known as it runs, such as `claude plugin "$ACTION" …`, is held, since it could as well be an install.
+
+**Remove it** in Claude Code:
+
+```
+/plugin uninstall ai-install-guard@ai-install-guard
+```
+
+or from a terminal:
+
+```bash
+claude plugin uninstall ai-install-guard@ai-install-guard
+```
+
+If you installed it for one project only (`--scope project` or `--scope local`), add the same `--scope`. To remove its marketplace as well, run `/plugin marketplace remove ai-install-guard`. A session that is already open may keep the guard loaded until you restart it.
+
+**Turn it off for a while** with `/plugin disable ai-install-guard@ai-install-guard`, and back on with `/plugin enable ai-install-guard@ai-install-guard`.
+
+**If it ever gets in your way.** The guard fails closed: when it cannot check something, it stops it. So a bug in the guard could hold an install, or a shell command it mistakes for one, that should have gone through. You can always turn it off from a terminal outside Claude Code, where the guard sees nothing:
+
+```bash
+claude plugin disable ai-install-guard@ai-install-guard
+```
+
+If even that fails, set `"ai-install-guard@ai-install-guard": false` under `enabledPlugins` in `~/.claude/settings.json` (or in the project's `.claude/settings.json` if you installed it there). Then [open an issue](https://github.com/ziniman/ai-install-guard/issues) with the command it stopped, so it can be fixed.
+
+**Your decisions.** Approvals and rejections are kept in the store Claude Code gives the plugin, which can outlast an uninstall, so a later reinstall may find them again. To start clean, run `/guard list` before you uninstall and `/guard forget <name>` for each one. The guard writes no files of its own: its only folder is the temporary one it fetches into, removed after each scan.
+
+**If your organization installed it** through managed settings, it is theirs to remove; ask whoever manages your Claude Code settings.
+
+**In Claude chat,** remove the skill under **Settings > Capabilities > Skills**.
 
 ## What it is not
 
