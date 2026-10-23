@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## Unreleased
+
+**`README`** - An Uninstall section, linked from the top: how to remove or pause the guard in Claude Code or from a terminal, how to turn it off from outside Claude Code if it ever holds something it should not, where your decisions are kept, and that the guard never holds an uninstall or a disable
+
+---
+
 ## v0.3.0 &nbsp;·&nbsp; 2026-10-23
 
 **`/plugin install`** - The guard now holds installs. `/plugin install <name>@<marketplace>` and `/plugin marketplace add <source>` are looked up (the repository, folder and commit Claude Code would install from), scanned at that commit and answered in the command's place, so nothing installs until you press Install in the pane. Install records your approval for that commit and tree hash, looks the plugin up once more, and runs your command again; a commit that moved since the scan is not installed. A version you already approved installs without asking again unless a new scan judges it worse, a rejected one stays refused, and what the guard cannot pin (an npm package, a plugin no marketplace lists, a name two marketplaces share) is Could not verify, with Install anyway behind a second confirmation that lets that one command through once. The `/plugin` menu itself is not gated yet, and says so when it opens
