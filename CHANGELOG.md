@@ -8,6 +8,8 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 **`README`** - An Uninstall section, linked from the top: how to remove or pause the guard in Claude Code or from a terminal, how to turn it off from outside Claude Code if it ever holds something it should not, how to clear your decisions before you go, and that the guard never holds an uninstall or a disable
 
+**`ci`** - The workflows use the current Node 24 releases of checkout, setup-node and upload-artifact, pinned to their commits, instead of Node 20 ones the runners now force onto Node 24, and npm no longer warns about the `always-auth` setting the old setup-node wrote
+
 ---
 
 ## v0.3.0 &nbsp;·&nbsp; 2026-10-23
