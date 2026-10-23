@@ -10,7 +10,7 @@
     {
       "name": "ai-install-guard",
       "source": "./",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "description": "Scans plugins, mods, skills and MCP servers without running them, shows a PASS / WARN / FAIL verdict, and installs nothing until you approve.",
       "category": "security",
       "keywords": [

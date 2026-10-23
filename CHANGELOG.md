@@ -4,7 +4,7 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
-## Unreleased
+## v0.3.1 &nbsp;·&nbsp; 2026-10-23
 
 **`README`** - An Uninstall section, linked from the top: how to remove or pause the guard in Claude Code or from a terminal, how to turn it off from outside Claude Code if it ever holds something it should not, how to clear your decisions before you go, and that the guard never holds an uninstall or a disable
 
