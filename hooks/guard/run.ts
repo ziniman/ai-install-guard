@@ -92,8 +92,15 @@ export async function showUnverified($: EngineInterface, target: string, reason:
   const placed = await openPane($)
   const scanning = { ...withRequest(scanningView(target, options.action), options.request), scanId }
   if (!(await takePane($, scanning))) return { view: scanning, placed, superseded: true }
-  const failed = await showFailure($, target, `Could not verify ${safeLine(target)}: ${safeLine(reason)}`, options, scanId)
+  // The banner already says Could not verify and the title names the target: the pane shows the reason itself.
+  const failed = await showFailure($, target, `Could not verify ${safeLine(target)}: ${safeLine(reason)}`, options, scanId, sentence(reason))
   return { view: failed.view, placed, superseded: !failed.shown }
+}
+
+/** A reason as a sentence of its own: made safe, its first letter a capital. */
+function sentence(reason: string): string {
+  const safe = safeLine(reason)
+  return safe.charAt(0).toUpperCase() + safe.slice(1)
 }
 
 /**
@@ -101,12 +108,12 @@ export async function showUnverified($: EngineInterface, target: string, reason:
  * scanning pane, and never an older verdict in its place. Only while this
  * scan still owns the pane; `shown` says whether it did.
  */
-async function showFailure($: EngineInterface, target: string, reason: string, options: ShowOptions, scanId: string): Promise<{ view: GuardView; shown: boolean }> {
+async function showFailure($: EngineInterface, target: string, reason: string, options: ShowOptions, scanId: string, shownReason = reason): Promise<{ view: GuardView; shown: boolean }> {
   const failed: GuardView = {
     ...withRequest(scanningView(target, options.action), options.request),
     scanId,
     stage: '',
-    verdict: { kind: 'unverified', recommendation: 'Could not verify', reasons: [reason], counts: { pass: 0, warn: 0, fail: 0, info: 0 } },
+    verdict: { kind: 'unverified', recommendation: 'Could not verify', reasons: [shownReason], counts: { pass: 0, warn: 0, fail: 0, info: 0 } },
   }
   if (!(await owns($, scanId).catch(() => false))) return { view: failed, shown: false }
   await saveReport($, scanId, reason)

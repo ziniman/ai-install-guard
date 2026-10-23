@@ -13,6 +13,7 @@ import { sourceRoot } from '../guard/view'
 import { modHost } from '../mod-host'
 import { resolvePin } from '../scan/remote'
 import { safeLine } from '../scan/safe-text'
+import type { VerdictKind } from '../scan/verdict'
 import type { InstallRequest, Reading } from './requests'
 import { targetOf } from './resolve'
 
@@ -31,7 +32,8 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
   const options = { action: 'install' as const, request, lookups }
   if (reading.kind === 'unreadable') {
     const shown = await showUnverified($, reading.label, reading.reason, options)
-    return shown.superseded ? superseded(request) : hold(request, 'Could not verify', '', shown.placed)
+    // The reason is the guard's own reading of the command, so Claude may read it too.
+    return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed, { why: reading.reason, toClaude: true })
   }
   const name = nameOf(reading.request)
   const host = modHost($)
@@ -41,7 +43,8 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
       return { kind: 'allow', note: BROWSE_NOTE }
     case 'unverifiable': {
       const shown = await showUnverified($, name, target.reason, options)
-      return shown.superseded ? superseded(request) : hold(request, 'Could not verify', '', shown.placed)
+      // This reason can quote a marketplace's own catalog: the person reads it, Claude does not.
+      return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed, { why: target.reason, toClaude: false })
     }
     case 'remote': {
       // The commit the install would take now. A rejection of it stands
@@ -70,8 +73,11 @@ function nameOf(request: InstallRequest): string {
   return safeLine(request.marketplace === undefined ? request.plugin : `${request.plugin}@${request.marketplace}`)
 }
 
+/** How a held install that could not be checked is described. */
+const UNVERIFIED = { kind: 'unverified', recommendation: 'Could not verify' } as const
+
 function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement {
-  if (shown.kind === 'failed') return shown.superseded ? superseded(request) : hold(request, 'Could not verify', '', shown.placed)
+  if (shown.kind === 'failed') return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed)
   const sha = shown.report.source?.sha
   const where = sha === undefined ? '' : ` at commit ${sha.slice(0, 12)}`
   // The same files approved before (through /guard scan, or an earlier install), and judged no
@@ -79,7 +85,7 @@ function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement
   if (shown.view.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${name}${where} on ${day(shown.view.decidedAt ?? Date.now())}; installing it` }
   if (shown.view.decision === 'rejected') return rejected(request, name, where, shown.view.decidedAt)
   if (shown.superseded) return superseded(request)
-  return hold(request, shown.report.verdict.recommendation, where, shown.placed, shown.text)
+  return hold(request, shown.report.verdict, where, shown.placed, { report: shown.text })
 }
 
 /** Another scan took the pane before this one finished: nothing to press, so nothing installs. */
@@ -96,19 +102,34 @@ function rejected(request: GuardRequest, name: string, where: string, decidedAt:
   return { kind: 'hold', text: `AI Install Guard: you rejected ${name}${where}${when}. Nothing was installed. /guard forget ${name} judges it again.` }
 }
 
-/** The answer while an install waits for the person's decision in the pane. */
-function hold(request: GuardRequest, recommendation: string, where: string, placed: boolean, report?: string): Judgement {
-  const what = `${recommendation} for ${request.label}${where}`
+/**
+ * The answer while an install waits for the person's decision in the pane.
+ * `why` says why it could not be checked; Claude reads it only when it is the
+ * guard's own reading of Claude's command, never words from a catalog.
+ */
+function hold(
+  request: GuardRequest,
+  verdict: { kind: VerdictKind; recommendation: string },
+  where: string,
+  placed: boolean,
+  more: { report?: string; why?: string; toClaude?: boolean } = {},
+): Judgement {
+  const unverified = verdict.kind === 'unverified'
+  const why = more.why === undefined ? '' : `: ${safeLine(more.why)}`
+  const what = unverified ? `could not verify ${request.label}${where}` : `${verdict.recommendation} for ${request.label}${where}`
+  // Do not install and Could not verify install only through Install anyway, which asks twice.
+  const button = unverified || verdict.kind === 'reject' ? 'Install anyway (it asks you to confirm)' : 'Install'
   if (request.origin === 'tool') {
     const next = placed
       ? 'The verdict and the Install and Reject buttons are in the guard\'s pane. Tell the person the install waits for their decision there, and run the same command again only after they say they approved it.'
       : 'This session cannot show the guard\'s pane, so the person cannot approve it here.'
-    return { kind: 'hold', text: `AI Install Guard held this install for the person to review: ${what}. Nothing was installed. Do not retry it or install it another way. ${next}` }
+    return { kind: 'hold', text: `AI Install Guard held this install for the person to review: ${unverified ? `it ${what}${more.toClaude === true ? why : ''}` : what}. Nothing was installed. Do not retry it or install it another way. ${next}` }
   }
+  const said = unverified ? `AI Install Guard ${what}${why}.` : `AI Install Guard: ${what}.`
   if (!placed) {
-    return { kind: 'hold', text: `${report === undefined ? '' : `${report}\n\n`}AI Install Guard: ${what}. Nothing was installed: approving an install needs the guard's pane, which this session cannot show.` }
+    return { kind: 'hold', text: `${more.report === undefined ? '' : `${more.report}\n\n`}${said} Nothing was installed: approving an install needs the guard's pane, which this session cannot show.` }
   }
-  return { kind: 'hold', text: `AI Install Guard: ${what}. Nothing is installed yet: press Install in the guard's pane to install it, or Reject.` }
+  return { kind: 'hold', text: `${said} Nothing is installed yet: press ${button} in the guard's pane to install it, or Reject.` }
 }
 
 function day(time: number): string {
