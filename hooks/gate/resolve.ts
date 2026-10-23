@@ -4,7 +4,7 @@
 // the candidate runs.
 
 import type { Host } from '../scan/host'
-import { looksRemote, parseRemote, type RemoteSpec } from '../scan/remote'
+import { looksRemote, parseRemote, resolvePin, type RemoteSpec } from '../scan/remote'
 import { safeLine } from '../scan/safe-text'
 import type { InstallRequest } from './requests'
 
@@ -33,6 +33,7 @@ export async function targetOf(host: Host, request: InstallRequest): Promise<Tar
 }
 
 async function pluginTarget(host: Host, request: Extract<InstallRequest, { kind: 'plugin' }>): Promise<Target> {
+  if (request.marketplaceSource !== undefined) return fromNewMarketplace(host, request.plugin, request.marketplaceSource)
   const listing = await claudeJson(host, ['plugin', 'list', '--available', '--json'], 'the plugin list')
   const available: Listed[] = isRecord(listing) && Array.isArray(listing.available) ? (listing.available as Listed[]) : []
   const installed = isRecord(listing) && Array.isArray(listing.installed) ? (listing.installed as { id?: unknown }[]) : []
@@ -112,7 +113,7 @@ async function sourceTarget(host: Host, entry: Listed, marketOf: () => Promise<M
     case 'github':
       return remote(text(source.repo) === undefined ? undefined : `https://github.com/${text(source.repo)}.git`, ref)
     default:
-      return { kind: 'unverifiable', reason: `it installs from a ${safeLine(source.source)} source, which the guard cannot read yet` }
+      return { kind: 'unverifiable', reason: `it installs from ${/^(?:[aeiou]|npm)/i.test(source.source) ? 'an' : 'a'} ${safeLine(source.source)} source, which the guard cannot read yet` }
   }
 }
 
@@ -134,6 +135,56 @@ async function marketplaceTarget(host: Host, source: string): Promise<Target> {
   const spec = parseRemote(source)
   if (/\.json$/i.test(spec.url)) return { kind: 'unverifiable', reason: 'it adds a catalog file from a web address; the guard scans the repository a marketplace lives in' }
   return { kind: 'remote', spec }
+}
+
+/**
+ * A plugin from a marketplace `--marketplace` adds first: the marketplace's
+ * catalog is read at the commit that would be added (from GitHub, for a
+ * repository there) or from its folder, and the plugin's own entry names
+ * the folder or repository to scan.
+ */
+async function fromNewMarketplace(host: Host, plugin: string, source: string): Promise<Target> {
+  const market = await marketplaceTarget(host, source)
+  if (market.kind !== 'remote' && market.kind !== 'local') return market.kind === 'browse' ? { kind: 'unverifiable', reason: 'it names no marketplace' } : market
+  if (market.kind === 'local') {
+    const entry = await catalogEntry(host, { name: safeLine(source), installLocation: market.path }, plugin)
+    if (entry === undefined) return { kind: 'unverifiable', reason: `${safeLine(plugin)} is not in the marketplace at ${safeLine(source)}` }
+    return sourceTarget(host, entry, async () => ({ name: safeLine(source), installLocation: market.path }))
+  }
+  const pin = await resolvePin(host, market.spec)
+  const catalog = await remoteCatalog(host, market.spec.url, pin.sha, pin.subdir)
+  if (typeof catalog === 'string') return { kind: 'unverifiable', reason: catalog }
+  const found = catalog.find(item => isRecord(item) && item.name === plugin)
+  if (!isRecord(found)) return { kind: 'unverifiable', reason: `${safeLine(plugin)} is not in the marketplace at ${safeLine(source)}` }
+  if (typeof found.source === 'string') {
+    // A folder of the marketplace's own repository, at the same commit.
+    if (!found.source.startsWith('./')) return { kind: 'unverifiable', reason: 'its source is not a folder inside its marketplace' }
+    const parts = [pin.subdir ?? '', found.source].join('/').split('/').filter(part => part !== '' && part !== '.')
+    if (parts.includes('..')) return { kind: 'unverifiable', reason: 'its source leads outside its marketplace' }
+    return { kind: 'remote', spec: { url: market.spec.url, ref: pin.sha, ...(parts.length === 0 ? {} : { subdir: parts.join('/') }) } }
+  }
+  return sourceTarget(host, { name: plugin, source: found.source }, async () => undefined)
+}
+
+/**
+ * A marketplace's catalog at one commit of its repository, read from GitHub;
+ * a string says why it could not be read. Other hosts are not read before
+ * the marketplace is added.
+ */
+async function remoteCatalog(host: Host, url: string, sha: string, subdir: string | undefined): Promise<unknown[] | string> {
+  const repo = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)\.git$/.exec(url)
+  if (repo === null) return 'its marketplace is not on GitHub, so its catalog cannot be read before it is added; add it first with /plugin marketplace add'
+  if (host.fetch === undefined) return 'the catalog of its marketplace cannot be read here'
+  const path = `${subdir === undefined ? '' : `${subdir}/`}.claude-plugin/marketplace.json`
+  const answer = await host.fetch(`https://raw.githubusercontent.com/${repo[1]}/${repo[2]}/${sha}/${path.split('/').map(encodeURIComponent).join('/')}`).catch(() => undefined)
+  if (answer === undefined || !answer.ok) return 'the catalog of its marketplace could not be read from GitHub'
+  if (answer.text.length > MAX_CATALOG_BYTES) return 'the catalog of its marketplace is too large to read'
+  try {
+    const parsed: unknown = JSON.parse(answer.text)
+    return isRecord(parsed) && Array.isArray(parsed.plugins) ? parsed.plugins : 'the catalog of its marketplace lists no plugins'
+  } catch {
+    return 'the catalog of its marketplace is not valid JSON'
+  }
 }
 
 async function marketplaceList(host: Host): Promise<Marketplace[]> {

@@ -46,7 +46,8 @@ describe('reading /plugin', () => {
   })
 
   test('what the guard cannot scan is held as unreadable, with the reason', () => {
-    expect(readPluginArgs('install notes --marketplace acme/market')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('/plugin marketplace add acme/market') })
+    expect(readPluginArgs('install notes --marketplace acme/market')).toEqual({ kind: 'install', request: { kind: 'plugin', verb: 'install', plugin: 'notes', marketplaceSource: 'acme/market' }, label: '/plugin install notes --marketplace acme/market' })
+    expect(readPluginArgs('install notes@acme --marketplace acme/market')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('name the plugin alone') })
     expect(readPluginArgs('install notes other')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('more than one plugin') })
     expect(readPluginArgs('install left-pad@npm')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('npm') })
     expect(readPluginArgs('install --surprise notes')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('--surprise') })
@@ -88,7 +89,9 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('claude plugin install $NAME')).toMatchObject({ kind: 'unreadable' })
     expect(readShellCommand('echo "claude plugin install notes@acme" | bash')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('only known as it runs') })
     expect(readShellCommand('$(echo claude) plugin install notes@acme')).toMatchObject({ kind: 'unreadable' })
-    expect(readShellCommand('claude plugin install notes --marketplace acme/market')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('marketplace add') })
+    // A bare owner/repo could also be a folder in the shell's current folder.
+    expect(readShellCommand('claude plugin install notes --marketplace acme/market')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('https://github.com/<owner>/<repo>') })
+    expect(readShellCommand('claude plugin install notes --marketplace https://github.com/acme/market')).toMatchObject({ kind: 'install', request: { marketplaceSource: 'https://github.com/acme/market' } })
   })
 
   test('an install hidden behind a variable, or riding along with another command, is held', () => {
@@ -493,7 +496,9 @@ describe('gate A: /plugin install', () => {
     serveUi(on)
     const state = world(on)
     const answer = await $.command.run(typed('plugin', 'install packed@acme'))
-    expect(answer.text).toContain('Could not verify for /plugin install packed@acme')
+    // The answer says why, so the person can act on it without the pane.
+    expect(answer.text).toContain('AI Install Guard could not verify /plugin install packed@acme: it installs from an npm source, which the guard cannot read yet.')
+    expect(answer.text).toContain('press Install anyway (it asks you to confirm)')
 
     const pane = await mountPane($)
     expect(await pane.find({ type: 'Text', text: /npm source, which the guard cannot read yet/ })).toBeDefined()
@@ -504,7 +509,7 @@ describe('gate A: /plugin install', () => {
 
     // The pass is used up: the next install is held again.
     const again = await $.command.run(typed('plugin', 'install packed@acme'))
-    expect(again.text).toContain('Could not verify')
+    expect(again.text).toMatch(/could not verify/i)
     expect(state.core).toEqual(['install packed@acme'])
   })
 
@@ -513,7 +518,7 @@ describe('gate A: /plugin install', () => {
     serveUi(on)
     const state = world(on)
     const answer = await $.command.run(typed('plugin', 'install ghost@acme'))
-    expect(answer.text).toContain('Could not verify')
+    expect(answer.text).toMatch(/could not verify/i)
     const pane = await mountPane($)
     expect(await pane.find({ type: 'Text', text: /not in the marketplaces you added/ })).toBeDefined()
     expect(state.core).toEqual([])
@@ -558,7 +563,7 @@ describe('gate A: /plugin install', () => {
     serveUi(on)
     const state = world(on, { market: { 'plugins/local': { link: '/etc' } } })
     const answer = await $.command.run(typed('plugin', 'install local@acme'))
-    expect(answer.text).toContain('Could not verify')
+    expect(answer.text).toMatch(/could not verify/i)
     const pane = await mountPane($)
     expect(await pane.find({ type: 'Text', text: /passes through a symbolic link/ })).toBeDefined()
     expect(state.core).toEqual([])
@@ -596,6 +601,57 @@ describe('gate A: /plugin install', () => {
     on('state.get', () => ({ deny: 'the state is gone' }))
     const answer = await $.command.run(typed('plugin', 'install notes@acme'))
     expect(answer.text).toContain('stopped this install')
+    expect(state.core).toEqual([])
+  })
+})
+
+describe('gate A: installing from a marketplace not added yet', () => {
+  const catalogAt = (repo: string, plugins: unknown[]) => ({ [`https://raw.githubusercontent.com/${repo}/${SHA}/.claude-plugin/marketplace.json`]: JSON.stringify({ name: 'm', plugins }) })
+  /** Answers GitHub's raw files from `files`; anything else goes on as if there were no network. */
+  const serveRaw = (on: On, files: Record<string, string>) =>
+    on('http.fetch', ($, e, next) => (files[e.url] === undefined ? next(e) : { value: { status: 200, ok: true, headers: {}, text: files[e.url] as string } }))
+
+  test("the plugin's folder is read from the new marketplace's catalog at the commit it would add, and scanned", async ($, on) => {
+    const store = seededStore(on)
+    serveUi(on)
+    const state = world(on)
+    serveRaw(on, catalogAt('acme/tools', [{ name: 'notes', source: './plugins/notes' }]))
+    const answer = await $.command.run(typed('plugin', 'install notes --marketplace acme/tools'))
+    expect(answer.text).toContain('Safe to install for /plugin install notes --marketplace acme/tools at commit aaaaaaaaaaaa')
+    expect(state.core).toEqual([])
+
+    const pane = await mountPane($)
+    await pane.press({ key: 'install' })
+    const [decision] = store.get('decisions') as { root?: string; sha?: string }[]
+    expect(decision).toMatchObject({ root: 'https://github.com/acme/tools.git#plugins/notes', sha: SHA })
+    expect(state.core).toEqual(['install notes --marketplace acme/tools'])
+    await pane.unmount()
+  })
+
+  test('a plugin at the root of its marketplace is the whole repository', async ($, on) => {
+    const store = seededStore(on)
+    serveUi(on)
+    const state = world(on, { work: fixture('clean-plugin') })
+    serveRaw(on, catalogAt('acme/rtl', [{ name: 'rtl', source: './' }]))
+    const answer = await $.command.run(typed('plugin', 'install rtl --marketplace acme/rtl'))
+    expect(answer.text).toContain('Safe to install')
+    const pane = await mountPane($)
+    await pane.press({ key: 'install' })
+    const [decision] = store.get('decisions') as { root?: string }[]
+    expect(decision?.root).toBe('https://github.com/acme/rtl.git')
+    expect(state.core).toEqual(['install rtl --marketplace acme/rtl'])
+    await pane.unmount()
+  })
+
+  test('a plugin the catalog does not list, or a marketplace off GitHub, says why it could not be verified', async ($, on) => {
+    seededStore(on)
+    serveUi(on)
+    const state = world(on)
+    serveRaw(on, catalogAt('acme/tools', [{ name: 'other', source: './other' }]))
+    const missing = await $.command.run(typed('plugin', 'install notes --marketplace acme/tools'))
+    expect(missing.text).toContain('could not verify /plugin install notes --marketplace acme/tools: notes is not in the marketplace at acme/tools')
+    const elsewhere = await $.command.run(typed('plugin', 'install notes --marketplace https://git.example.org/team/market.git'))
+    expect(elsewhere.text).toContain('its marketplace is not on GitHub')
     expect(state.core).toEqual([])
   })
 })
@@ -643,14 +699,14 @@ describe("gate B: Claude's own install commands", () => {
     const state = world(on)
     const command = 'echo "claude plugin install notes@acme" | bash'
     const refused = await $.tool.call(bash(command))
-    expect(refused.deny).toContain('Could not verify')
+    expect(refused.deny).toMatch(/could not verify/i)
 
     const pane = await mountPane($)
     await pane.press({ key: 'install' })
     await pane.press({ key: 'confirm' })
     await pane.unmount()
     expect((await $.tool.call(bash(command))).deny).toBeUndefined()
-    expect((await $.tool.call(bash(command))).deny).toContain('Could not verify')
+    expect((await $.tool.call(bash(command))).deny).toMatch(/could not verify/i)
     expect(state.core).toEqual([command])
   })
 
