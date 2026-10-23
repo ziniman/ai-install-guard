@@ -151,6 +151,8 @@ async function fromNewMarketplace(host: Host, plugin: string, source: string): P
     if (entry === undefined) return { kind: 'unverifiable', reason: `${safeLine(plugin)} is not in the marketplace at ${safeLine(source)}` }
     return sourceTarget(host, entry, async () => ({ name: safeLine(source), installLocation: market.path }))
   }
+  // Only a GitHub marketplace's catalog can be read before it is added: anything else needs no lookup to say so.
+  if (githubRepo(market.spec.url) === undefined) return { kind: 'unverifiable', reason: NOT_ON_GITHUB }
   const pin = await resolvePin(host, market.spec)
   const catalog = await remoteCatalog(host, market.spec.url, pin.sha, pin.subdir)
   if (typeof catalog === 'string') return { kind: 'unverifiable', reason: catalog }
@@ -172,11 +174,11 @@ async function fromNewMarketplace(host: Host, plugin: string, source: string): P
  * the marketplace is added.
  */
 async function remoteCatalog(host: Host, url: string, sha: string, subdir: string | undefined): Promise<unknown[] | string> {
-  const repo = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)\.git$/.exec(url)
-  if (repo === null) return 'its marketplace is not on GitHub, so its catalog cannot be read before it is added; add it first with /plugin marketplace add'
+  const repo = githubRepo(url)
+  if (repo === undefined) return NOT_ON_GITHUB
   if (host.fetch === undefined) return 'the catalog of its marketplace cannot be read here'
   const path = `${subdir === undefined ? '' : `${subdir}/`}.claude-plugin/marketplace.json`
-  const answer = await host.fetch(`https://raw.githubusercontent.com/${repo[1]}/${repo[2]}/${sha}/${path.split('/').map(encodeURIComponent).join('/')}`).catch(() => undefined)
+  const answer = await host.fetch(`https://raw.githubusercontent.com/${repo.owner}/${repo.name}/${sha}/${path.split('/').map(encodeURIComponent).join('/')}`).catch(() => undefined)
   if (answer === undefined || !answer.ok) return 'the catalog of its marketplace could not be read from GitHub'
   if (answer.text.length > MAX_CATALOG_BYTES) return 'the catalog of its marketplace is too large to read'
   try {
@@ -185,6 +187,14 @@ async function remoteCatalog(host: Host, url: string, sha: string, subdir: strin
   } catch {
     return 'the catalog of its marketplace is not valid JSON'
   }
+}
+
+const NOT_ON_GITHUB = 'its marketplace is not on GitHub, so its catalog cannot be read before it is added; add it first with /plugin marketplace add'
+
+/** The owner and name of a GitHub repository's https address, as `parseRemote` writes it. */
+function githubRepo(url: string): { owner: string; name: string } | undefined {
+  const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)\.git$/.exec(url)
+  return match === null ? undefined : { owner: match[1] as string, name: match[2] as string }
 }
 
 async function marketplaceList(host: Host): Promise<Marketplace[]> {

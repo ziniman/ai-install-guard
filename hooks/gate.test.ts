@@ -650,8 +650,11 @@ describe('gate A: installing from a marketplace not added yet', () => {
     serveRaw(on, catalogAt('acme/tools', [{ name: 'other', source: './other' }]))
     const missing = await $.command.run(typed('plugin', 'install notes --marketplace acme/tools'))
     expect(missing.text).toContain('could not verify /plugin install notes --marketplace acme/tools: notes is not in the marketplace at acme/tools')
+    const before = state.ran.length
     const elsewhere = await $.command.run(typed('plugin', 'install notes --marketplace https://git.example.org/team/market.git'))
     expect(elsewhere.text).toContain('its marketplace is not on GitHub')
+    // Nothing is looked up to say so.
+    expect(state.ran.slice(before).filter(argv => argv.includes('ls-remote'))).toEqual([])
     expect(state.core).toEqual([])
   })
 })
