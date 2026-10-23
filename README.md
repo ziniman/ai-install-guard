@@ -30,7 +30,7 @@ AI Install Guard is a Claude Code mod that stops every new plugin, mod, skill, M
 
 You, before you add something to Claude Code. It runs inside your own session, needs no account, server or agent, and is open source, so you can read every check it makes. It reaches the network only to fetch the candidate from where it lives and to read that repository's public details; any outside lookup stays optional and off by default.
 
-Company security platforms such as AIR, Pluto and Neo watch a whole fleet of agents and enforce policy across it. The guard does not replace them: it is an open, local check for one developer's installs, and it works the same whether or not your company runs one.
+Company-wide security platforms watch a whole fleet of agents and enforce policy across it. The guard does not replace them: it is an open, local check for one developer's installs, and it works the same whether or not your company runs one.
 
 ## How it works
 
@@ -190,7 +190,7 @@ claude plugin disable ai-install-guard@ai-install-guard
 
 If even that fails, set `"ai-install-guard@ai-install-guard": false` under `enabledPlugins` in `~/.claude/settings.json` (or in the project's `.claude/settings.json` if you installed it there). Then [open an issue](https://github.com/ziniman/ai-install-guard/issues) with the command it stopped, so it can be fixed.
 
-**Your decisions.** Approvals and rejections are kept in Claude Code's store for the plugin, a file under `~/.claude/plugins/store/` whose name starts with `ai-install-guard_`. `/guard forget <name>` removes the decisions about one name; if the file is still there after you uninstall, delete it to remove all of them. The guard writes no other files: its only folder is the temporary one it fetches into, removed after each scan.
+**Your decisions.** Approvals and rejections are kept in the store Claude Code gives the plugin, which can outlast an uninstall, so a later reinstall may find them again. To start clean, run `/guard list` before you uninstall and `/guard forget <name>` for each one. The guard writes no files of its own: its only folder is the temporary one it fetches into, removed after each scan.
 
 **If your organization installed it** through managed settings, it is theirs to remove; ask whoever manages your Claude Code settings.
 
