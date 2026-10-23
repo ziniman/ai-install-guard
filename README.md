@@ -45,7 +45,7 @@ Approvals are remembered by commit and content hash, so the same version is neve
 
 | Layer | Catches | What happens | Today |
 |-------|---------|--------------|-------|
-| Slash command | `/plugin install <name>@<marketplace>`, `/plugin marketplace add <source>` | Held until you press Install | Yes |
+| Slash command | `/plugin install <name>@<marketplace>`, `/plugin install <name> --marketplace <source>`, `/plugin marketplace add <source>` | Held until you press Install | Yes |
 | Claude's own commands | `claude plugin install`, `claude plugin update`, `claude plugin marketplace add`, also inside `sh -c`, `eval` or a here-document | Refused, with a note telling Claude the install waits for your decision | Yes |
 | Claude's own commands | `claude mcp add`, copies into skills folders, edits to `.mcp.json` or settings, `npx -y`, `curl \| sh` | Refused until scanned | Next stage |
 | Mod loading | Any mod about to load, however it got there, including plugins picked from the `/plugin` menu | Refused if its files do not match what you approved | Later |
@@ -54,7 +54,9 @@ Approvals are remembered by commit and content hash, so the same version is neve
 
 ### Installing with the guard on
 
-Run `/plugin install notes@acme` as usual. The guard looks up where Claude Code would install it from (the repository, folder and commit its marketplace names), scans that commit, and answers in the command's place, so nothing is installed yet. The pane shows the verdict and the command it is holding.
+Run `/plugin install notes@acme` as usual. The guard looks up where Claude Code would install it from (the repository, folder and commit its marketplace names), scans that commit, and answers in the command's place, so nothing is installed yet. The pane shows the verdict and the command it is holding. When it could not verify the install, the command's answer says why too.
+
+To install from a marketplace you have not added yet, `/plugin install rtl-toggle --marketplace owner/repo` works the same way: for a marketplace on GitHub, the guard reads its catalog at the commit Claude Code would add and scans the folder or repository that catalog names for the plugin. A marketplace hosted elsewhere is Could not verify until you add it with `/plugin marketplace add`, which the guard scans.
 
 - **Install** (`i`) records your approval for that exact commit and tree hash, looks the plugin up once more, and runs your `/plugin` command again. If the commit moved since the scan, nothing is installed and the next `/plugin install` scans the new one.
 - **Reject** (`r`) records the rejection. The same version is refused from then on; `/guard forget notes@acme` judges it again.
@@ -143,7 +145,7 @@ A security tool should be held to its own rules, so here is everything this mod 
 | `command.register` | Adds the `/guard` command. |
 | `store`, `state` | Remembers your decisions and the last report, holds what the pane shows, and keeps a one-time pass for an install you allowed anyway. |
 | `ui` | The verdict pane, its status line and toasts, and copying the report. |
-| `http.fetch` | For a repository on GitHub, reads its public metadata from GitHub's API: age, owner, stars, contributors, and whether the scanned commit is signed and on the default branch. GitHub is where the code came from, so this tells it nothing new. With **outside lookups** on, also sends package names to [OSV](https://osv.dev) and reads Anthropic's [official plugin list](https://github.com/anthropics/claude-plugins-official). |
+| `http.fetch` | For a repository on GitHub, reads its public metadata from GitHub's API: age, owner, stars, contributors, and whether the scanned commit is signed and on the default branch. For `/plugin install <name> --marketplace <owner>/<repo>`, reads that marketplace's catalog from GitHub at the commit that would be added, to find where the plugin is. GitHub is where the code came from, so this tells it nothing new. With **outside lookups** on, also sends package names to [OSV](https://osv.dev) and reads Anthropic's [official plugin list](https://github.com/anthropics/claude-plugins-official). |
 
 A later stage adds, optionally, `model.complete` (a review that can only add warnings).
 

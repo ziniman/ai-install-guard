@@ -185,17 +185,17 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
   const verdict = view.verdict
   return (
     <Box flexDirection="column" width={width}>
-      <Text bold wrap="truncate-end">
+      <Text bold wrap="wrap">
         AI Install Guard · {view.target}
       </Text>
       {header !== '' && (
-        <Text dimColor wrap="truncate-end">
+        <Text dimColor wrap="wrap">
           {header}
         </Text>
       )}
 
       {view.request !== undefined && (
-        <Text dimColor wrap="truncate-end">
+        <Text dimColor wrap="wrap">
           {requestLine(view.request)}
         </Text>
       )}
@@ -210,7 +210,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
             {verdict.recommendation}
           </Text>
           {verdict.reasons.map(reason => (
-            <Text wrap="truncate-end">
+            <Text wrap="wrap">
               {reason}
             </Text>
           ))}
@@ -223,7 +223,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
         </Text>
       )}
       {verdict !== undefined && view.rows.length > 0 && (
-        <Text dimColor wrap="truncate-end">
+        <Text dimColor wrap="wrap">
           Quoted text comes from the scanned files and is untrusted.
         </Text>
       )}

@@ -4,6 +4,14 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.3.2 &nbsp;·&nbsp; 2026-10-23
+
+**`pane`** - The held command, the verdict's reasons and the title wrap instead of being cut off at the pane's edge, so a long reason can be read in a narrow pane. A Could not verify reason shows as a sentence of its own under the banner
+
+**`/plugin install`** - When the guard could not verify an install, the command's answer says why, and names the button that installs it anyway; a scan's own findings stay in the pane. `/plugin install <name> --marketplace <source>` is now scanned like any install: for a marketplace on GitHub, its catalog is read at the commit Claude Code would add, and the folder or repository it names for the plugin is scanned. Claude's own `claude plugin install … --marketplace` must name the marketplace by its https address or full path
+
+---
+
 ## v0.3.1 &nbsp;·&nbsp; 2026-10-23
 
 **`README`** - An Uninstall section, linked from the top: how to remove or pause the guard in Claude Code or from a terminal, how to turn it off from outside Claude Code if it ever holds something it should not, how to clear your decisions before you go, and that the guard never holds an uninstall or a disable

@@ -6,7 +6,8 @@ import { safeLine } from '../scan/safe-text'
 
 /** One thing to add to Claude Code: a plugin from a marketplace, or a marketplace. */
 export type InstallRequest =
-  | { kind: 'plugin'; verb: 'install' | 'update'; plugin: string; marketplace?: string }
+  /** `marketplaceSource` is the marketplace `--marketplace` adds first: a repository or a folder. */
+  | { kind: 'plugin'; verb: 'install' | 'update'; plugin: string; marketplace?: string; marketplaceSource?: string }
   | { kind: 'marketplace'; source: string }
 
 export type Reading =
@@ -70,11 +71,12 @@ function readShell(command: string): Reading {
     if (others > 0) return { kind: 'unreadable', label: only.label, reason: `the command runs more than the install; run ${only.label} as a command of its own, so approving it approves only the install` }
     // The guard cannot see the shell's current folder, so a source named
     // relative to it could be another folder than the one the guard scans.
-    if (only.request.kind === 'marketplace' && !/^(?:https:\/\/|\/|~\/)/i.test(only.request.source)) {
+    const source = only.request.kind === 'marketplace' ? only.request.source : only.request.marketplaceSource
+    if (source !== undefined && !/^(?:https:\/\/|\/|~\/)/i.test(source)) {
       return {
         kind: 'unreadable',
         label: only.label,
-        reason: `"${safeLine(only.request.source)}" could be a folder in the shell's current folder or a repository; name it as a full path or as https://github.com/<owner>/<repo>, so the guard scans what is added`,
+        reason: `"${safeLine(source)}" could be a folder in the shell's current folder or a repository; name it as a full path or as https://github.com/<owner>/<repo>, so the guard scans what is added`,
       }
     }
     return only
@@ -386,23 +388,22 @@ function programName(word: string | undefined): string {
 function readInstall(words: readonly string[], verb: 'install' | 'update', command: string): Reading {
   const options = readOptions(words, INSTALL_VALUES, INSTALL_FLAGS)
   const named = options.positionals[0]
-  const label = `${command}${named === undefined ? '' : ` ${safeLine(named)}`}`
+  const marketplaceSource = options.values.get('--marketplace')
+  const label = `${command}${named === undefined ? '' : ` ${safeLine(named)}`}${marketplaceSource === undefined ? '' : ` --marketplace ${safeLine(marketplaceSource)}`}`
   if (options.unknown !== undefined) return { kind: 'unreadable', label, reason: `the guard does not know the option ${safeLine(options.unknown)}` }
   // With no plugin named, Claude Code shows its menu to pick one from.
   if (named === undefined) return verb === 'install' ? BROWSE : PASS
   if (options.positionals.length > 1) return { kind: 'unreadable', label, reason: 'it names more than one plugin; install one at a time' }
-  if (options.values.has('--marketplace')) {
-    return {
-      kind: 'unreadable',
-      label,
-      reason: `it installs from a marketplace that is not added yet. Add it first with /plugin marketplace add ${safeLine(options.values.get('--marketplace') ?? '<source>')}, which the guard scans, then install ${safeLine(named)}@<marketplace>`,
-    }
-  }
   const id = PLUGIN_ID.exec(named)
   if (id === null) return { kind: 'unreadable', label, reason: `"${safeLine(named)}" is not a plugin name the guard can look up` }
   const plugin = id[1] as string
   const marketplace = id[2]
   if (options.values.has('--registry') || marketplace?.toLowerCase() === 'npm') return { kind: 'unreadable', label, reason: 'it installs a package from npm, which the guard cannot read yet' }
+  if (marketplaceSource !== undefined) {
+    // The plugin is looked up in the marketplace --marketplace adds, by its name alone.
+    if (marketplace !== undefined) return { kind: 'unreadable', label, reason: `with --marketplace, name the plugin alone (${safeLine(plugin)}), not as ${safeLine(named)}` }
+    return { kind: 'install', request: { kind: 'plugin', verb, plugin, marketplaceSource }, label }
+  }
   return { kind: 'install', request: { kind: 'plugin', verb, plugin, ...(marketplace === undefined ? {} : { marketplace }) }, label }
 }
 
