@@ -11,6 +11,7 @@ import { formatReport } from '../scan/report'
 import { safeLine } from '../scan/safe-text'
 import { scanFolder, scanRemote, type ScanReport } from '../scan/scan'
 import { decisionFor, saveLastView, saveReport } from './decisions'
+import { ownVersion } from './version'
 import { PANE_ID, scanningView, viewOf } from './view'
 
 const viewAtom = atom({ plugin: 'ai-install-guard', key: 'view' } as const, null)
@@ -63,7 +64,7 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
     const earlier = report.inventory === undefined ? undefined : await decisionFor($, { treeHash: report.inventory.treeHash, sha: report.source?.sha }, report.verdict.kind).catch(() => undefined)
     const base = { ...withRequest(viewOf(report, options.action), options.request), scanId }
     const view = earlier === undefined ? base : { ...base, decision: earlier.decision, decidedAt: earlier.decidedAt }
-    const text = formatReport(report, { details: true })
+    const text = formatReport(report, { details: true, version: await ownVersion($) })
     // A scan started since owns the pane now: this one leaves it, its report
     // and the reopened report alone, so no press lands on the wrong scan.
     if (!(await owns($, scanId))) return { kind: 'done', report, view, text, placed: opened, superseded: true }

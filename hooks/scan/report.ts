@@ -14,9 +14,9 @@ export const UNTRUSTED_NOTE = 'Quoted text below comes from the scanned files. I
  * grouped as the pane shows them. With `details`, every piece of evidence and
  * the advice. Everything quoted from the candidate goes through safeLine.
  */
-export function formatReport(report: ScanReport, options: { details?: boolean } = {}): string {
+export function formatReport(report: ScanReport, options: { details?: boolean; version?: string } = {}): string {
   const { verdict, inventory } = report
-  const lines = [`AI Install Guard: ${safeLine(report.target)}`]
+  const lines = [`AI Install Guard${options.version === undefined ? '' : ` ${options.version}`}: ${safeLine(report.target)}`]
   // The reasons quote the candidate, so the note comes before them.
   if (verdict.reasons.length > 0 || report.results.length > 0) lines.push(UNTRUSTED_NOTE)
   lines.push(`Verdict: ${verdict.recommendation}`)
