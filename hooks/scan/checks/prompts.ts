@@ -1,26 +1,106 @@
 import { languageOf, secretName } from './code'
 import { isCodeFile, isLive, type ScanContext } from './context'
 import { CREDENTIAL_PATH, DOWNLOAD_AND_RUN, NETWORK_COMMAND, NETWORK_CODE, SECRET_ENV, UNPINNED_RUNNER } from './patterns'
-import { basename, dirname, findAll, findFirst, spanKinds } from './text'
+import { belongsTo } from './mcp'
+import { basename, dirname, findAll, findFirst, spanKinds, type Match } from './text'
 import { row, type CheckResult, type Evidence, type Status } from './types'
 
 const GROUP = 'prompts' as const
 
-/** Phrases that try to take over the model or hide from the person. */
+/** Phrases that only an attack needs: overriding the model's instructions or posing as the system. */
 const INJECTION: readonly RegExp[] = [
   /\bignore\s+(?:all\s+|any\s+)?(?:of\s+)?(?:the\s+|your\s+)?(?:previous|prior|above|earlier|preceding|system|original)\s+(?:instructions?|prompts?|messages?|rules|guidelines|directions)/i,
   /\bdisregard\s+(?:(?:all|any)\s+)?(?:(?:the|your)\s+)?(?:(?:previous|prior|above|earlier|system|original)\s+)?(?:instructions?|prompts?|rules|guidelines)\b/i,
   /\bforget\s+(?:all\s+|everything\s+)?(?:about\s+)?(?:your|the|previous|prior)\s+(?:instructions?|rules|guidelines)/i,
-  /\b(?:do\s+not|don['’]t|never)\s+(?:tell|inform|show|mention|reveal|disclose|alert|notify|warn)\s+(?:this\s+to\s+|it\s+to\s+|anything\s+to\s+)?(?:the\s+)?user\b/i,
-  /\bwithout\s+(?:telling|asking|informing|notifying|alerting|showing|warning)\s+(?:the\s+)?user\b/i,
-  /\b(?:silently|secretly|quietly|covertly|discreetly|invisibly)\s+(?:run|execute|send|upload|post|install|delete|remove|read|copy|modify|fetch|download|exfiltrate|transmit|forward|add|write|change|append|collect)\b/i,
   /\b(?:override|bypass|disable|circumvent|skip)\s+(?:the\s+|all\s+|any\s+|your\s+)?(?:permission|permissions|safety|security|sandbox|approval|approvals|guardrails?|confirmation)\b/i,
-  /\bexfiltrat\w*/i,
   /\b(?:send|post|upload|forward|transmit)\s+(?:it|them|this|that|everything|all|the\s+\w+(?:\s+\w+)?)\s+to\s+(?:https?:\/\/|the\s+(?:url|endpoint|server|webhook)|this\s+(?:url|endpoint|server|webhook))/i,
   /\byou\s+are\s+now\s+(?:in\s+)?(?:developer|god|jailbreak|unrestricted|dan)\b/i,
   /\b(?:new|updated|real|actual)\s+system\s+(?:prompt|instructions?)\s*:/i,
   /<\s*\/?\s*(?:system|system-reminder|system_prompt|assistant)\s*>/i,
 ]
+
+/**
+ * Phrases an attack uses to hide what it does, which ordinary text uses too
+ * ("retries that give up without informing the user", "data exfiltration" in
+ * a list of what a skill must not do). They count only when the same
+ * paragraph names a way out: an address, a network tool, a credential.
+ */
+const HIDING: readonly RegExp[] = [
+  /\b(?:do\s+not|don['’]t|never)\s+(?:tell|inform|show|mention|reveal|disclose|alert|notify|warn)\s+(?:this\s+to\s+|it\s+to\s+|anything\s+to\s+)?(?:the\s+)?user\b/i,
+  /\bwithout\s+(?:telling|asking|informing|notifying|alerting|showing|warning)\s+(?:the\s+)?user\b/i,
+  /\b(?:silently|secretly|quietly|covertly|discreetly|invisibly)\s+(?:run|execute|send|upload|post|install|delete|remove|read|copy|modify|fetch|download|exfiltrate|transmit|forward|add|write|change|append|collect)\b/i,
+  /\bexfiltrat\w*/i,
+]
+
+/** Telling the model to keep something to itself, which a hidden comment has no other reason to do. */
+const CONCEALMENT = /\b(?:never|don['’]t|do\s+not|without)\s+(?:mention(?:ing)?|tell(?:ing)?|say(?:ing)?|reveal(?:ing)?|disclos(?:e|ing)|show(?:ing)?|report(?:ing)?)\b/i
+
+/** A remote address: anything but this machine. */
+const REMOTE_ADDRESS = /\bhttps?:\/\/(?!(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)(?![\w.-]))[^\s'"`<>)]{1,300}/i
+
+/**
+ * Whether `index` sits in quoted text: right after a quote mark or backtick,
+ * or after an unclosed one on its line. A quoted "ignore previous
+ * instructions" is someone writing about the phrase, not using it.
+ */
+function isQuoted(text: string, index: number): boolean {
+  if (/["'“‘`«]/.test(text[index - 1] ?? '')) return true
+  const head = text.slice(text.lastIndexOf('\n', index - 1) + 1, index)
+  const count = (pattern: RegExp) => head.match(pattern)?.length ?? 0
+  return count(/"/g) % 2 === 1 || count(/`/g) % 2 === 1 || count(/“/g) > count(/”/g)
+}
+
+/** The paragraph around `index`: the lines between the nearest blank lines. */
+function paragraphAt(text: string, index: number): string {
+  const before = text.slice(0, index)
+  const start = Math.max(before.lastIndexOf('\n\n'), before.lastIndexOf('\n\r\n'))
+  const end = text.indexOf('\n\n', index)
+  return text.slice(start === -1 ? 0 : start, end === -1 ? text.length : end).slice(0, 5000)
+}
+
+/** Whether text names a way out: a remote address, a network tool or command, a credential. */
+function namesWayOut(text: string): boolean {
+  return REMOTE_ADDRESS.test(text) || NETWORK_COMMAND.test(text) || NETWORK_CODE.test(text) || CREDENTIAL_PATH.test(text) || SECRET_ENV.test(text)
+}
+
+/**
+ * A plain `<system>` is a placeholder as often as a tag (`legacy/<system>`):
+ * it counts only when a closing `</system>` follows. The other names, and
+ * any closing tag, count wherever they are.
+ */
+function isTag(text: string, match: Match): boolean {
+  if (!/^<\s*system\s*>$/i.test(match.text)) return true
+  return /<\s*\/\s*system\s*>/i.test(text.slice(match.index + match.text.length, match.index + 20_000))
+}
+
+type Phrase = { match: Match; status: Status; note: string }
+
+/**
+ * Every injection phrase in a prompt, judged: quoted text is a mention; an
+ * attack-only phrase fails when the prompt reaches out and warns otherwise;
+ * a hiding phrase warns, or fails, only with a way out in its paragraph and
+ * not when the sentence warns against it ("do not silently fetch").
+ */
+function injectionPhrases(text: string, reachesOut: boolean): Phrase[] {
+  const out: Phrase[] = []
+  for (const pattern of INJECTION) {
+    for (const match of findAll(text, pattern, 3)) {
+      if (!isTag(text, match)) continue
+      if (isQuoted(text, match.index)) out.push({ match, status: 'info', note: ' (quoted: written about, not used)' })
+      else out.push({ match, status: reachesOut ? 'fail' : 'warn', note: '' })
+    }
+  }
+  for (const pattern of HIDING) {
+    for (const match of findAll(text, pattern, 3)) {
+      const wayOut = namesWayOut(paragraphAt(text, match.index))
+      if (isQuoted(text, match.index)) out.push({ match, status: 'info', note: ' (quoted: written about, not used)' })
+      else if (!/^(?:do\s+not|don|never)/i.test(match.text) && isNegated(text, match.index)) out.push({ match, status: 'info', note: ' (warns against it)' })
+      else if (!wayOut) out.push({ match, status: 'info', note: ' (nothing in its paragraph sends data or touches credentials)' })
+      else out.push({ match, status: 'fail', note: '' })
+    }
+  }
+  return out
+}
 
 /** Text that talks to a security scanner instead of to a person. */
 const SCANNER_ADDRESS: readonly RegExp[] = [
@@ -54,9 +134,10 @@ export function promptConcerns(text: string): { status: Status; reasons: string[
   const reachesOut = NETWORK_COMMAND.test(text) || NETWORK_CODE.test(text) || /https?:\/\//.test(text) || CREDENTIAL_PATH.test(text)
   const reasons: string[] = []
   let status: Status = 'warn'
-  if (INJECTION.some(pattern => pattern.test(text))) {
+  const phrases = injectionPhrases(text, reachesOut).filter(phrase => phrase.status !== 'info')
+  if (phrases.length > 0) {
     reasons.push('prompt injection')
-    if (reachesOut) status = 'fail'
+    if (phrases.some(phrase => phrase.status === 'fail')) status = 'fail'
   }
   if (CREDENTIAL_PATH.test(text) && READ_VERB.test(text)) {
     reasons.push('reads credentials')
@@ -81,27 +162,32 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     const cap = (status: Status): Status => (live ? status : 'info')
     const reachesOut = NETWORK_COMMAND.test(text) || NETWORK_CODE.test(text) || /https?:\/\//.test(text) || CREDENTIAL_PATH.test(text)
 
-    for (const pattern of INJECTION) {
-      for (const match of findAll(text, pattern, 3)) {
-        const hidden = isInsideComment(text, match.line) ? ' (inside an HTML comment, hidden when rendered)' : ''
-        injection.push({ file: path, line: match.line, excerpt: `${match.excerpt}${hidden}`, status: cap(reachesOut ? 'fail' : 'warn') })
-      }
+    const inCode = codeSpans(text)
+    for (const { match, status, note } of injectionPhrases(text, reachesOut)) {
+      const hidden = isInsideComment(text, match.line) ? ' (inside an HTML comment, hidden when rendered)' : ''
+      injection.push({ file: path, line: match.line, excerpt: `${match.excerpt}${note}${hidden}`, status: cap(status) })
     }
-    const hiddenInstructions = findAll(text, /<!--[\s\S]{0,5000}?-->/g, 10_000)
+    // A comment is hidden when the Markdown is rendered, but the model reads
+    // it. One that tells it to reach out or touch credentials is a warning;
+    // an author's note is only reported. In a code block it is shown as code.
+    const comments = findAll(text, /<!--[\s\S]{0,5000}?-->/g, 10_000, index => !inCode(index))
       .filter(comment => comment.text.length > 40 && /\b(?:run|execute|send|call|use|read|write|ignore|always|never|must)\b/i.test(comment.text))
-      .slice(0, 5)
-    for (const comment of hiddenInstructions) {
-      injection.push({ file: path, line: comment.line, excerpt: `instructions inside an HTML comment, hidden when rendered: ${comment.excerpt}`, status: cap('warn') })
+    const risky = (comment: Match) => namesWayOut(comment.text) || DOWNLOAD_AND_RUN.test(comment.text) || [...INJECTION, ...HIDING, ...SCANNER_ADDRESS, CONCEALMENT].some(pattern => pattern.test(comment.text))
+    for (const comment of [...comments.filter(risky), ...comments.filter(comment => !risky(comment))].slice(0, 5)) {
+      injection.push(
+        risky(comment)
+          ? { file: path, line: comment.line, excerpt: `instructions inside an HTML comment, hidden when rendered: ${comment.excerpt}`, status: cap('warn') }
+          : { file: path, line: comment.line, excerpt: `a note inside an HTML comment, hidden when rendered; it names no address, credential or command: ${comment.excerpt}`, status: 'info' },
+      )
     }
 
+    // Naming a credential file is not reading it: a fail needs a verb that reads it on the same line.
     for (const match of findAll(text, CREDENTIAL_PATH, 5)) {
       const lineText = text.split('\n')[match.line - 1] ?? ''
-      credentials.push({ file: path, line: match.line, excerpt: match.excerpt, status: cap(READ_VERB.test(lineText) ? 'fail' : 'warn') })
+      const reads = READ_VERB.test(lineText)
+      credentials.push({ file: path, line: match.line, excerpt: reads ? match.excerpt : `names ${match.text.trim()}: ${match.excerpt}`, status: cap(reads ? 'fail' : 'info') })
     }
-    for (const match of findAll(text, SECRET_ENV, 5)) {
-      const lineText = text.split('\n')[match.line - 1] ?? ''
-      credentials.push({ file: path, line: match.line, excerpt: `names ${secretName(match)}`, status: cap(/\b(?:echo|print|printenv|cat|send|include|output)\b/i.test(lineText) ? 'fail' : 'warn') })
-    }
+    for (const match of findAll(text, SECRET_ENV, 5)) credentials.push({ file: path, line: match.line, ...secretUse(text, match, cap) })
 
     // A local address (a preview server the skill starts) is not remote.
     const remoteOnly = (index: number) => !/^[^\n]{0,120}?https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)(?![\w.-])/i.test(text.slice(index, index + 200))
@@ -110,21 +196,24 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     }
     // Telling the model to download and run code fails; a sentence warning
     // against it ("never run curl | sh") is still a warning, since negation
-    // is easy to fake ("don't hesitate to run ...").
+    // is easy to fake ("don't hesitate to run ..."). A well-known installer
+    // (Homebrew's, rustup's) is a step down: worth a look, not a red flag.
     for (const match of findAll(text, DOWNLOAD_AND_RUN, 3)) {
       const warnsAgainst = isNegated(text, match.index)
+      const installer = knownInstaller(text.slice(match.index, text.indexOf('\n', match.index) === -1 ? text.length : text.indexOf('\n', match.index)).slice(0, 600))
+      const what = installer === undefined ? 'download and run code' : `download and run ${installer}`
       remote.push({
         file: path,
         line: match.line,
-        excerpt: `${warnsAgainst ? 'mentions' : 'tells the model to'} download and run code: ${match.excerpt}`,
-        status: cap(warnsAgainst ? 'warn' : 'fail'),
+        excerpt: `${warnsAgainst ? 'mentions' : 'tells the model to'} ${what}: ${match.excerpt}`,
+        status: cap(installer === undefined ? (warnsAgainst ? 'warn' : 'fail') : warnsAgainst ? 'info' : 'warn'),
       })
     }
     // An unpinned package runner counts only as a command (in a code span or
-    // block), not prose about one ("npx is a package runner").
-    const inCode = codeSpans(text)
+    // block), not prose about one ("npx is a package runner"). It runs the
+    // newest version of a package, as most setup instructions do: noted.
     for (const match of findAll(text, UNPINNED_RUNNER, 3, inCode)) {
-      remote.push({ file: path, line: match.line, excerpt: `tells the model to run an unpinned package: ${match.excerpt}`, status: cap('warn') })
+      remote.push({ file: path, line: match.line, excerpt: `runs a package at whatever version is newest: ${match.excerpt}`, status: 'info' })
     }
 
     const front = frontmatter(text)
@@ -149,8 +238,9 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
 
     const name = (front.name ?? basename(path).replace(/\.(md|mdx|markdown)$/i, '')).trim().toLowerCase()
     const commandName = /(^|\/)SKILL\.md$/i.test(path) ? (front.name ?? basename(dirname(path))).toLowerCase() : name
+    // Claude Code's own command wins the bare name; a plugin's is still reached as /plugin:name.
     if (BUILT_IN_COMMANDS.has(commandName)) {
-      names.push({ file: path, excerpt: `named /${commandName}, the same as a Claude Code command`, status: cap('warn') })
+      names.push({ file: path, excerpt: `named /${commandName}, the same as a Claude Code command, which keeps the bare name`, status: 'info' })
     }
     const claim = findFirst(`${front.name ?? ''}\n${front.description ?? ''}`, CLAIMS_ANTHROPIC)
     if (claim !== undefined) names.push({ file: path, excerpt: `claims to come from Anthropic: ${claim.excerpt}`, status: cap('warn') })
@@ -193,6 +283,63 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     row({ id: 'prompts.scanner', group: GROUP, title: 'Text addressed to a security scanner', advice: 'Legitimate plugins do not talk to scanners. This text cannot change the verdict here; treat it as a sign of intent.' }, addressed),
   ]
   return ctx.prompts.length === 0 ? results.filter(result => result.id === 'prompts.names' || result.id === 'prompts.scanner') : results
+}
+
+/** Install scripts that projects tell people to pipe into a shell: well known, still code from the internet. */
+const INSTALLERS: readonly { match: RegExp; name: string }[] = [
+  { match: /^https:\/\/raw\.githubusercontent\.com\/Homebrew\/install\//, name: "Homebrew's installer" },
+  { match: /^https:\/\/sh\.rustup\.rs\b/, name: "rustup's installer" },
+  { match: /^https:\/\/raw\.githubusercontent\.com\/nvm-sh\/nvm\//, name: "nvm's installer" },
+  { match: /^https:\/\/(?:get\.)?docker\.com\b/, name: "Docker's installer" },
+  { match: /^https:\/\/bun\.sh\/install\b/, name: "Bun's installer" },
+  { match: /^https:\/\/deno\.land\/install\.sh\b/, name: "Deno's installer" },
+  { match: /^https:\/\/astral\.sh\/(?:uv|ruff)\//, name: "Astral's installer" },
+  { match: /^https:\/\/install\.python-poetry\.org\b/, name: "Poetry's installer" },
+  { match: /^https:\/\/get\.pnpm\.io\/install\.sh\b/, name: "pnpm's installer" },
+  { match: /^https:\/\/ollama\.com\/install\.sh\b/, name: "Ollama's installer" },
+  { match: /^https:\/\/claude\.ai\/install\.sh\b/, name: "Claude Code's installer" },
+  { match: /^https:\/\/tailscale\.com\/install\.sh\b/, name: "Tailscale's installer" },
+]
+
+/** The well-known installer a download-and-run command fetches, by its address, if it is one. */
+function knownInstaller(command: string): string | undefined {
+  const address = /\bhttps:\/\/[^\s'"`)]{1,300}/.exec(command)?.[0]
+  return address === undefined ? undefined : INSTALLERS.find(entry => entry.match.test(address))?.name
+}
+
+/**
+ * The lines a backslash at a line's end joins into one command, around `line`:
+ * a curl split over several lines, its key on one of them.
+ */
+function statementAt(text: string, line: number): string {
+  const lines = text.split('\n')
+  let first = line - 1
+  let last = line - 1
+  while (first > 0 && /\\\s*$/.test(lines[first - 1] ?? '') && line - first < 20) first -= 1
+  while (last < lines.length - 1 && /\\\s*$/.test(lines[last] ?? '') && last - line < 20) last += 1
+  return lines.slice(first, last + 1).join('\n')
+}
+
+/**
+ * What a prompt does with a secret it names: sending it anywhere but its own
+ * service fails; printing it, where the transcript keeps it, is a warning;
+ * naming it (a .env example, a setup step) is only noted.
+ */
+function secretUse(text: string, match: Match, cap: (status: Status) => Status): { excerpt: string; status: Status } {
+  const name = secretName(match)
+  const statement = statementAt(text, match.line)
+  const hosts = Array.from(statement.matchAll(new RegExp(REMOTE_ADDRESS.source, 'gi')), found => {
+    try {
+      return new URL(found[0]).hostname.toLowerCase()
+    } catch {
+      return ''
+    }
+  }).filter(host => host !== '')
+  const sends = NETWORK_COMMAND.test(statement) || /\b(?:send|upload|post|forward|transmit)\b/i.test(statement)
+  const elsewhere = hosts.filter(host => !belongsTo(name, host))
+  if (sends && elsewhere.length > 0) return { excerpt: `sends ${name} to ${elsewhere.slice(0, 2).join(', ')}: ${match.excerpt}`, status: cap('fail') }
+  if (/\b(?:echo|print|printenv|cat)\b/i.test(statement)) return { excerpt: `prints ${name}, where the transcript keeps it: ${match.excerpt}`, status: cap('warn') }
+  return { excerpt: `names ${name}${hosts.length > 0 && sends ? `, used with ${hosts.slice(0, 2).join(', ')}, the service it belongs to` : ''}`, status: 'info' }
 }
 
 /** Programs that run anything they are given, fetch and run packages, or reach the network. */

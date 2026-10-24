@@ -21,6 +21,7 @@ import {
   WRITE_SHELL,
 } from './patterns'
 import { basename, extension, findAll, findFirst, spanKinds, type Match, type SpanKind } from './text'
+import { belongsTo } from './mcp'
 import { describePrograms, programNames, programsIn, type ProgramUse } from './programs'
 import { row, worse, type CheckResult, type Evidence, type Status } from './types'
 
@@ -71,12 +72,39 @@ type CodeFile = {
   language: Language
   /** What the character at an index is: code, string, comment or pattern. */
   kindAt: (index: number) => SpanKind
+  /** Whether the index sits in a string of prose, such as a prompt for a model: text, not a command or a path. */
+  inProse: (index: number) => boolean
 }
 
-/** Text files the code checks read: code and config, never lockfiles. */
-function codeFiles(ctx: ScanContext): CodeFile[] {
+/** Short words that ordinary English is full of and commands and paths are not. */
+const PROSE_WORDS = /\b(?:the|a|an|and|or|to|of|is|are|be|in|it|that|this|with|for|not|do|does|you|your|if|when|which|should|must|can|any|no)\b/gi
+
+/** How far either way the string around a match is read to tell prose from a command. */
+const PROSE_WINDOW = 2000
+
+/**
+ * Whether `index` sits in a string literal that reads as prose: eight words
+ * or more, three of them the small words English is made of. A command padded
+ * with flags or a path is not prose; a prompt that quotes `eval()` is.
+ */
+export function proseTest(text: string, kindAt: (index: number) => SpanKind): (index: number) => boolean {
+  return index => {
+    if (kindAt(index) !== 'string') return false
+    let start = index
+    let end = index
+    while (start > 0 && index - start < PROSE_WINDOW && kindAt(start - 1) === 'string') start -= 1
+    while (end < text.length && end - index < PROSE_WINDOW && kindAt(end) === 'string') end += 1
+    const body = text.slice(start, end)
+    const words = body.split(/\s+/).filter(word => /[A-Za-z]{2,}/.test(word)).length
+    return words >= 8 && (body.match(PROSE_WORDS)?.length ?? 0) >= 3
+  }
+}
+
+/** Text files the code checks read: code and config, never lockfiles. `only` narrows them to some paths. */
+function codeFiles(ctx: ScanContext, only?: ReadonlySet<string>): CodeFile[] {
   const out: CodeFile[] = []
   for (const file of ctx.files) {
+    if (only !== undefined && !only.has(file.path)) continue
     // Lockfiles and source maps are skipped, unless live code loads them.
     if (!file.isText || (LOCKFILES.test(file.path) && !LIVE_ROLES.has(ctx.roleOf(file.path)))) continue
     const text = ctx.text(file.path)
@@ -86,8 +114,10 @@ function codeFiles(ctx: ScanContext): CodeFile[] {
     if (isCodeFile(file.path, text) || loaded || CONFIG_EXTENSIONS.has(extension(file.path)) || basename(file.path).startsWith('.')) {
       // A hook or server that runs the file with an interpreter decides how it is read.
       const language = ctx.interpreters.get(file.path) ?? languageOf(file.path, text)
-      const kindAt = isCodeFile(file.path, text) ? spanKinds(text, language) : () => 'string' as const
-      out.push({ path: file.path, text, role: ctx.roleOf(file.path), language, kindAt })
+      const code = isCodeFile(file.path, text)
+      const kindAt = code ? spanKinds(text, language) : () => 'string' as const
+      // Only code has strings to tell apart: a config file is all one "string".
+      out.push({ path: file.path, text, role: ctx.roleOf(file.path), language, kindAt, inProse: code ? proseTest(text, kindAt) : () => false })
     }
   }
   return out
@@ -97,11 +127,15 @@ function codeFiles(ctx: ScanContext): CodeFile[] {
  * A match inside a comment or a regular expression describes text rather
  * than doing anything, so it is only reported.
  */
-function judged(file: CodeFile, match: Match, status: Status, excerpt: string): Evidence {
+function judged(file: CodeFile, match: Match, status: Status, excerpt: string, strict = false): Evidence {
   const kind = file.kindAt(match.index)
   if (!isLive(file.role)) return { file: file.path, line: match.line, excerpt, status: 'info' }
   if (kind === 'comment' || kind === 'regex') {
     return { file: file.path, line: match.line, excerpt: `${excerpt} (in a ${kind === 'regex' ? 'pattern' : 'comment'})`, status: 'info' }
+  }
+  // Prose in a string, such as a prompt that names eval() or a settings file, describes rather than does.
+  if (!strict && status !== 'info' && file.inProse(match.index)) {
+    return { file: file.path, line: match.line, excerpt: `${excerpt} (in prose, such as a prompt, not code)`, status: 'info' }
   }
   if (kind === 'trailing-comment') {
     // A comment after code on the same line is a classic place to hide a
@@ -128,14 +162,23 @@ function active(file: CodeFile, pattern: RegExp, limit = 20): Match[] {
  * Every match of `pattern`, judged: live matches first (up to `limit`),
  * then at most two inert ones, so comments cannot crowd out real code.
  */
-function evidenceFor(file: CodeFile, pattern: RegExp, status: Status, describe: (match: Match) => string, limit = 5): Evidence[] {
+function evidenceFor(file: CodeFile, pattern: RegExp, status: Status, describe: (match: Match) => string, limit = 5, strict = false): Evidence[] {
   const isInert = (index: number): boolean => {
     const kind = file.kindAt(index)
     return kind === 'comment' || kind === 'regex' || kind === 'trailing-comment'
   }
   const live = findAll(file.text, pattern, limit, index => !isInert(index))
   const inert = findAll(file.text, pattern, 2, isInert)
-  return [...live, ...inert].map(match => judged(file, match, status, describe(match)))
+  // Several matches on one line that read the same are one finding.
+  const seen = new Set<string>()
+  return [...live, ...inert]
+    .map(match => judged(file, match, status, describe(match), strict))
+    .filter(item => {
+      const key = `${item.line}\u0000${item.excerpt}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
 }
 
 /** `ANTHROPIC_API_KEY=sk-...` → `ANTHROPIC_API_KEY`: the name, never what follows it. */
@@ -157,6 +200,13 @@ const VARIATION_SUPPLEMENT = /[\u{e0100}-\u{e01ef}]{2,}/gu
 const BIDI = /[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/g
 const ZERO_WIDTH = /[\u200b-\u200d\u2060-\u2064\u180e\u00ad\u034f\u115f\u1160\u3164\uffa0]|(?!^)\ufeff/g
 const ANSI = /\u001b\[[0-9;?]{0,40}[A-Za-z]|\u001b\][^\u0007\u001b]{0,1000}\u0007/g
+
+/** Whether the zero-width joiner at `index` sits between two emoji, as in 👨‍💻. */
+function joinsEmoji(text: string, index: number): boolean {
+  const before = /\p{Extended_Pictographic}[\u{1F3FB}-\u{1F3FF}\uFE0F]?$/u.test(text.slice(Math.max(0, index - 4), index))
+  const after = /^\p{Extended_Pictographic}/u.test(text.slice(index + 1, index + 3))
+  return before && after
+}
 
 function hiddenCheck(ctx: ScanContext): CheckResult {
   const evidence: Evidence[] = []
@@ -193,7 +243,8 @@ function hiddenCheck(ctx: ScanContext): CheckResult {
         evidence.push({ file: file.path, line: match.line, excerpt, status })
       }
     }
-    const zero = findAll(text, ZERO_WIDTH, 50)
+    // A zero-width joiner between emoji builds one emoji (a family, a profession): not hidden text.
+    const zero = findAll(text, ZERO_WIDTH, 50, index => !(text[index] === '\u200d' && joinsEmoji(text, index)))
     if (zero.length > 0 && (isCode || isMarkdown(file.path))) {
       const first = zero[0] as (typeof zero)[number]
       evidence.push({ file: file.path, line: first.line, excerpt: `${zero.length}${zero.length === 50 ? '+' : ''} zero-width or invisible characters, first ${codePoints(first.text)}`, status: cap('warn') })
@@ -288,7 +339,8 @@ function execCheck(ctx: ScanContext): CheckResult {
       const level: Status = inModule ? 'fail' : what === 'runs programs' ? 'info' : 'warn'
       evidence.push(...evidenceFor(file, pattern, level, match => `${what}: ${match.excerpt}`, 3))
     }
-    evidence.push(...evidenceFor(file, DOWNLOAD_AND_RUN, 'fail', match => `downloads or decodes code and runs it: ${match.excerpt}`, 3))
+    // Never excused as prose: a download piped into a shell is the same in any sentence.
+    evidence.push(...evidenceFor(file, DOWNLOAD_AND_RUN, 'fail', match => `downloads or decodes code and runs it: ${match.excerpt}`, 3, true))
     // The summary counts live code only: tests and docs are only reported.
     if (isLive(file.role)) {
       const keep = (index: number) => !['comment', 'regex', 'trailing-comment'].includes(file.kindAt(index))
@@ -495,22 +547,42 @@ function credentialsCheck(ctx: ScanContext): CheckResult {
   const places = new Set<string>()
   const files = new Set<string>()
   const sending = new Set<string>()
+  const access = new Set<string>()
   for (const file of codeFiles(ctx)) {
     // Hook scripts and MCP configuration are judged where their target is
     // known: the hooks check, and mcp.credentials with the server's host.
     if (file.role === 'hook-script' || file.role === 'mcp-config') continue
     const sends = [NETWORK_CODE, NETWORK_COMMAND, COLLECTION_HOST].some(pattern => active(file, pattern, 1).length > 0)
     const lead = sends ? 'with network code in the same file: ' : ''
-    const paths = evidenceFor(file, CREDENTIAL_PATH, sends ? 'fail' : 'warn', match => `${lead}${match.excerpt}`, 3)
-    const names = evidenceFor(file, SECRET_ENV, sends ? 'fail' : 'warn', match => `${lead}reads ${secretName(match)}`, 3)
+    // A key file's bare name as a whole string ('id_rsa', '.npmrc'), in a file
+    // with no network and no way to your home folder, is a name in a list (of
+    // files never to send, say), not a file being read.
+    const homeless = !sends && active(file, HOME_FOLDER, 50).every(match => file.inProse(match.index))
+    const pathMatches = active(file, CREDENTIAL_PATH, 50)
+    const named = new Set(pathMatches.filter(match => homeless && isBareName(file.text, match)).map(match => match.line))
+    for (const match of pathMatches) if (!(homeless && isBareName(file.text, match))) named.delete(match.line)
+    const paths = evidenceFor(file, CREDENTIAL_PATH, sends ? 'fail' : 'warn', match => `${lead}${match.excerpt}`, 3).map(item =>
+      item.status === 'warn' && item.line !== undefined && named.has(item.line)
+        ? { ...item, excerpt: `${item.excerpt} (a file name alone: this file has no network code and no path to your home folder)`, status: 'info' as const }
+        : item,
+    )
+    // A key used with the service it belongs to is what the key is for; one that
+    // can go anywhere else, or anywhere the code does not name, is a red flag.
+    const keys = active(file, SECRET_ENV, 20).filter(match => !file.inProse(match.index))
+    const dumps = keys.some(match => /process\.env|os\.environ|printenv|\benv\b/.test(match.text))
+    const hosts = liveHosts(file)
+    const ownService = sends && !dumps && hosts.length > 0 && keys.every(match => hosts.every(host => belongsTo(secretName(match), host)))
+    const keyStatus: Status = !sends ? 'info' : ownService ? 'info' : 'fail'
+    const names = evidenceFor(file, SECRET_ENV, keyStatus, match => (ownService ? `uses ${secretName(match)} with ${hosts.slice(0, 3).join(', ')}, the service it belongs to` : `${lead}reads ${secretName(match)}`), 3)
     evidence.push(...paths, ...names)
     if (!isLive(file.role)) continue
-    for (const match of active(file, CREDENTIAL_PATH, 20)) places.add(match.text.trim().replace(/\/$/, ''))
+    for (const match of active(file, CREDENTIAL_PATH, 20)) if (!file.inProse(match.index) && !named.has(match.line)) places.add(match.text.trim().replace(/\/$/, ''))
     // A dump of the whole environment (JSON.stringify(process.env), printenv) is every secret at once.
-    for (const match of active(file, SECRET_ENV, 20)) secrets.add(/process\.env|os\.environ|printenv|\benv\b/.test(match.text) ? 'all your environment variables' : secretName(match))
+    for (const match of keys) secrets.add(/process\.env|os\.environ|printenv|\benv\b/.test(match.text) ? 'all your environment variables' : secretName(match))
+    for (const match of keys) access.add(ownService ? `use your ${secretName(match)} with ${hosts.slice(0, 2).join(', ')}` : `read your ${dumps ? 'environment variables' : secretName(match)}`)
     if (paths.length + names.length > 0) {
       files.add(file.path)
-      if (sends) sending.add(file.path)
+      if (sends && !ownService) sending.add(file.path)
     }
   }
   const summary: string[] = []
@@ -519,7 +591,7 @@ function credentialsCheck(ctx: ScanContext): CheckResult {
     summary.push(`Reads ${things.slice(0, 5).join(', ')}${things.length > 5 ? ` and ${things.length - 5} more` : ''}${sending.size > 0 ? ', in code that can also reach the network' : ''}`)
     if (secrets.size > 0) summary.push(`Secrets from your environment: ${[...secrets].join(', ')}`)
     if (places.size > 0) summary.push(`Credential files and stores: ${[...places].join(', ')}`)
-    if (sending.size > 0) summary.push(`Worth a look: ${[...sending].slice(0, 4).join(', ')} can also send data over the network`)
+    if (sending.size > 0) summary.push(`Read these first: ${[...sending].slice(0, 4).join(', ')} can also send data over the network`)
     summary.push(`In ${files.size} file${files.size === 1 ? '' : 's'}: ${[...files].slice(0, 4).join(', ')}${files.size > 4 ? ` and ${files.size - 4} more` : ''}`)
   }
   return row(
@@ -529,9 +601,68 @@ function credentialsCheck(ctx: ScanContext): CheckResult {
       title: 'Credentials and secrets read by code',
       advice: 'Code that reads your keys, tokens or browser data and can reach the network can steal them. Do not install it unless that is plainly its job.',
       summary,
+      access: [...access].slice(0, 4),
     },
     evidence,
   )
+}
+
+/** Ways code reaches your home folder, where credential files live. */
+const HOME_FOLDER = /~\/|\$\{?HOME\b|\bexpanduser\b|\bhomedir\b|\bPath\.home\b|\bUSERPROFILE\b|\benv(?:iron)?\b[^\n]{0,20}['"]HOME['"]|\benv\.HOME\b/
+
+/** Whether a credential match is a whole string holding only a key file's name. */
+function isBareName(text: string, match: Match): boolean {
+  const quote = text[match.index - 1] ?? ''
+  return /^(?:id_(?:rsa|dsa|ecdsa|ed25519)|\.(?:netrc|npmrc|pypirc|git-credentials))$/.test(match.text) && /^['"`]$/.test(quote) && text[match.index + match.text.length] === quote
+}
+
+/**
+ * `path` and the candidate's own files it loads, and theirs in turn (at most
+ * 50 in all): what a script can do includes what its local modules do.
+ */
+export function localImports(ctx: ScanContext, path: string): string[] {
+  const seen = new Set([path])
+  const queue = [path]
+  while (queue.length > 0 && seen.size < 50) {
+    for (const target of ctx.imports.get(queue.shift() as string) ?? []) {
+      if (seen.size >= 50 || seen.has(target)) continue
+      seen.add(target)
+      queue.push(target)
+    }
+  }
+  return [...seen]
+}
+
+/** A network tool named as a program to start, as in `['curl', ...]`. */
+const NETWORK_PROGRAM = /['"`](?:curl|wget|nc|ncat|netcat|socat|ssh|scp|sftp|telnet)['"`]/
+
+/**
+ * What the code in `paths` can reach: whether it has network code (or
+ * starts a network tool) outside comments and patterns, and the hosts it
+ * names outside comments, patterns and prose.
+ */
+export function networkOf(ctx: ScanContext, paths: readonly string[]): { sends: boolean; hosts: string[] } {
+  let sends = false
+  const hosts = new Set<string>()
+  for (const file of codeFiles(ctx, new Set(paths))) {
+    if (!sends) sends = [NETWORK_CODE, NETWORK_COMMAND, NETWORK_PROGRAM].some(pattern => active(file, pattern, 1).length > 0)
+    for (const host of liveHosts(file)) hosts.add(host)
+  }
+  return { sends, hosts: [...hosts].filter(host => !/^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)$/.test(host)) }
+}
+
+/** The hosts live code names in its own strings: not in comments, patterns or prose. */
+function liveHosts(file: CodeFile): string[] {
+  const hosts = new Set<string>()
+  for (const match of active(file, /\bhttps?:\/\/[^\s'"`<>)]{1,300}/g, 100)) {
+    if (file.inProse(match.index)) continue
+    try {
+      hosts.add(new URL(match.text).hostname.toLowerCase())
+    } catch {
+      continue
+    }
+  }
+  return [...hosts]
 }
 
 function persistenceCheck(ctx: ScanContext): CheckResult {
@@ -617,9 +748,13 @@ function domainsCheck(ctx: ScanContext): CheckResult {
   const hosts = new Map<string, { file: string; line: number }>()
   const evidence: Evidence[] = []
   const configFiles = new Set(ctx.mcpServers.map(server => server.file))
+  // What the plugin says it is for: a Telegram plugin talking to Telegram is doing its job.
+  const purpose = [ctx.manifest?.name, ctx.manifest?.description].filter(item => typeof item === 'string').join(' ').toLowerCase()
   for (const file of codeFiles(ctx)) {
     if (!isLive(file.role) && !configFiles.has(file.path)) continue
     for (const match of active(file, /\b(?:https?|wss?|ftp):\/\/[^\s'"`<>)]{1,500}/g, 200)) {
+      // An address in prose, such as an example in a prompt, is not one the code talks to.
+      if (file.inProse(match.index)) continue
       // The host is what follows any user-info: in https://a.com@b.site/ it is b.site.
       const authority = /\/\/([^/?#]{0,300})/.exec(match.text)?.[1] ?? ''
       const hasUserInfo = authority.includes('@')
@@ -634,7 +769,9 @@ function domainsCheck(ctx: ScanContext): CheckResult {
       }
       const lowered = match.text.toLowerCase()
       if (COLLECTION_HOST.test(`${host}${lowered.slice(lowered.indexOf(host) + host.length)}`)) {
-        evidence.push(judged(file, match, 'warn', `talks to a host often used to collect data: ${host}`))
+        const service = host.split('.').slice(-2, -1)[0] ?? ''
+        const itsJob = service.length >= 4 && purpose.includes(service)
+        evidence.push(judged(file, match, itsJob ? 'info' : 'warn', itsJob ? `talks to ${host}, the service it is for` : `talks to a host often used to collect data: ${host}`))
       }
     }
   }

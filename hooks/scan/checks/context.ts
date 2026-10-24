@@ -95,6 +95,8 @@ export type ScanContext = {
    * it as shell), which decides how it is read whatever its extension says.
    */
   interpreters: Map<string, 'js' | 'python' | 'shell' | 'other'>
+  /** The candidate's own files each live code file loads, as written in it. */
+  imports: ReadonlyMap<string, readonly string[]>
   hookConfigErrors: { file: string; error: string }[]
   mcpServers: McpServer[]
   /** Markdown the model reads: skills, commands, agents, output styles. */
@@ -399,9 +401,12 @@ export function buildContext(tree: ScannedTree): ScanContext {
   // docs folder: a hook script that requires ./test/helper.js runs it.
   const queue = files.map(file => file.path).filter(path => LIVE_CODE_ROLES.has(roles.get(path) ?? 'other'))
   const visited = new Set(queue)
+  const imports = new Map<string, string[]>()
   while (queue.length > 0) {
     const from = queue.shift() as string
-    for (const target of localImports(from, text(from) ?? '', realOf)) {
+    const targets = localImports(from, text(from) ?? '', realOf)
+    imports.set(from, targets)
+    for (const target of targets) {
       assign(target, 'code')
       if (!visited.has(target)) {
         visited.add(target)
@@ -424,6 +429,7 @@ export function buildContext(tree: ScannedTree): ScanContext {
     hookCommands,
     hookScripts,
     interpreters,
+    imports,
     hookConfigErrors,
     mcpServers,
     prompts,
@@ -448,12 +454,15 @@ function interpreterNaming(command: string, path: string): 'js' | 'python' | 'sh
   const piped = /^[^;&|]*\|\s*(\S+)/.exec(normalized.slice(at + path.length))?.[1]
   if (piped !== undefined && languageOfWord(piped) !== undefined) return languageOfWord(piped)
   // Otherwise the nearest interpreter before it in the same command, past
-  // options and their values (`bash -o pipefail x.js` is bash).
+  // options and their values (`bash -o pipefail x.js` is bash). Another file
+  // in between is what the interpreter runs: in `bash run.sh x.py`, x.py is
+  // run.sh's argument, read as its own extension says.
   const before = normalized.slice(0, at).split(/[;&|]/).pop() ?? ''
   const words = before.trim().split(/\s+/).reverse()
   for (const word of words) {
     const language = languageOfWord(word)
     if (language !== undefined) return language
+    if (!word.startsWith('-') && (word.includes('/') || /\.[A-Za-z]\w{0,4}$/.test(word))) return undefined
   }
   return undefined
 }
@@ -481,6 +490,14 @@ function localImports(path: string, source: string, realOf: (path: string) => st
     // The same resolution as a hooks module's imports: `./x.js` written for `./x.ts`.
     const real = base === undefined ? undefined : resolveModuleFile(base, realOf)
     if (real !== undefined) out.push(real)
+  }
+  // A script's own folder is first on Python's path, so `import llm` beside it loads ./llm.py.
+  for (const match of findAll(source, /^[ \t]*(?:import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*)|from[ \t]+([A-Za-z_][\w.]*)[ \t]+import\b)/gm, Number.MAX_SAFE_INTEGER)) {
+    const parts = /^[ \t]*(?:import[ \t]+([\w., \t]+)|from[ \t]+([\w.]+))/.exec(match.text)
+    for (const name of (parts?.[1] ?? parts?.[2] ?? '').split(',')) {
+      const module = name.trim().replace(/\./g, '/')
+      if (module !== '') add(`./${module}`, ['.py', '/__init__.py'])
+    }
   }
   for (const match of findAll(source, /^[ \t]*from[ \t]+(\.+)([\w.]*)[ \t]+import[ \t]+([\w, ]+)/gm, Number.MAX_SAFE_INTEGER)) {
     const parts = /from\s+(\.+)([\w.]*)\s+import\s+([\w, ]+)/.exec(match.text)

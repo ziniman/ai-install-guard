@@ -34,11 +34,15 @@ export const SECRET_ENV =
 
 /** Places whose change persists past the session or grants itself more. */
 export const PERSISTENCE_TARGET =
-  /(?<![\w$)\]])\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b|\bconfig\.fish\b|\bcrontab\b|\/etc\/cron|\bLaunchAgents\b|\bLaunchDaemons\b|\blaunchctl\s+(?:load|bootstrap|submit)\b|\bsystemctl\s+(?:--user\s+)?enable\b|\/etc\/systemd\/|\.config\/systemd\/|\.git\/hooks\b|\bcore\.hooksPath\b|\/etc\/profile\b|\.config\/autostart\b|CurrentVersion\\+Run\b/
+  /(?<![\w$)\]])\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b|\bconfig\.fish\b|\bcrontab\b|\/etc\/cron|\bLaunchAgents\b|\bLaunchDaemons\b|\blaunchctl\s+(?:load|bootstrap|submit)\b|\bsystemctl\s+(?:--user\s+)?enable\b|\/etc\/systemd\/|\.config\/systemd\/|\.git\/hooks\b|\bcore\.hooksPath\b(?![\s"',=:]*\/dev\/null)|\/etc\/profile\b|\.config\/autostart\b|CurrentVersion\\+Run\b/
 
-/** Claude Code settings and permission switches. */
+/**
+ * Claude Code settings and permission switches: a settings file, a key that
+ * changes what runs unasked, or a permission mode being set. The bare name of
+ * a mode (`bypassPermissions` in a list of modes) is not a change.
+ */
 export const CLAUDE_SETTINGS =
-  /\.claude\/settings(?:\.local)?\.json|\bbypassPermissions\b|--dangerously-skip-permissions|\bdangerouslySkipPermissions\b|\benableAllProjectMcpServers\b|\benabledMcpjsonServers\b|"defaultMode"\s*:\s*"(?:bypassPermissions|acceptEdits)"|\bskipDangerousModePermissionPrompt\b|\bpermissions\s*(?:\.|\[\s*['"])\s*allow\b/
+  /\.claude\/settings(?:\.local)?\.json|(?:permission[_-]?mode|permissionMode|defaultMode)["']?\s*[:=]\s*["']bypassPermissions\b|--permission-mode[\s=]+["']?bypassPermissions\b|--dangerously-skip-permissions|\bdangerouslySkipPermissions\b|\benableAllProjectMcpServers\b|\benabledMcpjsonServers\b|"defaultMode"\s*:\s*"(?:bypassPermissions|acceptEdits)"|\bskipDangerousModePermissionPrompt\b|\bpermissions\s*(?:\.|\[\s*['"])\s*allow\b/
 
 /** Claude Code folders that load what is written into them. */
 export const CLAUDE_LOAD_DIR = /\.claude\/(?:skills|plugins|agents|commands|hooks)\b|\bCLAUDE\.md\b/

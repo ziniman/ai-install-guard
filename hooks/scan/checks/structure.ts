@@ -2,7 +2,7 @@ import type { InventoryFile, InventoryLink } from '../inventory'
 import { isLive, isRecord, isTestPath, parseJson, type ScanContext } from './context'
 import { CLAUDE_SETTINGS } from './patterns'
 import { ARCHIVE, ARCHIVE_EXTENSIONS, EXECUTABLE, IMAGE_EXTENSIONS, magicOf, NATIVE_EXTENSIONS, TEXT_EXTENSIONS } from './magic'
-import { basename, dirname, extension, findFirst, joinPath } from './text'
+import { basename, dirname, extension, findFirst, joinPath, spanKinds } from './text'
 import { row, type CheckResult, type Evidence, type Status } from './types'
 
 export { magicOf }
@@ -10,6 +10,9 @@ import type { ValidatorReport } from './validator'
 
 const GROUP = 'structure' as const
 const LARGE_FILE = 1024 * 1024
+/** Folders that hold libraries shipped with a plugin rather than its own code. */
+const VENDORED = /(?:^|\/)(?:vendor|vendors|assets|static|public|third[-_]party)\//
+
 const MINIFIED_LINE = 1000
 
 export function structureChecks(ctx: ScanContext, validator: ValidatorReport | undefined): CheckResult[] {
@@ -127,11 +130,14 @@ function filesCheck(ctx: ScanContext): CheckResult {
     if (!file.isText && TEXT_EXTENSIONS.has(ext)) {
       evidence.push({ file: file.path, excerpt: `named .${ext} but holds NUL bytes, which hide its text from text tools`, status: cap('warn') })
     }
+    // A large file is only noted: size alone says nothing about what it does.
     if (file.size > LARGE_FILE) {
-      evidence.push({ file: file.path, excerpt: `${(file.size / LARGE_FILE).toFixed(1)} MB: large for a plugin file`, status: cap('warn') })
+      evidence.push({ file: file.path, excerpt: `${(file.size / LARGE_FILE).toFixed(1)} MB: large for a plugin file`, status: 'info' })
     }
-    if (/^(js|mjs|cjs)$/.test(ext) && (file.path.endsWith('.min.js') || longestLine(ctx.text(file.path) ?? '') > MINIFIED_LINE)) {
-      evidence.push({ file: file.path, excerpt: 'minified or bundled JavaScript: hard to review', status: cap('warn') })
+    if (/^(js|mjs|cjs)$/.test(ext) && (file.path.endsWith('.min.js') || isMinified(ctx.text(file.path) ?? ''))) {
+      // A library vendored as an asset (assets/vendor/mermaid.min.js) is noted; minified code that runs as the plugin is worth a look.
+      const vendored = VENDORED.test(file.path) && !['module', 'hook-script', 'server', 'prompt-script', 'bin'].includes(ctx.roleOf(file.path))
+      evidence.push({ file: file.path, excerpt: vendored ? 'a minified library shipped as an asset' : 'minified or bundled JavaScript: hard to review', status: vendored ? 'info' : cap('warn') })
     }
   }
   for (const entry of ctx.tree.inventory.entries) {
@@ -148,16 +154,27 @@ function filesCheck(ctx: ScanContext): CheckResult {
   )
 }
 
-function longestLine(text: string): number {
-  let longest = 0
+/**
+ * Whether JavaScript reads as minified: a line over MINIFIED_LINE characters
+ * that is mostly code. A long line that is mostly a string (a prompt held in
+ * a template literal) is readable; packed code (`zt="...",Ut=...`) is not.
+ */
+function isMinified(text: string): boolean {
+  let kindAt: ((index: number) => string) | undefined
   let start = 0
   for (let i = 0; i <= text.length; i += 1) {
-    if (i === text.length || text.charCodeAt(i) === 10) {
-      longest = Math.max(longest, i - start)
-      start = i + 1
+    if (i !== text.length && text.charCodeAt(i) !== 10) continue
+    if (i - start > MINIFIED_LINE) {
+      kindAt ??= spanKinds(text, 'js')
+      // Every eighth character is enough to tell code from a string.
+      let code = 0
+      let seen = 0
+      for (let at = start; at < i; at += 8, seen += 1) if (kindAt(at) === 'code') code += 1
+      if (code * 2 > seen) return true
     }
+    start = i + 1
   }
-  return longest
+  return false
 }
 
 function linksCheck(ctx: ScanContext): CheckResult {

@@ -1,0 +1,7 @@
+{
+  "name": "benign-mentions",
+  "version": "1.0.0",
+  "description": "Reviews a change for security mistakes with Claude when a turn ends.",
+  "author": { "name": "Fixture Author" },
+  "license": "MIT"
+}

@@ -268,7 +268,7 @@ function referencedVariables(text: string): string[] {
  * service's word must be the host's own name (notion for mcp.notion.so), not
  * any label: github.evil.example is evil.example's.
  */
-function belongsTo(name: string, host: string): boolean {
+export function belongsTo(name: string, host: string): boolean {
   const labels = host.split('.')
   for (const word of vendorWords(name)) {
     const domains = SERVICE_DOMAINS[word]
