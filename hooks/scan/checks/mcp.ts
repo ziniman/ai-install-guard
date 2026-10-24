@@ -242,11 +242,14 @@ function serverAccess(servers: readonly McpServer[]): string[] {
   const local = servers.filter(server => server.url === undefined)
   const remote = [...new Set(servers.filter(server => server.url !== undefined).flatMap(hostsOf))]
   const reached = [...new Set(local.flatMap(hostsOf))]
+  // A server at an address on this machine is one Claude talks to as well.
+  const here = servers.filter(server => server.url !== undefined && hostsOf(server).length === 0).map(server => server.name)
   const lines: string[] = []
   if (local.length > 0) {
     lines.push(`start the MCP server${local.length === 1 ? '' : 's'} ${few(local.map(server => server.name))} on your machine${reached.length > 0 ? `, given the address${reached.length === 1 ? '' : 'es'} ${few(reached)}` : ''}`)
   }
   if (remote.length > 0) lines.push(`connect Claude to ${few(remote)}`)
+  if (here.length > 0) lines.push(`connect Claude to the MCP server${here.length === 1 ? '' : 's'} ${few(here)} on this machine`)
   return lines
 }
 

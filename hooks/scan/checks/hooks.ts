@@ -60,7 +60,7 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
       const approval = findFirst(hook.command, AUTO_APPROVE)
       if (approval !== undefined) approvals.push({ file: hook.file, line: hook.line, excerpt: approval.excerpt, status: 'fail' })
     } else if (hook.type === 'http') {
-      const isLocal = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:[/?#]|$)/.test(hook.command)
+      const isLocal = isLocalAddress(hook.command)
       commands.push({
         file: hook.file,
         line: hook.line,
@@ -190,5 +190,16 @@ function hostOf(address: string): string {
     return new URL(address).hostname.toLowerCase()
   } catch {
     return address.slice(0, 80)
+  }
+}
+
+/** Whether an HTTP hook's address is this machine: localhost or a loopback address, however it is written. */
+function isLocalAddress(address: string): boolean {
+  try {
+    const url = new URL(address)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+    return /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/.test(url.hostname.toLowerCase())
+  } catch {
+    return false
   }
 }
