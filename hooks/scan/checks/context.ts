@@ -457,12 +457,17 @@ function interpreterNaming(command: string, path: string): 'js' | 'python' | 'sh
   // options and their values (`bash -o pipefail x.js` is bash). Another file
   // in between is what the interpreter runs: in `bash run.sh x.py`, x.py is
   // run.sh's argument, read as its own extension says.
-  const before = normalized.slice(0, at).split(/[;&|]/).pop() ?? ''
+  // Up to the word that holds the path: `./x.py` and `${ROOT}/x.py` are one word.
+  const before = normalized.slice(0, normalized.slice(0, at).search(/\S*$/)).split(/[;&|]/).pop() ?? ''
   const words = before.trim().split(/\s+/).reverse()
-  for (const word of words) {
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index] as string
     const language = languageOfWord(word)
     if (language !== undefined) return language
-    if (!word.startsWith('-') && (word.includes('/') || /\.[A-Za-z]\w{0,4}$/.test(word))) return undefined
+    // A file right after an option is the option's value (`node --require ./setup.js x.py`).
+    const option = words[index + 1]
+    const optionValue = option !== undefined && option.startsWith('-') && !option.includes('=')
+    if (!word.startsWith('-') && !optionValue && (word.includes('/') || /\.[A-Za-z]\w{0,4}$/.test(word))) return undefined
   }
   return undefined
 }
@@ -491,15 +496,17 @@ function localImports(path: string, source: string, realOf: (path: string) => st
     const real = base === undefined ? undefined : resolveModuleFile(base, realOf)
     if (real !== undefined) out.push(real)
   }
+  // Python's imports are read only in Python: `import helper from 'helper'` is JavaScript's.
+  const python = /\.pyw?$/i.test(path) || /^#![^\n]*\bpython/.test(source)
   // A script's own folder is first on Python's path, so `import llm` beside it loads ./llm.py.
-  for (const match of findAll(source, /^[ \t]*(?:import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*)|from[ \t]+([A-Za-z_][\w.]*)[ \t]+import\b)/gm, Number.MAX_SAFE_INTEGER)) {
+  for (const match of python ? findAll(source, /^[ \t]*(?:import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*)|from[ \t]+([A-Za-z_][\w.]*)[ \t]+import\b)/gm, Number.MAX_SAFE_INTEGER) : []) {
     const parts = /^[ \t]*(?:import[ \t]+([\w., \t]+)|from[ \t]+([\w.]+))/.exec(match.text)
     for (const name of (parts?.[1] ?? parts?.[2] ?? '').split(',')) {
       const module = name.trim().replace(/\./g, '/')
       if (module !== '') add(`./${module}`, ['.py', '/__init__.py'])
     }
   }
-  for (const match of findAll(source, /^[ \t]*from[ \t]+(\.+)([\w.]*)[ \t]+import[ \t]+([\w, ]+)/gm, Number.MAX_SAFE_INTEGER)) {
+  for (const match of python ? findAll(source, /^[ \t]*from[ \t]+(\.+)([\w.]*)[ \t]+import[ \t]+([\w, ]+)/gm, Number.MAX_SAFE_INTEGER) : []) {
     const parts = /from\s+(\.+)([\w.]*)\s+import\s+([\w, ]+)/.exec(match.text)
     if (parts === null) continue
     const up = '../'.repeat(Math.max(0, (parts[1] as string).length - 1))

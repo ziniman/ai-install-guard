@@ -21,7 +21,7 @@ import { languageOf, localImports, networkOf, proseTest, secretName } from './co
 import { belongsTo } from './mcp'
 import { promptConcerns } from './prompts'
 import { findAll, findFirst, spanKinds, type Match } from './text'
-import { row, type CheckResult, type Evidence } from './types'
+import { row, worstFirst, type CheckResult, type Evidence } from './types'
 
 const GROUP = 'hooks' as const
 
@@ -102,7 +102,7 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
       return { file: file.path, line: match.line, excerpt: shown, status: 'fail' }
     }
     // A key is judged by where the script, and the local modules it imports, can send it.
-    let reach: { sends: boolean; hosts: string[] } | undefined
+    let reach: ReturnType<typeof networkOf> | undefined
     const keyRead = (match: Match): Evidence => {
       const item = found(match, 'reads secret environment variables')
       if (item.status !== 'fail') return item
@@ -112,7 +112,8 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
       if (/process\.env|os\.environ|printenv|\benv\b/.test(match.text)) return item
       reach ??= networkOf(ctx, localImports(ctx, file.path))
       if (!reach.sends) return { ...item, excerpt: `reads ${name}; neither it nor what it imports has network code`, status: 'info' }
-      if (reach.hosts.length > 0 && reach.hosts.every(host => belongsTo(name, host))) {
+      // An address built while it runs could be anywhere, whatever hosts the code also names.
+      if (!reach.builtAddress && reach.hosts.length > 0 && reach.hosts.every(host => belongsTo(name, host))) {
         return { ...item, excerpt: `uses ${name} with ${reach.hosts.slice(0, 3).join(', ')}, the service it belongs to`, status: 'info' }
       }
       return item
@@ -126,7 +127,9 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
       return [...all.filter(match => !isInert(match)).slice(0, 3), ...all.filter(isInert).slice(0, 2)]
     }
     for (const { pattern, what } of DANGERS) {
-      for (const match of matches(pattern)) commands.push(pattern === SECRET_ENV ? keyRead(match) : found(match, what))
+      // A key named in a docstring is a note, so every read is judged first: notes cannot crowd out a real one.
+      if (pattern === SECRET_ENV) commands.push(...worstFirst(findAll(text, pattern, 10_000).map(keyRead), 3))
+      else for (const match of matches(pattern)) commands.push(found(match, what))
     }
     for (const match of matches(AUTO_APPROVE)) approvals.push(found(match, 'approves the tool call'))
     const writes = live(WRITE_SHELL) || live(WRITE_CODE)

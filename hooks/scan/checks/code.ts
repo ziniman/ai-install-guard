@@ -88,15 +88,22 @@ const PROSE_WINDOW = 2000
  * with flags or a path is not prose; a prompt that quotes `eval()` is.
  */
 export function proseTest(text: string, kindAt: (index: number) => SpanKind): (index: number) => boolean {
+  // Many matches in one string are one answer: each window is read once.
+  const seen = new Map<string, boolean>()
   return index => {
     if (kindAt(index) !== 'string') return false
     let start = index
     let end = index
     while (start > 0 && index - start < PROSE_WINDOW && kindAt(start - 1) === 'string') start -= 1
     while (end < text.length && end - index < PROSE_WINDOW && kindAt(end) === 'string') end += 1
+    const key = `${start}:${end}`
+    const known = seen.get(key)
+    if (known !== undefined) return known
     const body = text.slice(start, end)
     const words = body.split(/\s+/).filter(word => /[A-Za-z]{2,}/.test(word)).length
-    return words >= 8 && (body.match(PROSE_WORDS)?.length ?? 0) >= 3
+    const prose = words >= 8 && (body.match(PROSE_WORDS)?.length ?? 0) >= 3
+    seen.set(key, prose)
+    return prose
   }
 }
 
@@ -163,9 +170,10 @@ function active(file: CodeFile, pattern: RegExp, limit = 20): Match[] {
  * then at most two inert ones, so comments cannot crowd out real code.
  */
 function evidenceFor(file: CodeFile, pattern: RegExp, status: Status, describe: (match: Match) => string, limit = 5, strict = false): Evidence[] {
+  // Prose is judged a note too, so it comes after real code and cannot crowd it out.
   const isInert = (index: number): boolean => {
     const kind = file.kindAt(index)
-    return kind === 'comment' || kind === 'regex' || kind === 'trailing-comment'
+    return kind === 'comment' || kind === 'regex' || kind === 'trailing-comment' || (!strict && file.inProse(index))
   }
   const live = findAll(file.text, pattern, limit, index => !isInert(index))
   const inert = findAll(file.text, pattern, 2, isInert)
@@ -571,7 +579,7 @@ function credentialsCheck(ctx: ScanContext): CheckResult {
     const keys = active(file, SECRET_ENV, 20).filter(match => !file.inProse(match.index))
     const dumps = keys.some(match => /process\.env|os\.environ|printenv|\benv\b/.test(match.text))
     const hosts = liveHosts(file)
-    const ownService = sends && !dumps && hosts.length > 0 && keys.every(match => hosts.every(host => belongsTo(secretName(match), host)))
+    const ownService = sends && !dumps && !buildsAddress(file) && hosts.length > 0 && keys.every(match => hosts.every(host => belongsTo(secretName(match), host)))
     const keyStatus: Status = !sends ? 'info' : ownService ? 'info' : 'fail'
     const names = evidenceFor(file, SECRET_ENV, keyStatus, match => (ownService ? `uses ${secretName(match)} with ${hosts.slice(0, 3).join(', ')}, the service it belongs to` : `${lead}reads ${secretName(match)}`), 3)
     evidence.push(...paths, ...names)
@@ -633,22 +641,37 @@ export function localImports(ctx: ScanContext, path: string): string[] {
   return [...seen]
 }
 
-/** A network tool named as a program to start, as in `['curl', ...]`. */
-const NETWORK_PROGRAM = /['"`](?:curl|wget|nc|ncat|netcat|socat|ssh|scp|sftp|telnet)['"`]/
+/** A network tool started as a program: `subprocess.run(['curl', ...])`, `spawn('wget', ...)`. */
+const NETWORK_PROGRAM =
+  /\b(?:run|call|check_call|check_output|Popen|spawn|spawnSync|execFile|execFileSync|execSync|exec|system|popen)\s*\(\s*\[?\s*['"`](?:curl|wget|nc|ncat|netcat|socat|ssh|scp|sftp|telnet)\b/
+
+/**
+ * An address whose host is filled in while the code runs: `"https://" + host`,
+ * `` `https://${host}` ``, f"https://{host}". Such code can send to a host it
+ * never writes down, so the hosts it does name do not say where data goes.
+ */
+const BUILT_ADDRESS = /\b(?:https?|wss?):\/\/(?:["'`]\s*\+|\$\{|\{|%s)/
 
 /**
  * What the code in `paths` can reach: whether it has network code (or
  * starts a network tool) outside comments and patterns, and the hosts it
  * names outside comments, patterns and prose.
  */
-export function networkOf(ctx: ScanContext, paths: readonly string[]): { sends: boolean; hosts: string[] } {
+export function networkOf(ctx: ScanContext, paths: readonly string[]): { sends: boolean; hosts: string[]; builtAddress: boolean } {
   let sends = false
+  let builtAddress = false
   const hosts = new Set<string>()
   for (const file of codeFiles(ctx, new Set(paths))) {
     if (!sends) sends = [NETWORK_CODE, NETWORK_COMMAND, NETWORK_PROGRAM].some(pattern => active(file, pattern, 1).length > 0)
+    if (!builtAddress) builtAddress = buildsAddress(file)
     for (const host of liveHosts(file)) hosts.add(host)
   }
-  return { sends, hosts: [...hosts].filter(host => !/^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)$/.test(host)) }
+  return { sends, hosts: [...hosts].filter(host => !/^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)$/.test(host)), builtAddress }
+}
+
+/** Whether live code builds an address whose host is only known when it runs. */
+function buildsAddress(file: CodeFile): boolean {
+  return active(file, BUILT_ADDRESS, 20).some(match => !file.inProse(match.index))
 }
 
 /** The hosts live code names in its own strings: not in comments, patterns or prose. */

@@ -38,11 +38,12 @@ export const PERSISTENCE_TARGET =
 
 /**
  * Claude Code settings and permission switches: a settings file, a key that
- * changes what runs unasked, or a permission mode being set. The bare name of
- * a mode (`bypassPermissions` in a list of modes) is not a change.
+ * changes what runs unasked, or a permission mode being set or assigned
+ * (`mode = "bypassPermissions"`). The bare name of a mode, in a list of modes
+ * or as a key, is not a change.
  */
 export const CLAUDE_SETTINGS =
-  /\.claude\/settings(?:\.local)?\.json|(?:permission[_-]?mode|permissionMode|defaultMode)["']?\s*[:=]\s*["']bypassPermissions\b|--permission-mode[\s=]+["']?bypassPermissions\b|--dangerously-skip-permissions|\bdangerouslySkipPermissions\b|\benableAllProjectMcpServers\b|\benabledMcpjsonServers\b|"defaultMode"\s*:\s*"(?:bypassPermissions|acceptEdits)"|\bskipDangerousModePermissionPrompt\b|\bpermissions\s*(?:\.|\[\s*['"])\s*allow\b/
+  /\.claude\/settings(?:\.local)?\.json|(?:[=:]|\breturn)\s*["'`]bypassPermissions["'`](?!\s*:)|(?:permission[_-]?mode|permissionMode|defaultMode)["']?\s*[:=]\s*["']bypassPermissions\b|--permission-mode[\s=]+["']?bypassPermissions\b|--dangerously-skip-permissions|\bdangerouslySkipPermissions\b|\benableAllProjectMcpServers\b|\benabledMcpjsonServers\b|"defaultMode"\s*:\s*"(?:bypassPermissions|acceptEdits)"|\bskipDangerousModePermissionPrompt\b|\bpermissions\s*(?:\.|\[\s*['"])\s*allow\b/
 
 /** Claude Code folders that load what is written into them. */
 export const CLAUDE_LOAD_DIR = /\.claude\/(?:skills|plugins|agents|commands|hooks)\b|\bCLAUDE\.md\b/

@@ -3,7 +3,7 @@ import { isCodeFile, isLive, type ScanContext } from './context'
 import { CREDENTIAL_PATH, DOWNLOAD_AND_RUN, NETWORK_COMMAND, NETWORK_CODE, SECRET_ENV, UNPINNED_RUNNER } from './patterns'
 import { belongsTo } from './mcp'
 import { basename, dirname, findAll, findFirst, spanKinds, type Match } from './text'
-import { row, type CheckResult, type Evidence, type Status } from './types'
+import { row, worstFirst, type CheckResult, type Evidence, type Status } from './types'
 
 const GROUP = 'prompts' as const
 
@@ -38,16 +38,53 @@ const CONCEALMENT = /\b(?:never|don['’]t|do\s+not|without)\s+(?:mention(?:ing)
 /** A remote address: anything but this machine. */
 const REMOTE_ADDRESS = /\bhttps?:\/\/(?!(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)(?![\w.-]))[^\s'"`<>)]{1,300}/i
 
+/** The closing mark for each opening quote. */
+const CLOSING: Record<string, string> = { '"': '"', "'": "'", '“': '”', '‘': '’', '`': '`', '«': '»' }
+
 /**
- * Whether `index` sits in quoted text: right after a quote mark or backtick,
- * or after an unclosed one on its line. A quoted "ignore previous
- * instructions" is someone writing about the phrase, not using it.
+ * Whether the phrase at `index`, `length` long, is quoted: inside a pair of
+ * quote marks or backticks that closes soon after it, in the same
+ * paragraph. A quoted "ignore previous instructions" is someone writing
+ * about the phrase. An opening quote that never closes, or a quotation
+ * that itself names an address, a network tool or a credential, is not a
+ * mention: that is an instruction with quote marks around it.
  */
-function isQuoted(text: string, index: number): boolean {
-  if (/["'“‘`«]/.test(text[index - 1] ?? '')) return true
-  const head = text.slice(text.lastIndexOf('\n', index - 1) + 1, index)
-  const count = (pattern: RegExp) => head.match(pattern)?.length ?? 0
-  return count(/"/g) % 2 === 1 || count(/`/g) % 2 === 1 || count(/“/g) > count(/”/g)
+function isQuoted(text: string, index: number, length: number, frontEnd = 0): boolean {
+  let head = text.slice(text.lastIndexOf('\n', index - 1) + 1, index)
+  // In frontmatter the quotes around a YAML value are syntax, not quoting: the
+  // model reads a quoted description all the same.
+  if (index < frontEnd) head = head.replace(/^\s*(?:-\s+)?(?:[\w-]+\s*:\s*)?["']/, '')
+  const open = openQuote(head) ?? (index < frontEnd ? undefined : openQuote(previousLine(text, index, head)))
+  if (open === undefined) return false
+  const after = text.slice(index + length, index + length + 200).split(/\n[ \t]*\n/)[0] ?? ''
+  const close = after.indexOf(CLOSING[open.mark] ?? open.mark)
+  if (close === -1) return false
+  return !namesWayOut(`${open.text}${text.slice(index, index + length)}${after.slice(0, close)}`)
+}
+
+/** The quote left open at the end of `head`, and what it holds so far. */
+function openQuote(head: string): { mark: string; text: string } | undefined {
+  const last = head.at(-1) ?? ''
+  if (Object.hasOwn(CLOSING, last)) return { mark: last, text: '' }
+  for (const mark of ['"', '`']) {
+    const count = head.split(mark).length - 1
+    if (count % 2 === 1) return { mark, text: head.slice(head.lastIndexOf(mark) + 1) }
+  }
+  const curly = head.lastIndexOf('“')
+  if (curly > head.lastIndexOf('”')) return { mark: '“', text: head.slice(curly + 1) }
+  return undefined
+}
+
+/**
+ * A quote opened at the end of the line before (`"ignore` then `previous
+ * instructions"`) still holds a phrase that begins this line.
+ */
+function previousLine(text: string, index: number, head: string): string {
+  if (head.trim() !== '') return ''
+  const lineStart = text.lastIndexOf('\n', index - 1)
+  if (lineStart <= 0) return ''
+  const before = text.slice(text.lastIndexOf('\n', lineStart - 1) + 1, lineStart)
+  return before.trim() === '' ? '' : `${before} `
 }
 
 /** The paragraph around `index`: the lines between the nearest blank lines. */
@@ -68,9 +105,15 @@ function namesWayOut(text: string): boolean {
  * it counts only when a closing `</system>` follows. The other names, and
  * any closing tag, count wherever they are.
  */
-function isTag(text: string, match: Match): boolean {
-  if (!/^<\s*system\s*>$/i.test(match.text)) return true
-  return /<\s*\/\s*system\s*>/i.test(text.slice(match.index + match.text.length, match.index + 20_000))
+function isTagAt(text: string, index: number): boolean {
+  const open = /^<\s*system\s*>/i.exec(text.slice(index, index + 40))
+  if (open === null) return true
+  return /<\s*\/\s*system\s*>/i.test(text.slice(index + open[0].length, index + 20_000))
+}
+
+/** The end of a Markdown file's YAML frontmatter, or 0 when it has none. */
+function frontmatterEnd(text: string): number {
+  return /^\ufeff?---\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/.exec(text)?.[0].length ?? 0
 }
 
 type Phrase = { match: Match; status: Status; note: string }
@@ -82,22 +125,23 @@ type Phrase = { match: Match; status: Status; note: string }
  * not when the sentence warns against it ("do not silently fetch").
  */
 function injectionPhrases(text: string, reachesOut: boolean): Phrase[] {
+  const frontEnd = frontmatterEnd(text)
   const out: Phrase[] = []
+  // Every match is judged before any is dropped, the worst kept first.
   for (const pattern of INJECTION) {
-    for (const match of findAll(text, pattern, 3)) {
-      if (!isTag(text, match)) continue
-      if (isQuoted(text, match.index)) out.push({ match, status: 'info', note: ' (quoted: written about, not used)' })
-      else out.push({ match, status: reachesOut ? 'fail' : 'warn', note: '' })
-    }
+    const phrases = findAll(text, pattern, 200, index => isTagAt(text, index)).map(match =>
+      isQuoted(text, match.index, match.text.length, frontEnd) ? { match, status: 'info' as Status, note: ' (quoted: written about, not used)' } : { match, status: (reachesOut ? 'fail' : 'warn') as Status, note: '' },
+    )
+    out.push(...worstFirst(phrases, 3))
   }
   for (const pattern of HIDING) {
-    for (const match of findAll(text, pattern, 3)) {
-      const wayOut = namesWayOut(paragraphAt(text, match.index))
-      if (isQuoted(text, match.index)) out.push({ match, status: 'info', note: ' (quoted: written about, not used)' })
-      else if (!/^(?:do\s+not|don|never)/i.test(match.text) && isNegated(text, match.index)) out.push({ match, status: 'info', note: ' (warns against it)' })
-      else if (!wayOut) out.push({ match, status: 'info', note: ' (nothing in its paragraph sends data or touches credentials)' })
-      else out.push({ match, status: 'fail', note: '' })
-    }
+    const phrases = findAll(text, pattern, 200).map((match): Phrase => {
+      if (isQuoted(text, match.index, match.text.length, frontEnd)) return { match, status: 'info', note: ' (quoted: written about, not used)' }
+      if (!/^(?:do\s+not|don|never)/i.test(match.text) && isNegated(text, match.index)) return { match, status: 'info', note: ' (warns against it)' }
+      if (!namesWayOut(paragraphAt(text, match.index))) return { match, status: 'info', note: ' (nothing in its paragraph sends data or touches credentials)' }
+      return { match, status: 'fail', note: '' }
+    })
+    out.push(...worstFirst(phrases, 3))
   }
   return out
 }
@@ -182,12 +226,14 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     }
 
     // Naming a credential file is not reading it: a fail needs a verb that reads it on the same line.
-    for (const match of findAll(text, CREDENTIAL_PATH, 5)) {
-      const lineText = text.split('\n')[match.line - 1] ?? ''
-      const reads = READ_VERB.test(lineText)
-      credentials.push({ file: path, line: match.line, excerpt: reads ? match.excerpt : `names ${match.text.trim()}: ${match.excerpt}`, status: cap(reads ? 'fail' : 'info') })
-    }
-    for (const match of findAll(text, SECRET_ENV, 5)) credentials.push({ file: path, line: match.line, ...secretUse(text, match, cap) })
+    const lines = text.split('\n')
+    const paths = findAll(text, CREDENTIAL_PATH, 200).map((match): Evidence => {
+      // The whole command: `cat \` on one line can read the key named on the next.
+      const reads = READ_VERB.test(statementAt(lines, match.line))
+      return { file: path, line: match.line, excerpt: reads ? match.excerpt : `names ${match.text.trim()}: ${match.excerpt}`, status: cap(reads ? 'fail' : 'info') }
+    })
+    credentials.push(...worstFirst(paths, 5))
+    credentials.push(...worstFirst(findAll(text, SECRET_ENV, 200).map(match => ({ file: path, line: match.line, ...secretUse(lines, match, cap) })), 5))
 
     // A local address (a preview server the skill starts) is not remote.
     const remoteOnly = (index: number) => !/^[^\n]{0,120}?https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)(?![\w.-])/i.test(text.slice(index, index + 200))
@@ -198,17 +244,18 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     // against it ("never run curl | sh") is still a warning, since negation
     // is easy to fake ("don't hesitate to run ..."). A well-known installer
     // (Homebrew's, rustup's) is a step down: worth a look, not a red flag.
-    for (const match of findAll(text, DOWNLOAD_AND_RUN, 3)) {
+    const downloads = findAll(text, DOWNLOAD_AND_RUN, 200).map((match): Evidence => {
       const warnsAgainst = isNegated(text, match.index)
-      const installer = knownInstaller(text.slice(match.index, text.indexOf('\n', match.index) === -1 ? text.length : text.indexOf('\n', match.index)).slice(0, 600))
+      const installer = knownInstaller(text.slice(match.index, match.index + 600).split('\n')[0] ?? '')
       const what = installer === undefined ? 'download and run code' : `download and run ${installer}`
-      remote.push({
+      return {
         file: path,
         line: match.line,
         excerpt: `${warnsAgainst ? 'mentions' : 'tells the model to'} ${what}: ${match.excerpt}`,
         status: cap(installer === undefined ? (warnsAgainst ? 'warn' : 'fail') : warnsAgainst ? 'info' : 'warn'),
-      })
-    }
+      }
+    })
+    remote.push(...worstFirst(downloads, 3))
     // An unpinned package runner counts only as a command (in a code span or
     // block), not prose about one ("npx is a package runner"). It runs the
     // newest version of a package, as most setup instructions do: noted.
@@ -285,34 +332,45 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
   return ctx.prompts.length === 0 ? results.filter(result => result.id === 'prompts.names' || result.id === 'prompts.scanner') : results
 }
 
-/** Install scripts that projects tell people to pipe into a shell: well known, still code from the internet. */
-const INSTALLERS: readonly { match: RegExp; name: string }[] = [
-  { match: /^https:\/\/raw\.githubusercontent\.com\/Homebrew\/install\//, name: "Homebrew's installer" },
-  { match: /^https:\/\/sh\.rustup\.rs\b/, name: "rustup's installer" },
-  { match: /^https:\/\/raw\.githubusercontent\.com\/nvm-sh\/nvm\//, name: "nvm's installer" },
-  { match: /^https:\/\/(?:get\.)?docker\.com\b/, name: "Docker's installer" },
-  { match: /^https:\/\/bun\.sh\/install\b/, name: "Bun's installer" },
-  { match: /^https:\/\/deno\.land\/install\.sh\b/, name: "Deno's installer" },
-  { match: /^https:\/\/astral\.sh\/(?:uv|ruff)\//, name: "Astral's installer" },
-  { match: /^https:\/\/install\.python-poetry\.org\b/, name: "Poetry's installer" },
-  { match: /^https:\/\/get\.pnpm\.io\/install\.sh\b/, name: "pnpm's installer" },
-  { match: /^https:\/\/ollama\.com\/install\.sh\b/, name: "Ollama's installer" },
-  { match: /^https:\/\/claude\.ai\/install\.sh\b/, name: "Claude Code's installer" },
-  { match: /^https:\/\/tailscale\.com\/install\.sh\b/, name: "Tailscale's installer" },
+/**
+ * Install scripts that projects tell people to pipe into a shell: well known,
+ * still code from the internet. Matched by exact host and path, so a
+ * look-alike host (get.docker.com.example) is not one of them.
+ */
+const INSTALLERS: readonly { host: string; path: string; name: string }[] = [
+  { host: 'raw.githubusercontent.com', path: '/Homebrew/install/', name: "Homebrew's installer" },
+  { host: 'sh.rustup.rs', path: '/', name: "rustup's installer" },
+  { host: 'raw.githubusercontent.com', path: '/nvm-sh/nvm/', name: "nvm's installer" },
+  { host: 'get.docker.com', path: '/', name: "Docker's installer" },
+  { host: 'bun.sh', path: '/install', name: "Bun's installer" },
+  { host: 'deno.land', path: '/install.sh', name: "Deno's installer" },
+  { host: 'astral.sh', path: '/uv/', name: "uv's installer" },
+  { host: 'install.python-poetry.org', path: '/', name: "Poetry's installer" },
+  { host: 'get.pnpm.io', path: '/install.sh', name: "pnpm's installer" },
+  { host: 'ollama.com', path: '/install.sh', name: "Ollama's installer" },
+  { host: 'claude.ai', path: '/install.sh', name: "Claude Code's installer" },
+  { host: 'tailscale.com', path: '/install.sh', name: "Tailscale's installer" },
 ]
 
 /** The well-known installer a download-and-run command fetches, by its address, if it is one. */
 function knownInstaller(command: string): string | undefined {
   const address = /\bhttps:\/\/[^\s'"`)]{1,300}/.exec(command)?.[0]
-  return address === undefined ? undefined : INSTALLERS.find(entry => entry.match.test(address))?.name
+  if (address === undefined) return undefined
+  try {
+    const url = new URL(address)
+    // Credentials or a port in the address make it something else.
+    if (url.username !== '' || url.password !== '' || url.port !== '') return undefined
+    return INSTALLERS.find(entry => url.hostname === entry.host && url.pathname.startsWith(entry.path))?.name
+  } catch {
+    return undefined
+  }
 }
 
 /**
  * The lines a backslash at a line's end joins into one command, around `line`:
  * a curl split over several lines, its key on one of them.
  */
-function statementAt(text: string, line: number): string {
-  const lines = text.split('\n')
+function statementAt(lines: readonly string[], line: number): string {
   let first = line - 1
   let last = line - 1
   while (first > 0 && /\\\s*$/.test(lines[first - 1] ?? '') && line - first < 20) first -= 1
@@ -325,9 +383,9 @@ function statementAt(text: string, line: number): string {
  * service fails; printing it, where the transcript keeps it, is a warning;
  * naming it (a .env example, a setup step) is only noted.
  */
-function secretUse(text: string, match: Match, cap: (status: Status) => Status): { excerpt: string; status: Status } {
+function secretUse(lines: readonly string[], match: Match, cap: (status: Status) => Status): { excerpt: string; status: Status } {
   const name = secretName(match)
-  const statement = statementAt(text, match.line)
+  const statement = statementAt(lines, match.line)
   const hosts = Array.from(statement.matchAll(new RegExp(REMOTE_ADDRESS.source, 'gi')), found => {
     try {
       return new URL(found[0]).hostname.toLowerCase()
@@ -338,6 +396,8 @@ function secretUse(text: string, match: Match, cap: (status: Status) => Status):
   const sends = NETWORK_COMMAND.test(statement) || /\b(?:send|upload|post|forward|transmit)\b/i.test(statement)
   const elsewhere = hosts.filter(host => !belongsTo(name, host))
   if (sends && elsewhere.length > 0) return { excerpt: `sends ${name} to ${elsewhere.slice(0, 2).join(', ')}: ${match.excerpt}`, status: cap('fail') }
+  // Sent with no address written down (`$ENDPOINT`), it can go anywhere.
+  if (sends && hosts.length === 0) return { excerpt: `sends ${name} to an address the command does not name: ${match.excerpt}`, status: cap('warn') }
   if (/\b(?:echo|print|printenv|cat)\b/i.test(statement)) return { excerpt: `prints ${name}, where the transcript keeps it: ${match.excerpt}`, status: cap('warn') }
   return { excerpt: `names ${name}${hosts.length > 0 && sends ? `, used with ${hosts.slice(0, 2).join(', ')}, the service it belongs to` : ''}`, status: 'info' }
 }
