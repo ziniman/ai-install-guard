@@ -4,6 +4,18 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.4.0 &nbsp;·&nbsp; 2026-10-25
+
+**`verdict`** - The verdict now answers one question, whether anything is suspicious: **No red flags**, **Worth a look**, **Do not install** or **Could not verify**. What a candidate can do (shell hooks, MCP servers it starts or connects to, network access, Bash allowed without asking, programs its scripts start) is listed beside it on an "It can" line, like an app's permissions, and no longer makes it look worse on its own. Against Anthropic's official marketplace, No red flags went from 21 of 54 plugins to 39, and Do not install from 12 to 4
+
+**`checks`** - A capability the README explains, a plain shell hook, a container run by tag, a key sent to its own service, a skill's `allowed-tools: Bash`, a script that starts programs and a marketplace source that follows a branch are shown as what the candidate can do. A high-risk mod capability the README does not explain, and a committed key or filled `.env`, are worth a look rather than a reason to refuse. A missing license or README and a brand-new repository or account are notes. Red flags are unchanged: hidden characters, injection, credential theft, download-and-run, persistence, settings changes, a capability that contradicts what the plugin says it is, and the rest still fail
+
+**`pane`** - The verdict box shows the "It can" line, and the counts read as red flags, things to look at, and passes. A direction mark written as a string constant is a note on how to write it, not a warning
+
+**`/guard badge`** - New badges say No red flags or Worth a look; badges made before keep counting as the verdict they name
+
+---
+
 ## v0.3.3 &nbsp;·&nbsp; 2026-10-24
 
 **`pane`** - The title names the guard's version beside its name (AI Install Guard 0.3.3 · …), read from the copy that is running, so a screenshot says which version judged; the copied report's first line names it too, as does the chat skill's report
