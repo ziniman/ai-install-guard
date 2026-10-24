@@ -231,13 +231,22 @@ function credentialsCheck(servers: readonly McpServer[]): CheckResult {
   )
 }
 
-/** What the servers let Claude do, for the verdict's "It can" line. */
+/**
+ * What the servers let Claude do, for the verdict's "It can" line: a server
+ * it starts here (and the hosts that server is given), or a server elsewhere
+ * that Claude talks to directly.
+ */
 function serverAccess(servers: readonly McpServer[]): string[] {
-  const local = servers.filter(server => server.url === undefined).map(server => server.name)
-  const hosts = [...new Set(servers.flatMap(server => remoteUrls(server).map(({ url }) => url.hostname.toLowerCase())))]
+  const few = (items: readonly string[]): string => `${items.slice(0, 3).join(', ')}${items.length > 3 ? ` and ${items.length - 3} more` : ''}`
+  const hostsOf = (server: McpServer): string[] => [...new Set(remoteUrls(server).map(({ url }) => url.hostname.toLowerCase()))]
+  const local = servers.filter(server => server.url === undefined)
+  const remote = [...new Set(servers.filter(server => server.url !== undefined).flatMap(hostsOf))]
+  const reached = [...new Set(local.flatMap(hostsOf))]
   const lines: string[] = []
-  if (local.length > 0) lines.push(`start the MCP server${local.length === 1 ? '' : 's'} ${local.slice(0, 3).join(', ')}${local.length > 3 ? ` and ${local.length - 3} more` : ''} on your machine`)
-  if (hosts.length > 0) lines.push(`connect Claude to ${hosts.slice(0, 3).join(', ')}${hosts.length > 3 ? ` and ${hosts.length - 3} more` : ''}`)
+  if (local.length > 0) {
+    lines.push(`start the MCP server${local.length === 1 ? '' : 's'} ${few(local.map(server => server.name))} on your machine${reached.length > 0 ? `, given the address${reached.length === 1 ? '' : 'es'} ${few(reached)}` : ''}`)
+  }
+  if (remote.length > 0) lines.push(`connect Claude to ${few(remote)}`)
   return lines
 }
 

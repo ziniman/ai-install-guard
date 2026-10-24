@@ -1,3 +1,4 @@
+import { redactSecrets } from './checks/patterns'
 import { rankOf, type CheckResult } from './checks/types'
 
 export type VerdictKind = 'safe' | 'caution' | 'reject' | 'unverified'
@@ -38,7 +39,8 @@ export type Verdict = {
 export function decide(results: readonly CheckResult[], error?: string): Verdict {
   const counts: Counts = { pass: 0, warn: 0, fail: 0, info: 0 }
   for (const result of results) counts[result.status] += 1
-  const access = [...new Set(results.flatMap(result => result.access ?? []))].slice(0, MAX_ACCESS)
+  // The phrases can carry a candidate's own words (a server's name): keys in them are hidden, as in evidence.
+  const access = [...new Set(results.flatMap(result => result.access ?? []).map(line => redactSecrets(line)))].slice(0, MAX_ACCESS)
   if (error !== undefined) {
     return { kind: 'unverified', recommendation: RECOMMENDATION.unverified, reasons: [error], access, counts }
   }

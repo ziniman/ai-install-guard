@@ -299,6 +299,8 @@ export function mergeResults(base: readonly CheckResult[], extra: readonly Check
       existing.summary = result.summary
     }
     if (order[result.severity] > order[existing.severity]) existing.severity = result.severity
+    // What a listed plugin can do is part of what the marketplace brings.
+    if (result.access !== undefined && result.access.length > 0) existing.access = [...new Set([...(existing.access ?? []), ...result.access])]
     existing.evidence.sort((a, b) => rankOf(b.status ?? existing.status) - rankOf(a.status ?? existing.status))
   }
   return out

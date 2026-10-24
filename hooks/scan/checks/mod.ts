@@ -194,7 +194,8 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
         title: 'High-risk capabilities',
         advice: 'Running programs, writing files, deciding tool permissions, judging other plugins or changing the system prompt is what a mod needs to take over a session. Install only if its purpose needs it and its README says why.',
         summary: capabilitySummary(uses.filter(item => item.capability.risk === 'high'), explanationFor, ctx, modules, allCalls.has('fs.read') && allCalls.has('http.fetch')),
-        access: accessOf(uses.filter(item => item.capability.risk === 'high')),
+        // Reading files is low risk alone; beside sending requests it is how files leave, so it is said.
+        access: [...accessOf(uses.filter(item => item.capability.risk === 'high')), ...(allCalls.has('fs.read') && allCalls.has('http.fetch') ? ['read files on your machine'] : [])],
       },
       high,
       'warn',

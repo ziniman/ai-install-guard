@@ -67,7 +67,8 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
         excerpt: `on ${where}: sends each event, with tool inputs and outputs, to ${hook.command}`,
         status: isLocal ? 'info' : 'fail',
       })
-      if (isLocal) otherAccess.add('send hook events to a server on this machine')
+      // Where events go is said either way; a server elsewhere is also a red flag on the row.
+      otherAccess.add(isLocal ? 'send hook events to a server on this machine' : `send hook events, with tool inputs and outputs, to ${hostOf(hook.command)}`)
     } else {
       // A prompt or agent hook is instructions the model follows: judged as a prompt.
       const concerns = promptConcerns(hook.command)
@@ -181,4 +182,13 @@ function eventPhrase(events: readonly string[]): string {
   // An event name is the candidate's own text: only a known one is put in words.
   const said = [...new Set(events.map(event => (Object.hasOwn(WORDS, event) ? (WORDS[event] as string) : `its ${event.slice(0, 40)} event`)))]
   return `when ${said.length <= 1 ? (said[0] ?? 'its events fire') : `${said.slice(0, -1).join(', ')} or ${said[said.length - 1]}`}`
+}
+
+/** The host an HTTP hook sends to, or the address as written when it cannot be read. */
+function hostOf(address: string): string {
+  try {
+    return new URL(address).hostname.toLowerCase()
+  } catch {
+    return address.slice(0, 80)
+  }
 }

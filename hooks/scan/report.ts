@@ -21,7 +21,7 @@ export function formatReport(report: ScanReport, options: { details?: boolean; v
   if (verdict.reasons.length > 0 || report.results.length > 0) lines.push(UNTRUSTED_NOTE)
   lines.push(`Verdict: ${verdict.recommendation}`)
   for (const reason of verdict.reasons) lines.push(`  - ${safeLine(redactSecrets(reason))}`)
-  if (verdict.access.length > 0) lines.push(`It can: ${verdict.access.map(line => safeLine(line)).join(' · ')}`)
+  if (verdict.access.length > 0) lines.push(`It can: ${verdict.access.map(line => safeLine(redactSecrets(line))).join(' · ')}`)
   lines.push(countsLine(report))
   if (inventory !== undefined) {
     const files = inventory.entries.filter(entry => entry.kind === 'file').length
