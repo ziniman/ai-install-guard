@@ -36,7 +36,7 @@ Company-wide security platforms watch a whole fleet of agents and enforce policy
 
 1. **Fetch without running.** The candidate is fetched at an exact commit into a folder the guard owns. Nothing is installed, built or run.
 2. **Check every file.** Deterministic checks read the hooks, MCP servers, mod code, skills, scripts, images and manifest.
-3. **Show a verdict.** A pane shows **Safe to install**, **Review what it can do**, **Do not install** or **Could not verify**, a PASS / WARN / FAIL list with file and line evidence, and two buttons: **Install** and **Reject**.
+3. **Show a verdict.** A pane shows **No red flags**, **Worth a look**, **Do not install** or **Could not verify**, a line on what the candidate can do, a list of every check with file and line evidence, and two buttons: **Install** and **Reject**.
 4. **Install only what was scanned.** Install is pinned to the scanned commit and content hash. If the source changed since the scan, it is scanned again first.
 
 Approvals are remembered by commit and content hash, so the same version is never scanned twice, and an update is reviewed as a diff: anything new since the version you approved is listed and flagged. An optional model review can add warnings but can never clear a failure, so a README that says "this plugin is safe" changes nothing.
@@ -65,6 +65,24 @@ To install from a marketplace you have not added yet, `/plugin install rtl-toggl
 
 When Claude runs `claude plugin install` itself, the guard refuses the command and tells Claude why: the install waits for your decision, and Claude should not retry it or find another way. Approve it in the pane, then tell Claude to run it again; the same command now goes through. Because approving it approves that whole command, the install must stand on its own (a `tail` after it is fine): a command that also runs something else, changes folder or writes a file, or that is only known as it runs (`$CMD plugin install …`, `bash -c "$CMD"`, a script piped into a shell, code for another language that mentions `claude`), is held as Could not verify. A marketplace Claude adds must be named by its full path or as `https://github.com/<owner>/<repo>`, since the guard cannot see the shell's current folder.
 
+## Red flags, and what it can do
+
+The verdict answers one question: is anything suspicious? Most useful plugins need some power, so what a candidate can do is shown beside the verdict, the way a phone shows an app's permissions, and never counts against it:
+
+```
+AI Install Guard 0.4.0 · ai-install-guard
+✔ No red flags
+It can: intercept /plugin · see every Bash call and deny, rewrite or answer it · run programs on your machine · send requests over the network
+0 red flags · 0 to look at · 22 passed
+```
+
+- **No red flags**: nothing suspicious. Read the "It can" line and decide whether that fits what you want it for.
+- **Worth a look**: something specific deserves a closer look first, such as an MCP server that fetches whatever package version is newest each time it starts, a mod that runs programs without saying why in its README, or a key committed to the code. Install is still one press.
+- **Do not install**: a red flag, such as hidden instructions, a key sent to a stranger, code downloaded and run, a write to your shell startup files or Claude settings, or a plugin that says it is a theme but runs programs. Installing it anyway asks twice.
+- **Could not verify**: the guard could not tell what would be installed. Installing it anyway asks twice.
+
+Quality notes (no license, a thin README, a brand-new repository) are listed on their rows and never change the verdict.
+
 ## What it checks
 
 | Threat | What gets flagged |
@@ -86,7 +104,7 @@ When Claude runs `claude plugin install` itself, the guard refuses the command a
 | `/guard scan --ref <ref> --path <folder> <repository>` | Scan a branch, tag or full commit id (the default branch otherwise), and a folder inside the repository |
 | `/guard scan --details …` | Any of the above, and print the full report with every finding and its advice |
 | `/guard report` | Reopen the last report |
-| `/guard badge` | A README badge for the last scan, when it was Safe to install or Review what it can do (see [Review badge](#review-badge)) |
+| `/guard badge` | A README badge for the last scan, when it was No red flags or Worth a look (see [Review badge](#review-badge)) |
 | `/guard list` | Your approved and rejected versions, newest first |
 | `/guard forget <name>` | Forget decisions about a name, so it is judged again |
 
@@ -113,17 +131,17 @@ Claude runs the skill's `scripts/scan.js`: the same deterministic checks as `/gu
 
 To fetch a repository, the chat's code execution must be allowed to reach `github.com` (and `api.github.com` for the repository's details) in its network settings. Where it is not, Claude says so and asks for a zip instead (on GitHub: **Code > Download ZIP**).
 
-The same script runs anywhere with Node.js 18 or later: `node skill/ai-install-guard/scripts/scan.js --details <folder | zip | repository>`, with `--ref`, `--path`, `--json` and `--lookups`. Its exit status is the verdict: 0 Safe to install, 1 warnings to review, 2 Do not install, 3 Could not verify.
+The same script runs anywhere with Node.js 18 or later: `node skill/ai-install-guard/scripts/scan.js --details <folder | zip | repository>`, with `--ref`, `--path`, `--json` and `--lookups`. Its exit status is the verdict: 0 No red flags, 1 Worth a look, 2 Do not install, 3 Could not verify.
 
 ## Review badge
 
 If you publish a plugin, mod, skill or MCP server, you can show that it was scanned. Scan your own repository, then run `/guard badge` or press **Copy badge** (`b`) in the pane, and paste the result near the top of your README:
 
 ```markdown
-[![AI Install Guard: Safe to install at 4ac6edc](https://img.shields.io/badge/AI_Install_Guard-safe_to_install_%C2%B7_4ac6edc-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned at commit 4ac6edc…, sha256:…")
+[![AI Install Guard: No red flags at 4ac6edc](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_4ac6edc-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned at commit 4ac6edc…, sha256:…")
 ```
 
-The badge says two things: the verdict (green for **Safe to install**, yellow for **Review what it can do**) and the exact version that was scanned, the commit or, for a local folder, the tree hash. Hovering over it shows the full commit and tree hash. There is no badge for **Do not install** or **Could not verify**.
+The badge says two things: the verdict (green for **No red flags**, yellow for **Worth a look**; badges made before 0.4.0 say Safe to install or Review what it can do, and still count as those) and the exact version that was scanned, the commit or, for a local folder, the tree hash. Hovering over it shows the full commit and tree hash. There is no badge for **Do not install** or **Could not verify**.
 
 A badge is a picture anyone can paste, so the guard never trusts one:
 
