@@ -5,6 +5,7 @@
   "scripts": {
     "build:fixtures": "node scripts/build-fixtures.js",
     "build:skill": "node scripts/build-skill.js",
+    "benchmark": "node scripts/benchmark.js",
     "sync:versions": "node scripts/sync-versions.js",
     "validate": "claude plugin validate --strict .",
     "typecheck": "tsc -p . && tsc -p cli",
