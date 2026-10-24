@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.3.3 &nbsp;·&nbsp; 2026-10-24
+
+**`pane`** - The title names the guard's version beside its name (AI Install Guard 0.3.3 · …), read from the copy that is running, so a screenshot says which version judged; the copied report's first line names it too, as does the chat skill's report
+
+---
+
 ## v0.3.2 &nbsp;·&nbsp; 2026-10-23
 
 **`pane`** - The held command, the verdict's reasons and the title wrap instead of being cut off at the pane's edge, so a long reason can be read in a narrow pane. A Could not verify reason shows as a sentence of its own under the banner
