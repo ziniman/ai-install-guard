@@ -132,7 +132,7 @@ describe('zip archives', () => {
 
     assert.equal(report.target, 'flat.zip')
     assert.equal(report.verdict.kind, 'reject')
-    assert.deepEqual(flagged(report), ['mcp.launch:fail', 'mcp.remote:warn'])
+    assert.deepEqual(flagged(report), ['mcp.launch:fail'])
   })
 
   test('macOS archive litter beside the folder is not taken for a second folder', () => {

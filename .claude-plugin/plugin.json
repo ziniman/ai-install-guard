@@ -1,6 +1,6 @@
 {
   "name": "ai-install-guard",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "A pre-install security gate for Claude Code: scans plugins, mods, skills and MCP servers without running them, and installs nothing until you approve.",
   "author": {
     "name": "Boaz Ziniman",

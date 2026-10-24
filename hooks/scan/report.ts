@@ -3,7 +3,7 @@ import { GROUPS, type CheckResult, type Evidence, type Status } from './checks/t
 import { formatBytes } from './inventory'
 import { safeLine } from './safe-text'
 import type { ScanReport } from './scan'
-import { locate } from './verdict'
+import { countsText, locate } from './verdict'
 
 const LABEL: Record<Status, string> = { fail: 'FAIL', warn: 'WARN', pass: 'PASS', info: 'INFO' }
 
@@ -21,6 +21,7 @@ export function formatReport(report: ScanReport, options: { details?: boolean; v
   if (verdict.reasons.length > 0 || report.results.length > 0) lines.push(UNTRUSTED_NOTE)
   lines.push(`Verdict: ${verdict.recommendation}`)
   for (const reason of verdict.reasons) lines.push(`  - ${safeLine(redactSecrets(reason))}`)
+  if (verdict.access.length > 0) lines.push(`It can: ${verdict.access.map(line => safeLine(line)).join(' · ')}`)
   lines.push(countsLine(report))
   if (inventory !== undefined) {
     const files = inventory.entries.filter(entry => entry.kind === 'file').length
@@ -44,8 +45,7 @@ export function formatReport(report: ScanReport, options: { details?: boolean; v
 }
 
 export function countsLine(report: ScanReport): string {
-  const { pass, warn, fail } = report.verdict.counts
-  return `${pass} passed · ${warn} warning${warn === 1 ? '' : 's'} · ${fail} failed`
+  return countsText(report.verdict.counts)
 }
 
 function formatRow(result: CheckResult, details: boolean): string[] {

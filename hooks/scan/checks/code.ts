@@ -21,7 +21,7 @@ import {
   WRITE_SHELL,
 } from './patterns'
 import { basename, extension, findAll, findFirst, spanKinds, type Match, type SpanKind } from './text'
-import { describePrograms, programsIn, type ProgramUse } from './programs'
+import { describePrograms, programNames, programsIn, type ProgramUse } from './programs'
 import { row, worse, type CheckResult, type Evidence, type Status } from './types'
 
 const GROUP = 'code' as const
@@ -186,8 +186,9 @@ function hiddenCheck(ctx: ScanContext): CheckResult {
     }
     if (language !== 'other') {
       for (const match of findAll(text, BIDI, 3, lone)) {
-        const status = cap('warn')
-        if (status === 'warn') foundLone = true
+        // It cannot reorder any code: a note on how to write it, not a red flag.
+        const status: Status = 'info'
+        if (role !== 'test') foundLone = true
         const excerpt = `bidirectional control ${codePoints(match.text)} is all of a string: it cannot reorder code there, but the string looks empty; write it as ${escapeFor(match, file.path, text, language)}`
         evidence.push({ file: file.path, line: match.line, excerpt, status })
       }
@@ -283,7 +284,9 @@ function execCheck(ctx: ScanContext): CheckResult {
     const patterns: { pattern: RegExp; what: string }[] =
       file.language === 'python' ? python : file.language === 'shell' ? shell : file.language === 'js' ? js : [...js, ...python, ...shell]
     for (const { pattern, what } of patterns) {
-      evidence.push(...evidenceFor(file, pattern, inModule ? 'fail' : 'warn', match => `${what}: ${match.excerpt}`, 3))
+      // Starting programs is what a script can do; code built from text is worth a look; inside a mod, either is a red flag.
+      const level: Status = inModule ? 'fail' : what === 'runs programs' ? 'info' : 'warn'
+      evidence.push(...evidenceFor(file, pattern, level, match => `${what}: ${match.excerpt}`, 3))
     }
     evidence.push(...evidenceFor(file, DOWNLOAD_AND_RUN, 'fail', match => `downloads or decodes code and runs it: ${match.excerpt}`, 3))
     // The summary counts live code only: tests and docs are only reported.
@@ -304,14 +307,24 @@ function execCheck(ctx: ScanContext): CheckResult {
       advice:
         'Check that each program fits what it says it does. Shells, compilers and programs chosen while it runs can do anything, so look at those first. Inside a mod any of this is a red flag: a mod reaches your machine only through Claude Code.',
       summary: summaryOrFallback(describePrograms(uses, { buildsCode, downloads }), evidence),
+      access: programAccess(uses),
     },
     evidence,
+    'info',
   )
+}
+
+/** The programs live code starts, for the verdict's "It can" line. */
+function programAccess(uses: readonly ProgramUse[]): string[] {
+  const named = programNames(uses)
+  const lines = named.length === 0 ? [] : [`start ${named.slice(0, 4).join(', ')}${named.length > 4 ? ` and ${named.length - 4} more programs` : ''}`]
+  if (uses.some(use => use.dynamic)) lines.push('start programs chosen while it runs')
+  return lines
 }
 
 /** A row that found something but could not name it still says so in words. */
 function summaryOrFallback(summary: string[], evidence: readonly Evidence[]): string[] {
-  if (summary.length > 0 || !evidence.some(item => item.status === 'warn' || item.status === 'fail')) return summary
+  if (summary.length > 0 || !evidence.some(item => item.status !== 'pass')) return summary
   return ['Starts other programs; which ones could not be read from the code']
 }
 
@@ -545,6 +558,8 @@ function persistenceCheck(ctx: ScanContext): CheckResult {
 
 function installScriptsCheck(ctx: ScanContext): CheckResult {
   const evidence: Evidence[] = []
+  // Only a package that would be installed counts as what the plugin can do, not one in its tests or docs.
+  let runsOnInstall = false
   for (const file of ctx.files) {
     if (basename(file.path) !== 'package.json') continue
     const raw = ctx.text(file.path) ?? ''
@@ -556,7 +571,8 @@ function installScriptsCheck(ctx: ScanContext): CheckResult {
       if (typeof script !== 'string') continue
       const remote = NETWORK_COMMAND.test(script) || DOWNLOAD_AND_RUN.test(script) || UNPINNED_RUNNER.test(script) || /\bnode\s+-e\b|\|\s*(?:ba|z)?sh\b|https?:\/\//.test(script)
       const line = findFirst(raw, new RegExp(`"${name}"\\s*:`))?.line
-      evidence.push({ file: file.path, line, excerpt: `${name}: ${script}`, status: cap(remote ? 'fail' : 'warn') })
+      evidence.push({ file: file.path, line, excerpt: `${name}: ${script}`, status: cap(remote ? 'fail' : 'info') })
+      if (cap('warn') === 'warn') runsOnInstall = true
     }
   }
   return row(
@@ -564,6 +580,7 @@ function installScriptsCheck(ctx: ScanContext): CheckResult {
       id: 'code.install-scripts',
       group: GROUP,
       title: 'Package install scripts',
+      access: runsOnInstall ? ['run a script when its npm package is installed'] : [],
       advice: 'npm runs these on install with your permissions. One that fetches or runs remote code is a classic supply-chain attack.',
     },
     evidence,

@@ -28,6 +28,8 @@ export type GuardVerdict = {
   kind: 'safe' | 'caution' | 'reject' | 'unverified'
   recommendation: string
   reasons: string[]
+  /** What it can do, in plain words: shown beside the verdict, never a reason in itself. */
+  access?: string[]
   counts: { pass: number; warn: number; fail: number; info: number }
 }
 

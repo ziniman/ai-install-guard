@@ -142,11 +142,12 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
         file: use.file,
         line: use.line > 0 ? use.line : undefined,
         excerpt: explainedHere ? `${excerpt} (the README names it)` : excerpt,
-        status: explainedHere ? 'warn' : 'fail',
+        // A power its README explains is what the mod is for; one it keeps quiet about is worth a look.
+        status: explainedHere ? 'info' : 'warn',
       })
     } else if (capability.risk === 'medium') {
-      // Still a warning when explained: network access always deserves a look.
-      medium.push({ file: use.file, line: use.line > 0 ? use.line : undefined, excerpt: isExplained(use.name) ? `${excerpt} (the README names it)` : excerpt, status: 'warn' })
+      // Network, environment and prompt access is shown as what the mod can do, not held against it.
+      medium.push({ file: use.file, line: use.line > 0 ? use.line : undefined, excerpt: isExplained(use.name) ? `${excerpt} (the README names it)` : excerpt, status: 'info' })
     }
   }
   const allCalls = new Set(modules.flatMap(info => info.calls.map(call => call.name)))
@@ -155,12 +156,12 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
     high.push({
       file: modules[0]?.entry ?? '-',
       excerpt: `reads files and sends requests: it can send your files out${explainedHere ? ' (the README names both)' : ''}`,
-      status: explainedHere ? 'warn' : 'fail',
+      status: explainedHere ? 'info' : 'warn',
     })
   }
   for (const info of modules) {
     for (const url of dedupe(info.urls)) medium.push({ file: url.file, line: url.line, excerpt: `network address in the module: ${url.name}`, status: 'info' })
-    for (const name of dedupe(info.envNames)) medium.push({ file: name.file, line: name.line, excerpt: `reads the environment variable ${name.name}`, status: 'warn' })
+    for (const name of dedupe(info.envNames)) medium.push({ file: name.file, line: name.line, excerpt: `reads the environment variable ${name.name}`, status: 'info' })
   }
 
   const description = [ctx.manifest?.description, ctx.manifest?.name, proseOf(ctx.readme?.text ?? '').slice(0, 800)].filter(item => typeof item === 'string').join('\n')
@@ -193,9 +194,10 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
         title: 'High-risk capabilities',
         advice: 'Running programs, writing files, deciding tool permissions, judging other plugins or changing the system prompt is what a mod needs to take over a session. Install only if its purpose needs it and its README says why.',
         summary: capabilitySummary(uses.filter(item => item.capability.risk === 'high'), explanationFor, ctx, modules, allCalls.has('fs.read') && allCalls.has('http.fetch')),
+        access: accessOf(uses.filter(item => item.capability.risk === 'high')),
       },
       high,
-      'fail',
+      'warn',
     ),
     row(
       {
@@ -204,8 +206,10 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
         title: 'Network, environment and prompt access',
         advice: 'Check every address it talks to and every variable it reads against what it says it does.',
         summary: capabilitySummary(uses.filter(item => item.capability.risk === 'medium'), explanationFor, ctx, modules, false),
+        access: accessOf(uses.filter(item => item.capability.risk === 'medium')),
       },
       medium,
+      'info',
     ),
     row(
       {
@@ -218,6 +222,16 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
       'fail',
     ),
   ]
+}
+
+/** What the mod can do, for the verdict's "It can" line: each capability once, as "run programs on your machine". */
+function accessOf(uses: readonly { capability: Capability }[]): string[] {
+  return [...new Set(uses.map(item => baseForm(item.capability.plain)))]
+}
+
+/** "runs programs" as "run programs": the capability phrases begin with a verb in the third person. */
+export function baseForm(phrase: string): string {
+  return phrase.replace(/^([a-z]+?)(?:(?<=(?:sh|ch|x|z|ss))es|s)\b/, '$1').replace(/ and can /, ' and ')
 }
 
 /** A README's prose: no code, links, images, badges, HTML or URLs. */

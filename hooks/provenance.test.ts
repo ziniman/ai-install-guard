@@ -72,9 +72,11 @@ describe('repository history from GitHub', () => {
     expect(results[1]?.summary?.[0]).toBe('Signed, and GitHub verified the signature; committed 5 days ago')
   })
 
-  test('a new account, or a new repository with one author and few stars, is a warning', async () => {
-    expect(status(await githubProvenance(netHost(github({ repoDays: 900, ownerDays: 4, stars: 120, people: 6 })), SOURCE, NOW), 'provenance.repository')).toBe('warn')
-    expect(status(await githubProvenance(netHost(github({ repoDays: 3, ownerDays: 3000, stars: 1, people: 1 })), SOURCE, NOW), 'provenance.repository')).toBe('warn')
+  test('a new account, or a new repository with one author and few stars, is said first, never held against it', async () => {
+    const young = await githubProvenance(netHost(github({ repoDays: 900, ownerDays: 4, stars: 120, people: 6 })), SOURCE, NOW)
+    expect(status(young, 'provenance.repository')).toBe('info')
+    expect(young.find(result => result.id === 'provenance.repository')?.summary?.[0]).toMatch(/^New: its owner's account is/)
+    expect(status(await githubProvenance(netHost(github({ repoDays: 3, ownerDays: 3000, stars: 1, people: 1 })), SOURCE, NOW), 'provenance.repository')).toBe('info')
     // New, but from an established account with others on it: noted only.
     expect(status(await githubProvenance(netHost(github({ repoDays: 3, ownerDays: 3000, stars: 65, people: 2 })), SOURCE, NOW), 'provenance.repository')).toBe('info')
   })
@@ -389,7 +391,7 @@ describe('GitHub, PR #9 review fixes', () => {
     const base = github({ repoDays: 900, ownerDays: 4, stars: 120, people: 6 })
     const answers = (url: string): FetchResult | Error => (url.includes('/contributors') || url.includes('/commits/') ? new Error('reset by peer') : base(url))
     const results = await githubProvenance(netHost(answers), SOURCE, NOW)
-    expect(status(results, 'provenance.repository')).toBe('warn')
+    expect(status(results, 'provenance.repository')).toBe('info')
     expect(results[0]?.evidence.map(item => item.excerpt)).toContain('not checked, its contributors: could not reach GitHub: reset by peer')
     expect(results[1]?.evidence[0]?.excerpt).toContain('not checked')
   })

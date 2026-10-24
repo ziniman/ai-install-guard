@@ -10,9 +10,10 @@ export function licenseCheck(ctx: ScanContext): CheckResult {
     id: 'provenance.license',
     group: 'provenance',
     title: 'License',
-    status: found === undefined ? 'warn' : 'pass',
-    severity: found === undefined ? 'low' : 'none',
-    evidence: found === undefined ? [{ file: '-', excerpt: 'no LICENSE file and no license in plugin.json', status: 'warn' }] : [{ file: found, excerpt: 'license present', status: 'pass' }],
+    // A missing license is about your right to the code, not your safety: noted, never a reason to look twice.
+    status: found === undefined ? 'info' : 'pass',
+    severity: 'none',
+    evidence: found === undefined ? [{ file: '-', excerpt: 'no LICENSE file and no license in plugin.json', status: 'info' }] : [{ file: found, excerpt: 'license present', status: 'pass' }],
     advice: 'Without a license you have no clear right to use or change the code, and it is a sign of a hurried or throwaway project.',
   }
 }
@@ -36,8 +37,8 @@ export function qualityChecks(ctx: ScanContext): CheckResult[] {
       id: 'quality.readme',
       group: 'quality',
       title: 'README',
-      status: readme.trim().length < 80 ? 'warn' : 'info',
-      severity: readme.trim().length < 80 ? 'low' : 'none',
+      status: 'info',
+      severity: 'none',
       evidence: [
         {
           file: ctx.readme?.path ?? '-',
@@ -47,7 +48,7 @@ export function qualityChecks(ctx: ScanContext): CheckResult[] {
               : explainsUninstall
                 ? 'says what it does and how to remove it'
                 : 'does not say how to uninstall',
-          status: readme.trim().length < 80 ? 'warn' : 'info',
+          status: 'info',
         },
       ],
       advice: 'A README should say what the plugin does, what it needs and how to remove it.',

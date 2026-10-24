@@ -306,7 +306,7 @@ describe('gate A: /plugin install', () => {
     const state = world(on)
     const answer = await $.command.run(typed('plugin', 'install notes@acme'))
 
-    expect(answer.text).toContain('Safe to install for /plugin install notes@acme at commit aaaaaaaaaaaa')
+    expect(answer.text).toContain('No red flags for /plugin install notes@acme at commit aaaaaaaaaaaa')
     expect(answer.text).toContain('Nothing is installed yet')
     expect(state.core).toEqual([])
     expect(ui.opened).toEqual([PANE_ID])
@@ -346,7 +346,7 @@ describe('gate A: /plugin install', () => {
     serveUi(on)
     const state = world(on, { work: nest('plugins/notes', fixture('curl-hook')) })
     store.set('decisions', [
-      { target: 'notes@acme', root: 'https://github.com/acme/tools.git#plugins/notes', sha: SHA, treeHash: 'sha256:old', verdict: 'Safe to install', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 0 },
+      { target: 'notes@acme', root: 'https://github.com/acme/tools.git#plugins/notes', sha: SHA, treeHash: 'sha256:old', verdict: 'No red flags', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 0 },
     ])
     const answer = await $.command.run(typed('plugin', 'install notes@acme'))
     expect(answer.text).toContain('Do not install')
@@ -358,7 +358,7 @@ describe('gate A: /plugin install', () => {
     serveUi(on)
     const state = world(on)
     store.set('decisions', [
-      { target: 'notes@acme', root: 'https://github.com/acme/tools.git#plugins/notes', sha: SHA, treeHash: 'sha256:x', verdict: 'Safe to install', verdictKind: 'safe', decision: 'rejected', overridden: false, decidedAt: 0 },
+      { target: 'notes@acme', root: 'https://github.com/acme/tools.git#plugins/notes', sha: SHA, treeHash: 'sha256:x', verdict: 'No red flags', verdictKind: 'safe', decision: 'rejected', overridden: false, decidedAt: 0 },
     ])
     const answer = await $.command.run(typed('plugin', 'install notes@acme'))
     expect(answer.text).toContain('you rejected notes@acme at commit aaaaaaaaaaaa on 1970-01-01')
@@ -403,7 +403,7 @@ describe('gate A: /plugin install', () => {
     const state = world(on)
     state.listing = { installed: [{ id: 'notes@acme' }], available: listing().available.filter(item => item.name !== 'notes') }
     const answer = await $.command.run(typed('plugin', 'update notes@acme'))
-    expect(answer.text).toContain('Safe to install for /plugin update notes@acme at commit aaaaaaaaaaaa')
+    expect(answer.text).toContain('No red flags for /plugin update notes@acme at commit aaaaaaaaaaaa')
     expect(state.core).toEqual([])
   })
 
@@ -439,7 +439,7 @@ describe('gate A: /plugin install', () => {
       ],
     }
     const answer = await $.command.run(typed('plugin', 'install notes'))
-    expect(answer.text).toContain('Safe to install for /plugin install notes at commit aaaaaaaaaaaa')
+    expect(answer.text).toContain('No red flags for /plugin install notes at commit aaaaaaaaaaaa')
   })
 
   test('an install allowed once is shown as allowed when the report is reopened, not offered again', async ($, on) => {
@@ -530,7 +530,7 @@ describe('gate A: /plugin install', () => {
     serveUi(on)
     const state = world(on, { market: nest('plugins/local', fixture('clean-plugin')) })
     const answer = await $.command.run(typed('plugin', 'install local@acme'))
-    expect(answer.text).toContain('Safe to install for /plugin install local@acme')
+    expect(answer.text).toContain('No red flags for /plugin install local@acme')
     expect(fetches(state)).toBe(0)
 
     const pane = await mountPane($)
@@ -617,7 +617,7 @@ describe('gate A: installing from a marketplace not added yet', () => {
     const state = world(on)
     serveRaw(on, catalogAt('acme/tools', [{ name: 'notes', source: './plugins/notes' }]))
     const answer = await $.command.run(typed('plugin', 'install notes --marketplace acme/tools'))
-    expect(answer.text).toContain('Safe to install for /plugin install notes --marketplace acme/tools at commit aaaaaaaaaaaa')
+    expect(answer.text).toContain('No red flags for /plugin install notes --marketplace acme/tools at commit aaaaaaaaaaaa')
     expect(state.core).toEqual([])
 
     const pane = await mountPane($)
@@ -634,7 +634,7 @@ describe('gate A: installing from a marketplace not added yet', () => {
     const state = world(on, { work: fixture('clean-plugin') })
     serveRaw(on, catalogAt('acme/rtl', [{ name: 'rtl', source: './' }]))
     const answer = await $.command.run(typed('plugin', 'install rtl --marketplace acme/rtl'))
-    expect(answer.text).toContain('Safe to install')
+    expect(answer.text).toContain('No red flags')
     const pane = await mountPane($)
     await pane.press({ key: 'install' })
     const [decision] = store.get('decisions') as { root?: string }[]
@@ -668,7 +668,7 @@ describe("gate B: Claude's own install commands", () => {
     const state = world(on)
     const refused = await $.tool.call(bash('claude plugin install notes@acme --scope project'))
 
-    expect(refused.deny).toContain('held this install for the person to review: Safe to install for claude plugin install notes@acme at commit aaaaaaaaaaaa')
+    expect(refused.deny).toContain('held this install for the person to review: No red flags for claude plugin install notes@acme at commit aaaaaaaaaaaa')
     expect(refused.deny).toContain('Do not retry it or install it another way')
     expect(state.core).toEqual([])
 
@@ -750,7 +750,7 @@ describe('the gate without a pane', () => {
     serveUi(on, { placed: false })
     const state = world(on)
     const answer = await $.command.run(typed('plugin', 'install notes@acme'))
-    expect(answer.text).toContain('Safe to install')
+    expect(answer.text).toContain('No red flags')
     expect(answer.text).toContain("approving an install needs the guard's pane")
     expect(state.core).toEqual([])
   })

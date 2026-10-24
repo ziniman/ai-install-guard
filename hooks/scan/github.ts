@@ -130,16 +130,17 @@ async function lookups(host: Host, path: string, source: PinnedSource, now: numb
   const forks = count(info.forks_count)
   const who = `${typeof owner.type === 'string' && owner.type === 'Organization' ? 'organization' : 'account'} ${safeLine(login ?? 'unknown')}`
 
-  // The warning signs: an account made days ago, or a new repository with a
-  // single author that hardly anyone uses. A new repository from an
-  // established account, with others working on it, is only noted.
+  // Worth saying first: an account made days ago, or a new repository with a
+  // single author that hardly anyone uses. Said in the summary, not counted
+  // against it.
   const newAccount = ownerDays !== undefined && ownerDays < NEW_DAYS
   // Only facts GitHub gave count: a count it did not give is not taken as low.
   const loneNewRepo = repoDays !== undefined && repoDays < NEW_DAYS && people !== undefined && people <= 1 && stars !== undefined && stars < 10
   const evidence: Evidence[] = []
   const note = (excerpt: string, status: Status = 'info') => evidence.push({ file: '-', excerpt, status })
-  if (repoDays !== undefined) note(`created ${spoken(repoDays)}${loneNewRepo ? ', with a single contributor and few stars' : ''}`, loneNewRepo ? 'warn' : 'info')
-  if (ownerDays !== undefined) note(`owned by the ${who}, created ${spoken(ownerDays)}`, newAccount ? 'warn' : 'info')
+  // History, not a red flag: every author starts somewhere.
+  if (repoDays !== undefined) note(`created ${spoken(repoDays)}${loneNewRepo ? ', with a single contributor and few stars' : ''}`, 'info')
+  if (ownerDays !== undefined) note(`owned by the ${who}, created ${spoken(ownerDays)}`, 'info')
   note(`${stars ?? '?'} stars, ${forks ?? '?'} forks, ${people ?? '?'} contributor${people === 1 ? '' : 's'}`)
   if (pushedDays !== undefined) note(`last pushed ${spoken(pushedDays)}`)
   if (info.archived === true) note('archived: it gets no more fixes')
