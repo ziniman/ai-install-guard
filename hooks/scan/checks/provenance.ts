@@ -1,5 +1,6 @@
 import { isRecord, parseJson, type ScanContext } from './context'
 import { joinPath } from './text'
+import { RECOMMENDATION } from '../verdict'
 import { capEvidence, row, type CheckResult, type Evidence } from './types'
 
 const GROUP = 'provenance' as const
@@ -38,14 +39,18 @@ export function marketplacePinsCheck(ctx: ScanContext): CheckResult[] {
   ]
 }
 
-function judgeSource(source: unknown): { what: string; status: 'pass' | 'warn' | 'fail' } | undefined {
+// A source that follows a branch or a newest version is how most marketplaces
+// work: noted, since each plugin is scanned at the commit it installs. Only a
+// source that can be swapped for another one (git's own ref names, a commit id
+// as a ref) is held against it.
+function judgeSource(source: unknown): { what: string; status: 'pass' | 'info' | 'warn' | 'fail' } | undefined {
   if (typeof source === 'string') {
     // A folder in the marketplace is pinned with the marketplace itself; one
     // that climbs out of it is not part of what was pinned.
     if (source.startsWith('./') || source.startsWith('../')) {
       return joinPath('', source) === undefined ? { what: `comes from ${source}, outside the marketplace, which is not pinned with it`, status: 'warn' } : undefined
     }
-    return { what: `comes from ${source} and follows its default branch`, status: 'warn' }
+    return { what: `comes from ${source} and follows its default branch`, status: 'info' }
   }
   if (!isRecord(source)) return undefined
   const kind = typeof source.source === 'string' ? source.source : 'unknown'
@@ -54,7 +59,7 @@ function judgeSource(source: unknown): { what: string; status: 'pass' | 'warn' |
     const pkg = typeof source.package === 'string' ? source.package : '(package)'
     return version !== undefined && EXACT_VERSION.test(version)
       ? { what: `${kind} package ${pkg} at exactly ${version}`, status: 'pass' }
-      : { what: `${kind} package ${pkg} ${version === undefined ? 'at whatever version is newest' : `at ${version}, not one exact version`}`, status: 'warn' }
+      : { what: `${kind} package ${pkg} ${version === undefined ? 'at whatever version is newest' : `at ${version}, not one exact version`}`, status: 'info' }
   }
   const where = typeof source.repo === 'string' ? source.repo : typeof source.url === 'string' ? source.url : kind
   const sha = typeof source.sha === 'string' ? source.sha : undefined
@@ -68,8 +73,8 @@ function judgeSource(source: unknown): { what: string; status: 'pass' | 'warn' |
   if (ref !== undefined && FULL_SHA.test(ref)) {
     return { what: `${where} gives a commit id as its ref; a branch with that name would be checked out instead, so use sha`, status: 'warn' }
   }
-  if (ref !== undefined) return { what: `${where} follows ${ref}, which its owner can move`, status: 'warn' }
-  return { what: `${where} follows its default branch`, status: 'warn' }
+  if (ref !== undefined) return { what: `${where} follows ${ref}, which its owner can move`, status: 'info' }
+  return { what: `${where} follows its default branch`, status: 'info' }
 }
 
 /** What a README's AI Install Guard badge claims, read from its shields.io image. */
@@ -150,7 +155,8 @@ export function badgeClaim(readme: { path: string; text: string } | undefined): 
         // Left as written.
       }
       const words = message.replace(/--/g, '\u0000').replace(/-[0-9a-f]{3,8}$|-[a-z]+$/i, '').replace(/_/g, ' ').replace(/\u0000/g, '-').toLowerCase()
-      const claimed = /do not install/.test(words) ? 'reject' : /could not verify/.test(words) ? 'unverified' : /caution|review what it can do/.test(words) ? 'caution' : 'safe'
+      // Older badges' words still count as the verdicts they named then.
+      const claimed = /do not install/.test(words) ? 'reject' : /could not verify/.test(words) ? 'unverified' : /caution|review what it can do|worth a look/.test(words) ? 'caution' : 'safe'
       const pin = /·\s*((?:tree\s+)?[0-9a-f]{7,64})\b/.exec(words)?.[1]
       if (best === undefined || VERDICT_RANK[claimed] < VERDICT_RANK[best.claimed]) best = { file: readme.path, line: index + 1, claimed, pin, text: words.slice(0, 120) }
     }
@@ -159,7 +165,7 @@ export function badgeClaim(readme: { path: string; text: string } | undefined): 
 }
 
 const VERDICT_RANK = { safe: 0, caution: 1, unverified: 2, reject: 3 } as const
-const VERDICT_WORDS = { safe: 'Safe to install', caution: 'Review what it can do', unverified: 'Could not verify', reject: 'Do not install' } as const
+const VERDICT_WORDS = RECOMMENDATION
 
 /**
  * The row for a README's badge, judged against this scan's own verdict. A

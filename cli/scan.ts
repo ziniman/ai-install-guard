@@ -43,7 +43,7 @@ const USAGE = [
   '  --lookups                   Also check packages against OSV and the name against the official',
   '                              plugin list; this sends package and plugin names to those services',
   '',
-  'Exit status: 0 Safe to install, 1 warnings to review, 2 Do not install, 3 Could not verify, 64 a usage error.',
+  'Exit status: 0 No red flags, 1 Worth a look, 2 Do not install, 3 Could not verify, 64 a usage error.',
 ].join('\n')
 
 /** Folders a plugin keeps at its top: a zip holding only one of them is the plugin itself, not a wrapper. */

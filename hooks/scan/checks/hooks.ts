@@ -41,6 +41,9 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
   if (ctx.hookCommands.length === 0) return []
   const commands: Evidence[] = []
   const approvals: Evidence[] = []
+  // What the hooks do, for the "It can" line: the events each kind runs on.
+  const shellEvents = new Set<string>()
+  const otherAccess = new Set<string>()
 
   for (const hook of ctx.hookCommands) {
     const where = `${hook.event}${hook.matcher === undefined || hook.matcher === '' ? '' : ` (${hook.matcher})`}`
@@ -50,18 +53,22 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
         file: hook.file,
         line: hook.line,
         excerpt: `on ${where}: ${hook.command}${dangers.length > 0 ? `  [${dangers.join('; ')}]` : ''}`,
-        status: dangers.length > 0 ? 'fail' : 'warn',
+        // A shell hook is what the plugin can do; one that reaches out or runs downloaded code is a red flag.
+        status: dangers.length > 0 ? 'fail' : 'info',
       })
+      shellEvents.add(hook.event)
       const approval = findFirst(hook.command, AUTO_APPROVE)
       if (approval !== undefined) approvals.push({ file: hook.file, line: hook.line, excerpt: approval.excerpt, status: 'fail' })
     } else if (hook.type === 'http') {
-      const isLocal = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:[/?#]|$)/.test(hook.command)
+      const isLocal = isLocalAddress(hook.command)
       commands.push({
         file: hook.file,
         line: hook.line,
         excerpt: `on ${where}: sends each event, with tool inputs and outputs, to ${hook.command}`,
-        status: isLocal ? 'warn' : 'fail',
+        status: isLocal ? 'info' : 'fail',
       })
+      // Where events go is said either way; a server elsewhere is also a red flag on the row.
+      otherAccess.add(isLocal ? 'send hook events to a server on this machine' : `send hook events, with tool inputs and outputs, to ${hostOf(hook.command)}`)
     } else {
       // A prompt or agent hook is instructions the model follows: judged as a prompt.
       const concerns = promptConcerns(hook.command)
@@ -71,6 +78,7 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
         excerpt: `on ${where}: asks a model (${hook.type}): ${hook.command}${concerns.reasons.length > 0 ? `  [${concerns.reasons.join('; ')}]` : ''}`,
         status: concerns.status,
       })
+      otherAccess.add(`ask a model on ${hook.event}`)
     }
   }
 
@@ -115,12 +123,15 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
     }
   }
 
+  const events = [...shellEvents]
+  const access = [...(events.length === 0 ? [] : [`run shell commands ${eventPhrase(events)}`]), ...otherAccess]
   return [
     row(
       {
         id: 'hooks.commands',
         group: GROUP,
         title: 'Shell hooks and the scripts they run',
+        access,
         advice: 'A classic hook runs with your permissions on every matching event, outside any mod sandbox, and cannot be blocked per plugin. Read each command; never install one that reaches the network, runs downloaded code or touches your keys.',
       },
       commands,
@@ -154,3 +165,41 @@ function dangersIn(command: string): string[] {
 }
 
 export type { HookCommand }
+
+/** When hooks run, in words: "when a session starts", "before and after tools run". */
+function eventPhrase(events: readonly string[]): string {
+  const WORDS: Record<string, string> = {
+    SessionStart: 'a session starts',
+    SessionEnd: 'a session ends',
+    UserPromptSubmit: 'you send a prompt',
+    PreToolUse: 'a tool is about to run',
+    PostToolUse: 'a tool has run',
+    Stop: 'Claude finishes a turn',
+    SubagentStop: 'a subagent finishes',
+    Notification: 'Claude sends a notification',
+    PreCompact: 'the conversation is compacted',
+  }
+  // An event name is the candidate's own text: only a known one is put in words.
+  const said = [...new Set(events.map(event => (Object.hasOwn(WORDS, event) ? (WORDS[event] as string) : `its ${event.slice(0, 40)} event`)))]
+  return `when ${said.length <= 1 ? (said[0] ?? 'its events fire') : `${said.slice(0, -1).join(', ')} or ${said[said.length - 1]}`}`
+}
+
+/** The host an HTTP hook sends to, or the address as written when it cannot be read. */
+function hostOf(address: string): string {
+  try {
+    return new URL(address).hostname.toLowerCase()
+  } catch {
+    return address.slice(0, 80)
+  }
+}
+
+/** Whether an HTTP hook's address is this machine: localhost or a loopback address, however it is written. */
+function isLocalAddress(address: string): boolean {
+  try {
+    const url = new URL(address)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+    return /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/.test(url.hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}

@@ -102,18 +102,28 @@ function plural(count: number, word: string): string {
  * The plain-language lines for a row about running programs: a headline, then
  * the programs worth a look, then the rest by what they are for.
  */
-export function describePrograms(uses: readonly ProgramUse[], extra: { buildsCode: number; downloads: number }): string[] {
+/** Programs named outright, the risky ones first, then by how often each is started. */
+function orderedCounts(uses: readonly ProgramUse[]): [string, number][] {
   const counts = new Map<string, number>()
+  for (const use of uses) if (!use.dynamic) counts.set(use.name, (counts.get(use.name) ?? 0) + 1)
+  const byCount = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  return [...byCount.filter(([name]) => KIND_OF.get(name)?.risky === true), ...byCount.filter(([name]) => KIND_OF.get(name)?.risky !== true)]
+}
+
+/** The programs named outright, in the order the summary names them. */
+export function programNames(uses: readonly ProgramUse[]): string[] {
+  return orderedCounts(uses).map(([name]) => name)
+}
+
+export function describePrograms(uses: readonly ProgramUse[], extra: { buildsCode: number; downloads: number }): string[] {
   const files = new Set<string>()
   const dynamic = new Map<string, number>()
   for (const use of uses) {
     files.add(use.file)
     if (use.dynamic) dynamic.set(use.name, (dynamic.get(use.name) ?? 0) + 1)
-    else counts.set(use.name, (counts.get(use.name) ?? 0) + 1)
   }
-  const byCount = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-  const risky = byCount.filter(([name]) => KIND_OF.get(name)?.risky === true)
-  const ordered = [...risky, ...byCount.filter(([name]) => KIND_OF.get(name)?.risky !== true)]
+  const ordered = orderedCounts(uses)
+  const risky = ordered.filter(([name]) => KIND_OF.get(name)?.risky === true)
 
   const parts: string[] = []
   if (extra.downloads > 0) parts.push('downloads code and runs it')
@@ -132,10 +142,10 @@ export function describePrograms(uses: readonly ProgramUse[], extra: { buildsCod
   if (extra.buildsCode > 0) lookAt.push(`builds code from text and runs it, as eval does (${plural(extra.buildsCode, 'place')})`)
   for (const [name, count] of risky) lookAt.push(`${name}: ${KIND_OF.get(name)?.label} (${plural(count, 'place')})`)
   if (dynamic.size > 0) lookAt.push(`a program named by ${[...dynamic.keys()].slice(0, 4).join(', ')}, chosen while it runs (${plural([...dynamic.values()].reduce((a, b) => a + b, 0), 'place')})`)
-  if (lookAt.length > 0) lines.push(`Worth a look: ${lookAt.join('; ')}`)
+  if (lookAt.length > 0) lines.push(`Read these first: ${lookAt.join('; ')}`)
 
   const groups = new Map<string, string[]>()
-  for (const [name, count] of byCount) {
+  for (const [name, count] of ordered) {
     const kind = KIND_OF.get(name)
     if (kind?.risky === true) continue
     const label = kind?.label ?? 'other programs'

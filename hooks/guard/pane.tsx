@@ -4,7 +4,7 @@ import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 import type { GuardRequest, GuardRow, GuardStatus, GuardView } from '../../types'
 import { GROUPS } from '../scan/checks/types'
 import { safeLine } from '../scan/safe-text'
-import { locate } from '../scan/verdict'
+import { countsText, locate } from '../scan/verdict'
 import { badgeFor } from './badge'
 import { changedSinceScan } from '../gate/recheck'
 import { modHost } from '../mod-host'
@@ -217,12 +217,17 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
               {reason}
             </Text>
           ))}
+          {(verdict.access ?? []).length > 0 && (
+            <Text dimColor wrap="wrap">
+              It can: {(verdict.access ?? []).join(' · ')}
+            </Text>
+          )}
         </Box>
       )}
 
       {verdict !== undefined && (
         <Text>
-          {verdict.counts.pass} passed · {verdict.counts.warn} warning{verdict.counts.warn === 1 ? '' : 's'} · {verdict.counts.fail} failed
+          {countsText(verdict.counts)}
         </Text>
       )}
       {verdict !== undefined && view.rows.length > 0 && (

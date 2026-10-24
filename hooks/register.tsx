@@ -27,7 +27,7 @@ const USAGE = [
   '      --path <folder>             A folder inside the repository',
   '      --details                   The full report as text',
   '  /guard report                 Reopen the last report',
-  '  /guard badge                  A README badge for the last scan (Safe to install or Review what it can do)',
+  '  /guard badge                  A README badge for the last scan (No red flags or Worth a look)',
   '  /guard list                   Your approved and rejected versions',
   '  /guard forget <name>          Forget decisions about a name, so it is judged again',
 ].join('\n')

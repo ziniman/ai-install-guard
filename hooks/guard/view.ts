@@ -29,6 +29,7 @@ export function viewOf(report: ScanReport, action: GuardAction): GuardView {
     verdict: {
       ...report.verdict,
       reasons: report.verdict.reasons.map(reason => clip(safeLine(redactSecrets(reason)))),
+      access: report.verdict.access.map(line => clip(safeLine(redactSecrets(line)))),
     },
     rows: report.results.map(rowOf),
     kind: report.kind,

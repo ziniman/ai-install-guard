@@ -55,6 +55,12 @@ export type CheckResult = {
    * few lines. Shown before the evidence, which stays one step further in.
    */
   summary?: string[]
+  /**
+   * What the candidate can do, as short phrases for the verdict's "It can"
+   * line ("run shell commands when a session starts"). A capability is not a
+   * red flag: these never change the verdict. A row's status does.
+   */
+  access?: string[]
 }
 
 const RANK: Record<Status, number> = { info: 0, pass: 1, warn: 2, fail: 3 }
@@ -76,9 +82,13 @@ export function severityFor(status: Status): Severity {
  * At most `max` pieces of evidence, the worst first, and a line counting the
  * rest. Every piece is judged before capping, so a late failure still counts.
  */
+/** The order evidence is shown in: red flags, things worth a look, notes, then what passed. */
+const SHOWN: Record<Status, number> = { fail: 3, warn: 2, info: 1, pass: 0 }
+
 export function capEvidence(evidence: Evidence[], max: number, fallback: Status = 'warn'): Evidence[] {
   if (evidence.length <= max) return evidence
-  const worstFirst = [...evidence].sort((a, b) => RANK[b.status ?? fallback] - RANK[a.status ?? fallback])
+  // A note says something; a pass only that nothing was found: notes are kept first.
+  const worstFirst = [...evidence].sort((a, b) => SHOWN[b.status ?? fallback] - SHOWN[a.status ?? fallback])
   return [...worstFirst.slice(0, max), { file: '-', excerpt: `and ${evidence.length - max} more`, status: 'info' }]
 }
 
@@ -88,18 +98,18 @@ export function capEvidence(evidence: Evidence[], max: number, fallback: Status 
  * there is no evidence at all.
  */
 export function row(
-  base: { id: string; group: GroupId; title: string; advice: string; summary?: string[] },
+  base: { id: string; group: GroupId; title: string; advice: string; summary?: string[]; access?: string[] },
   evidence: Evidence[],
   fallback: Status = 'warn',
   severity?: Severity,
 ): CheckResult {
   if (evidence.length === 0) {
-    const { summary: _unused, ...rest } = base
+    const { summary: _unused, access: _none, ...rest } = base
     return { ...rest, status: 'pass', severity: 'none', evidence: [] }
   }
   const status = evidence.reduce<Status>((acc, item) => worse(acc, item.status ?? fallback), 'info')
   const worstFirst = [...evidence]
-    .sort((a, b) => RANK[b.status ?? fallback] - RANK[a.status ?? fallback])
+    .sort((a, b) => SHOWN[b.status ?? fallback] - SHOWN[a.status ?? fallback])
     .map(item => ({ ...item, excerpt: redactSecrets(item.excerpt) }))
   return { ...base, status, severity: severity ?? severityFor(status), evidence: worstFirst }
 }

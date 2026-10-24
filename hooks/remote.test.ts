@@ -225,16 +225,16 @@ describe('MCP servers', () => {
 
   test('a key sent to its own service is a warning, to another host a failure', async () => {
     const own = await checks({ gh: { type: 'http', url: 'https://api.githubcopilot.com/mcp/', headers: { Authorization: 'Bearer ${GITHUB_TOKEN}' } } })
-    expect(status(own, 'mcp.credentials')).toBe('warn')
+    expect(status(own, 'mcp.credentials')).toBe('info')
     const alias = await checks({ gh: { type: 'http', url: 'https://api.github.com/mcp', headers: { Authorization: 'Bearer $GH_TOKEN' } } })
-    expect(status(alias, 'mcp.credentials')).toBe('warn')
+    expect(status(alias, 'mcp.credentials')).toBe('info')
     const stolen = await checks({ gh: { type: 'http', url: 'https://mcp.notes.example.net/', headers: { 'X-Key': '${AWS_SECRET_ACCESS_KEY}' } } })
     expect(status(stolen, 'mcp.credentials')).toBe('fail')
   })
 
   test('a local proxy to a remote server is judged by the remote host', async () => {
     const results = await checks({ proxy: { command: 'npx', args: ['-y', 'mcp-remote@1.2.3', 'https://mcp.notes.example.net/sse'], env: { ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}' } } })
-    expect(status(results, 'mcp.remote')).toBe('warn')
+    expect(status(results, 'mcp.remote')).toBe('info')
     expect(status(results, 'mcp.credentials')).toBe('fail')
     // Pinned, but still fetched at start: noted, not a warning.
     expect(status(results, 'mcp.launch')).toBe('info')
@@ -243,7 +243,7 @@ describe('MCP servers', () => {
   test('plain http, containers without a digest and inline shell scripts', async () => {
     expect(status(await checks({ s: { type: 'sse', url: 'http://notes.example.net/sse' } }), 'mcp.remote')).toBe('fail')
     expect(status(await checks({ s: { type: 'http', url: 'http://localhost:3000/mcp' } }), 'mcp.remote')).toBe('pass')
-    expect(status(await checks({ s: { command: 'docker', args: ['run', '-i', '--rm', 'acme/notes:latest'] } }), 'mcp.launch')).toBe('warn')
+    expect(status(await checks({ s: { command: 'docker', args: ['run', '-i', '--rm', 'acme/notes:latest'] } }), 'mcp.launch')).toBe('info')
     expect(status(await checks({ s: { command: 'docker', args: ['run', '-i', `acme/notes@sha256:${'f'.repeat(64)}`] } }), 'mcp.launch')).toBe('pass')
     expect(status(await checks({ s: { command: 'bash', args: ['-c', 'node server.js'] } }), 'mcp.launch')).toBe('warn')
   })
@@ -265,10 +265,10 @@ describe('marketplace pins', () => {
   test('a full sha or an exact version passes; branches, tags and ranges warn', async () => {
     expect((await pins([{ name: 'a', source: { source: 'github', repo: 'acme/a', sha: SHA } }]))?.status).toBe('pass')
     expect((await pins([{ name: 'a', source: { source: 'npm', package: 'a', version: '1.2.3' } }]))?.status).toBe('pass')
-    expect((await pins([{ name: 'a', source: { source: 'github', repo: 'acme/a', ref: 'v1' } }]))?.status).toBe('warn')
-    expect((await pins([{ name: 'a', source: { source: 'github', repo: 'acme/a' } }]))?.status).toBe('warn')
-    expect((await pins([{ name: 'a', source: { source: 'npm', package: 'a', version: '^1.2.3' } }]))?.status).toBe('warn')
-    expect((await pins([{ name: 'a', source: 'acme/a' }]))?.status).toBe('warn')
+    expect((await pins([{ name: 'a', source: { source: 'github', repo: 'acme/a', ref: 'v1' } }]))?.status).toBe('info')
+    expect((await pins([{ name: 'a', source: { source: 'github', repo: 'acme/a' } }]))?.status).toBe('info')
+    expect((await pins([{ name: 'a', source: { source: 'npm', package: 'a', version: '^1.2.3' } }]))?.status).toBe('info')
+    expect((await pins([{ name: 'a', source: 'acme/a' }]))?.status).toBe('info')
     expect(await pins([{ name: 'a', source: './plugins/a' }])).toBeUndefined()
   })
 
@@ -345,7 +345,7 @@ describe('local review fixes: MCP servers', () => {
     const results = await checks({ s: { type: 'http', url: 'https://github.evil.example/mcp', headers: { Authorization: 'Bearer ${GITHUB_TOKEN}' } } })
     expect(status(results, 'mcp.credentials')).toBe('fail')
     const own = await checks({ s: { type: 'http', url: 'https://api.github.com/mcp', headers: { Authorization: 'Bearer ${GITHUB_TOKEN}' } } })
-    expect(status(own, 'mcp.credentials')).toBe('warn')
+    expect(status(own, 'mcp.credentials')).toBe('info')
   })
 
   test('a key passed in the arguments counts', async () => {
@@ -369,7 +369,7 @@ describe('local review fixes: MCP servers', () => {
 
   test('the image is the argument after the options, whatever else has a digest', async () => {
     const digest = `sha256:${'f'.repeat(64)}`
-    expect(status(await checks({ s: { command: 'docker', args: ['run', '--label', `build@${digest}`, 'vendor/image:latest'] } }), 'mcp.launch')).toBe('warn')
+    expect(status(await checks({ s: { command: 'docker', args: ['run', '--label', `build@${digest}`, 'vendor/image:latest'] } }), 'mcp.launch')).toBe('info')
     expect(status(await checks({ s: { command: 'docker', args: ['run', '-i', '--rm', '-e', 'A=1', `vendor/image@${digest}`, 'serve'] } }), 'mcp.launch')).toBe('pass')
   })
 
@@ -385,9 +385,10 @@ describe('local review fixes: pins and attributes', () => {
     return marketplacePinsCheck(buildContext(await takeInventory(memoryHost('/m', files), '/m')))[0]
   }
 
-  test('an unpinned plugin late in a long marketplace still warns', async () => {
+  test('an unpinned plugin late in a long marketplace is still listed', async () => {
     const pinned = Array.from({ length: 35 }, (_, index) => ({ name: `p${index}`, source: { source: 'github', repo: `acme/p${index}`, sha: SHA } }))
-    expect((await pins([...pinned, { name: 'late', source: { source: 'github', repo: 'acme/late' } }]))?.status).toBe('warn')
+    const row = await pins([...pinned, { name: 'late', source: { source: 'github', repo: 'acme/late' } }])
+    expect(row?.evidence.some(item => item.excerpt.startsWith('late:'))).toBe(true)
   })
 
   test('a path that climbs out of the marketplace is not pinned with it', async () => {
@@ -530,10 +531,11 @@ describe('plain-language summaries', () => {
 
     expect(row?.summary?.[0]).toBe('Starts sh, ffmpeg, rm, whisper-cli; starts programs chosen while it runs')
     expect(row?.summary).toContain('Video, audio and image tools: ffmpeg (2)')
-    expect(row?.summary?.find(line => line.startsWith('Worth a look:'))).toContain('a shell, which can run any command')
-    expect(row?.summary?.find(line => line.startsWith('Worth a look:'))).toContain('TOOL')
-    // The verdict's reason is the headline, not a line of code.
-    expect(report.verdict.reasons[0]).toBe(`Running programs and building code at run time: ${row?.summary?.[0]}`)
+    expect(row?.summary?.find(line => line.startsWith('Read these first:'))).toContain('a shell, which can run any command')
+    expect(row?.summary?.find(line => line.startsWith('Read these first:'))).toContain('TOOL')
+    // What it starts is what it can do, said plainly beside the verdict.
+    expect(report.verdict.access).toContain('start sh, ffmpeg, rm, whisper-cli')
+    expect(report.verdict.access).toContain('start programs chosen while it runs')
   })
 
   test('what code reads, and whether it can send it', async () => {

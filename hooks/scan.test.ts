@@ -20,7 +20,7 @@ describe('/guard scan on a local folder', () => {
     const { text: report } = await $.command.run(typed('guard', 'scan /work/clean-plugin'))
 
     expect(report).toContain('AI Install Guard: /work/clean-plugin')
-    expect(report).toContain('Verdict: Safe to install')
+    expect(report).toContain('Verdict: No red flags')
     expect(report).toContain('A plugin · 4 files')
     expect(report).toMatch(/tree sha256:[0-9a-f]{64}/)
   })

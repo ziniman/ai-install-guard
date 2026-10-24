@@ -70,6 +70,7 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
   const injection: Evidence[] = []
   const credentials: Evidence[] = []
   const tools: Evidence[] = []
+  const toolAccess = new Set<string>()
   const remote: Evidence[] = []
   const names: Evidence[] = []
 
@@ -127,17 +128,23 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     }
 
     const front = frontmatter(text)
+    const counts = cap('warn') === 'warn'
     for (const key of ['allowed-tools', 'tools']) {
       const value = front[key]
       if (value === undefined) continue
       for (const tool of toolList(value)) {
         const verdict = judgeTool(tool)
-        if (verdict !== undefined) tools.push({ file: path, line: lineOfKey(text, key), excerpt: `${key}: ${tool} (${verdict.why})`, status: cap(verdict.status) })
+        if (verdict === undefined) continue
+        tools.push({ file: path, line: lineOfKey(text, key), excerpt: `${key}: ${tool} (${verdict.why})`, status: cap(verdict.status) })
+        // Running the shell unasked is what the command can do, said plainly; it does not make it unsafe.
+        if (counts) toolAccess.add(`run any shell command without asking, in ${whereItRuns(path, front)}`)
       }
     }
     const mode = front.permissionMode ?? front['permission-mode']
     if (mode !== undefined && /\b(?:bypassPermissions|acceptEdits)\b/i.test(mode)) {
-      tools.push({ file: path, line: lineOfKey(text, 'permissionMode'), excerpt: `permissionMode: ${mode}`, status: cap('fail') })
+      const bypass = /\bbypassPermissions\b/i.test(mode)
+      tools.push({ file: path, line: lineOfKey(text, 'permissionMode'), excerpt: `permissionMode: ${mode}`, status: cap(bypass ? 'warn' : 'info') })
+      if (counts) toolAccess.add(`${bypass ? 'run any tool without asking' : 'edit files without asking'}, in ${whereItRuns(path, front)}`)
     }
 
     const name = (front.name ?? basename(path).replace(/\.(md|mdx|markdown)$/i, '')).trim().toLowerCase()
@@ -180,7 +187,7 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
   const results = [
     row({ id: 'prompts.injection', group: GROUP, title: 'Prompt injection', advice: 'Skills, commands and agents are instructions the model follows. Text that tells it to ignore you, hide what it does or send data out is an attack, more so when it names a URL or your keys.' }, injection),
     row({ id: 'prompts.credentials', group: GROUP, title: 'Instructions that touch credentials', advice: 'A skill has no reason to read your keys, tokens or browser data. Do not install one that asks the model to.' }, credentials),
-    row({ id: 'prompts.tools', group: GROUP, title: 'Tool permissions it grants itself', advice: 'allowed-tools runs those tools without asking you. Bash with no pattern, a wildcard, an interpreter or a package runner is the same as giving it your shell.' }, tools),
+    row({ id: 'prompts.tools', group: GROUP, title: 'Tool permissions it grants itself', advice: 'allowed-tools runs those tools without asking you. Bash with no pattern, a wildcard, an interpreter or a package runner is the same as giving it your shell.', access: [...toolAccess] }, tools, 'info'),
     row({ id: 'prompts.remote', group: GROUP, title: 'Remote instructions and code', advice: 'Instructions or code loaded from a URL at run time can change after this scan, so they were never checked. Prefer skills that ship everything they run.' }, remote),
     row({ id: 'prompts.names', group: GROUP, title: 'Names and claims', advice: 'A name that shadows a built-in command or claims to be from Anthropic is a common way to be trusted by mistake.' }, names),
     row({ id: 'prompts.scanner', group: GROUP, title: 'Text addressed to a security scanner', advice: 'Legitimate plugins do not talk to scanners. This text cannot change the verdict here; treat it as a sign of intent.' }, addressed),
@@ -255,15 +262,24 @@ function judgeTool(tool: string): { status: Status; why: string } | undefined {
   const bash = /^Bash\s*(?:\(([\s\S]*)\))?$/i.exec(tool.trim())
   if (bash === null) return undefined
   const pattern = bash[1]?.trim()
-  // Bash with no pattern runs any command unasked, exactly as Bash(*) does.
-  if (pattern === undefined) return { status: 'fail', why: 'any shell command: no pattern narrows it' }
-  if (/^\*+\s*(?::\s*\*+)?$/.test(pattern) || pattern === '') return { status: 'fail', why: 'a wildcard: any shell command' }
+  // Bash with no pattern runs any command unasked, exactly as Bash(*) does: a
+  // power the author chose, shown as what it can do rather than held against it.
+  if (pattern === undefined) return { status: 'info', why: 'any shell command: no pattern narrows it' }
+  if (/^\*+\s*(?::\s*\*+)?$/.test(pattern) || pattern === '') return { status: 'info', why: 'a wildcard: any shell command' }
   // The program the pattern allows, without its path: `/bin/sh:*` is `sh`.
   const program = basename(/^[^\s:]+/.exec(pattern)?.[0] ?? '').toLowerCase()
   if (SHELL_WIDE.has(program) || /^python\d*(?:\.\d+)?$/.test(program)) {
-    return { status: 'fail', why: 'an interpreter, package runner or network tool: any command through it' }
+    return { status: 'info', why: 'an interpreter, package runner or network tool: any command through it' }
   }
   return undefined
+}
+
+/** Where a granted tool is used, in words: /review-pr, the pdf skill, the reviewer agent. */
+function whereItRuns(path: string, front: Record<string, string>): string {
+  const file = basename(path).replace(/\.(?:md|mdx|markdown)$/i, '')
+  if (/(^|\/)SKILL\.md$/i.test(path)) return `the ${(front.name ?? basename(dirname(path))).trim().slice(0, 60)} skill`
+  if (/(^|\/)agents\//.test(path)) return `the ${(front.name ?? file).trim().slice(0, 60)} agent`
+  return `/${file.slice(0, 60)}`
 }
 
 function frontmatter(text: string): Record<string, string> {

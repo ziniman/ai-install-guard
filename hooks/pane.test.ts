@@ -18,19 +18,19 @@ function fixture(name: string): FixtureFiles {
 
 describe('the verdict pane', () => {
   for (const surface of SURFACES) {
-    test(`a clean plugin: Safe to install, Approve as the main action (${surface})`, async ($, on) => {
+    test(`a clean plugin: No red flags, Approve as the main action (${surface})`, async ($, on) => {
       mock.store(on)
       const ui = serveUi(on)
       serveFixture(on, ROOT, fixture('clean-plugin'))
       const { text } = await $.command.run(typed('guard', `scan ${ROOT}`))
 
-      expect(text).toContain('Safe to install')
+      expect(text).toContain('No red flags')
       expect(text).toContain('The report is in the pane')
       expect(ui.opened).toEqual([PANE_ID])
 
       const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface, component: 'Pane', requestId: PANE_ID, props: paneProps() })
-      expect(await pane.find({ type: 'Text', text: /^Safe to install$/ })).toBeDefined()
-      expect(await pane.find({ type: 'Text', text: /^\d+ passed · 0 warnings · 0 failed$/ })).toBeDefined()
+      expect(await pane.find({ type: 'Text', text: /^No red flags$/ })).toBeDefined()
+      expect(await pane.find({ type: 'Text', text: /^0 red flags · 0 to look at · \d+ passed$/ })).toBeDefined()
       expect((await pane.find({ key: 'install' }))?.text).toBe('Approve')
       expect(await pane.find({ key: 'reject' })).toBeDefined()
       expect(await pane.find({ key: 'details' })).toBeDefined()
@@ -80,11 +80,11 @@ describe('the verdict pane', () => {
     test(`Reject records the rejection and closes the pane (${surface})`, async ($, on) => {
       mock.store(on)
       const ui = serveUi(on)
-      serveFixture(on, ROOT, fixture('mod-http-fetch'))
+      serveFixture(on, ROOT, fixture('mod-process-run'))
       await $.command.run(typed('guard', `scan ${ROOT}`))
       const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface, component: 'Pane', requestId: PANE_ID, props: paneProps() })
 
-      expect(await pane.find({ type: 'Text', text: /^Review what it can do$/ })).toBeDefined()
+      expect(await pane.find({ type: 'Text', text: /^Worth a look$/ })).toBeDefined()
       expect((await pane.find({ key: 'install' }))?.text).toBe('Approve')
       await pane.press({ key: 'reject' })
 
@@ -136,7 +136,7 @@ describe('the verdict pane', () => {
 
     expect(ui.statuses[0]).toContain('scanning /work/candidate')
     expect(ui.statuses.at(-1)).toBeUndefined()
-    expect(ui.toasts.at(-1)).toContain('Safe to install for /work/candidate')
+    expect(ui.toasts.at(-1)).toContain('No red flags for /work/candidate')
   })
 
   test('without a surface to show the pane, the answer is the text report', async ($, on) => {
@@ -152,7 +152,7 @@ describe('the verdict pane', () => {
   test('/guard report reopens the last report, and forget clears decisions', async ($, on) => {
     mock.store(on)
     const ui = serveUi(on)
-    serveFixture(on, ROOT, fixture('mod-http-fetch'))
+    serveFixture(on, ROOT, fixture('mod-process-run'))
     await $.command.run(typed('guard', `scan ${ROOT}`))
     const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
     await pane.press({ key: 'install' })
@@ -176,7 +176,7 @@ describe('the verdict pane', () => {
       target: '/plugin install notes@acme',
       action: 'install',
       stage: '',
-      verdict: { kind: 'safe', recommendation: 'Safe to install', reasons: [], counts: { pass: 3, warn: 0, fail: 0, info: 0 } },
+      verdict: { kind: 'safe', recommendation: 'No red flags', reasons: [], counts: { pass: 3, warn: 0, fail: 0, info: 0 } },
       rows: [],
       expanded: [],
       details: false,
@@ -235,7 +235,7 @@ describe('pane review fixes', () => {
     on('state.set', ($, e, next) => (++sets === 2 ? { deny: 'test: progress refused' } : next(e)))
     const { text } = await $.command.run(typed('guard', `scan ${ROOT}`))
 
-    expect(text).toContain('Safe to install')
+    expect(text).toContain('No red flags')
   })
 
   test('after a failed scan, Copy report copies that failure, not an older report', async ($, on) => {
@@ -294,8 +294,8 @@ describe('pane review fixes', () => {
   test('forget matches a whole name, not part of another', async ($, on) => {
     mock.store(on, {
       decisions: [
-        { target: '/w/tool', root: '/w/tool', treeHash: 'sha256:a', verdict: 'Safe to install', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 1 },
-        { target: '/w/my-tool-2', root: '/w/my-tool-2', treeHash: 'sha256:b', verdict: 'Safe to install', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 2 },
+        { target: '/w/tool', root: '/w/tool', treeHash: 'sha256:a', verdict: 'No red flags', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 1 },
+        { target: '/w/my-tool-2', root: '/w/my-tool-2', treeHash: 'sha256:b', verdict: 'No red flags', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 2 },
       ],
     })
     expect((await $.command.run(typed('guard', 'forget tool'))).text).toContain('forgot 1 decision')
@@ -315,7 +315,7 @@ describe('pane review fixes, round two', () => {
     await $.command.run(typed('guard', 'report'))
     const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
 
-    expect(await pane.find({ type: 'Text', text: /^Safe to install$/ })).toBeUndefined()
+    expect(await pane.find({ type: 'Text', text: /^No red flags$/ })).toBeUndefined()
     await pane.unmount()
   })
 
@@ -378,7 +378,7 @@ describe('pane review fixes, round three', () => {
   })
 
   test('forget finds a folder by its name with a trailing slash', async ($, on) => {
-    mock.store(on, { decisions: [{ target: '/w/tool', root: '/w/tool', treeHash: 'sha256:a', verdict: 'Safe to install', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 1 }] })
+    mock.store(on, { decisions: [{ target: '/w/tool', root: '/w/tool', treeHash: 'sha256:a', verdict: 'No red flags', verdictKind: 'safe', decision: 'approved', overridden: false, decidedAt: 1 }] })
     expect((await $.command.run(typed('guard', 'forget tool/'))).text).toContain('forgot 1 decision')
   })
 })
@@ -395,7 +395,7 @@ describe('pane review fixes, round four', () => {
   }
   const seed = (store: Map<string, unknown>, decision: 'approved' | 'rejected', verdictKind?: string) => {
     const view = store.get('last-view') as GuardView
-    store.set('decisions', [{ target: ROOT, root: ROOT, treeHash: view.treeHash, verdict: 'Safe to install', verdictKind, decision, overridden: false, decidedAt: 1 }])
+    store.set('decisions', [{ target: ROOT, root: ROOT, treeHash: view.treeHash, verdict: 'No red flags', verdictKind, decision, overridden: false, decidedAt: 1 }])
   }
   const rescan = async ($: Engine) => {
     await $.command.run(typed('guard', `scan ${ROOT}`))
@@ -464,7 +464,7 @@ describe('a remote scan in the pane', () => {
     serveUi(on)
     serveFixture(on, WORK, fixture('clean-plugin'), { run: git })
     const answer = await $.command.run(typed('guard', 'scan github:acme/notes'))
-    expect(answer.text).toContain('Safe to install')
+    expect(answer.text).toContain('No red flags')
     const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
 
     expect(await pane.find({ type: 'Text', text: new RegExp(`commit ${SHA.slice(0, 12)}`) })).toBeDefined()
@@ -530,7 +530,7 @@ describe('the README badge', () => {
     target: 'acme/notes',
     action: 'approve',
     stage: '',
-    verdict: { kind, recommendation: { safe: 'Safe to install', caution: 'Review what it can do', reject: 'Do not install', unverified: 'Could not verify' }[kind], reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
+    verdict: { kind, recommendation: { safe: 'No red flags', caution: 'Worth a look', reject: 'Do not install', unverified: 'Could not verify' }[kind], reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
     rows: [],
     expanded: [],
     details: false,
@@ -542,10 +542,10 @@ describe('the README badge', () => {
   test('names the verdict and the exact version, and links to how to check it', () => {
     const made = badgeFor(view('safe', { sha: SHA }))
     expect('markdown' in made && made.markdown).toBe(
-      `[![AI Install Guard: Safe to install at aaaaaaa](https://img.shields.io/badge/AI_Install_Guard-safe_to_install_%C2%B7_aaaaaaa-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned at commit ${SHA}, ${TREE}")`,
+      `[![AI Install Guard: No red flags at aaaaaaa](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_aaaaaaa-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned at commit ${SHA}, ${TREE}")`,
     )
     const local = badgeFor(view('caution'))
-    expect('markdown' in local && local.markdown).toContain('review_what_it_can_do_%C2%B7_tree_bbbbbbbb-dbab09')
+    expect('markdown' in local && local.markdown).toContain('worth_a_look_%C2%B7_tree_bbbbbbbb-dbab09')
   })
 
   test('there is no badge for Do not install, Could not verify, or nothing scanned', () => {
@@ -561,11 +561,11 @@ describe('the README badge', () => {
     serveFixture(on, ROOT, fixture('clean-plugin'))
     await $.command.run(typed('guard', `scan ${ROOT}`))
     const answer = await $.command.run(typed('guard', 'badge'))
-    expect(answer.text).toContain('[![AI Install Guard: Safe to install at tree ')
+    expect(answer.text).toContain('[![AI Install Guard: No red flags at tree ')
 
     const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
     await pane.press({ key: 'badge' })
-    expect(ui.copied.at(-1)).toContain('img.shields.io/badge/AI_Install_Guard-safe_to_install')
+    expect(ui.copied.at(-1)).toContain('img.shields.io/badge/AI_Install_Guard-no_red_flags')
     await pane.unmount()
   })
 
@@ -585,10 +585,10 @@ describe('the README badge, PR review round one', () => {
   test('a folder scan names its folder', () => {
     const made = badgeFor({
       target: 'acme/notes', action: 'approve', stage: '', rows: [], expanded: [], details: false, confirming: false,
-      verdict: { kind: 'safe', recommendation: 'Safe to install', reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
+      verdict: { kind: 'safe', recommendation: 'No red flags', reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
       sha: 'a'.repeat(40), subdir: 'plugins/a', treeHash: `sha256:${'b'.repeat(64)}`,
     })
-    expect('markdown' in made && made.markdown).toContain('Safe to install at aaaaaaa in plugins/a')
+    expect('markdown' in made && made.markdown).toContain('No red flags at aaaaaaa in plugins/a')
     expect('markdown' in made && made.markdown).toContain(`folder plugins/a, sha256:`)
   })
 
@@ -607,7 +607,7 @@ describe('the README badge, PR review round one', () => {
 describe('the README badge, PR review round two', () => {
   const view = (subdir: string): GuardView => ({
     target: 'acme/notes', action: 'approve', stage: '', rows: [], expanded: [], details: false, confirming: false,
-    verdict: { kind: 'safe', recommendation: 'Safe to install', reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
+    verdict: { kind: 'safe', recommendation: 'No red flags', reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
     sha: 'a'.repeat(40), subdir: encodeFolder(subdir), treeHash: `sha256:${'b'.repeat(64)}`,
   })
 

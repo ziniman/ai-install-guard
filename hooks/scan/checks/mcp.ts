@@ -95,6 +95,7 @@ function inventoryCheck(servers: readonly McpServer[]): CheckResult {
       group: GROUP,
       title: 'MCP servers it adds',
       advice: 'Each MCP server runs as a program on your machine or talks to a server elsewhere, and Claude can call every tool it offers.',
+      access: serverAccess(servers),
     },
     capEvidence(evidence, 30, 'info'),
     'info',
@@ -120,7 +121,8 @@ function launchCheck(servers: readonly McpServer[]): CheckResult {
     if (/^(?:docker|podman|nerdctl)$/.test(program) && server.args.includes('run')) {
       const image = containerImage(server.args)
       if (image === undefined) evidence.push(place(server, `runs a container whose image could not be told apart: ${line}`, 'warn'))
-      else if (!/@sha256:[0-9a-f]{64}$/.test(image)) evidence.push(place(server, `runs the container image ${image}, not pinned by digest`, 'warn'))
+      // An image named by tag is how containers are usually run: noted, not held against it.
+      else if (!/@sha256:[0-9a-f]{64}$/.test(image)) evidence.push(place(server, `runs the container image ${image}, not pinned by digest`, 'info'))
     }
   }
   return row(
@@ -167,7 +169,7 @@ function remoteCheck(servers: readonly McpServer[]): CheckResult {
       } else if (/^\d{1,3}(?:\.\d{1,3}){3}$|^\[/.test(host)) {
         evidence.push(place(server, `talks to a raw IP address${via}: ${host}`, 'warn'))
       } else {
-        evidence.push(place(server, `talks to a remote server${via}: ${host}`, 'warn'))
+        evidence.push(place(server, `talks to a remote server${via}: ${host}`, 'info'))
       }
     }
   }
@@ -207,7 +209,7 @@ function credentialsCheck(servers: readonly McpServer[]): CheckResult {
           const host = url.hostname.toLowerCase()
           evidence.push(
             belongsTo(name, host)
-              ? place(server, `sends ${name} (in ${via}) to ${host}`, 'warn')
+              ? place(server, `sends ${name} (in ${via}) to ${host}, the service it belongs to`, 'info')
               : place(server, `sends ${name} (in ${via}) to ${host}, which is not the service it belongs to`, 'fail'),
           )
         }
@@ -227,6 +229,28 @@ function credentialsCheck(servers: readonly McpServer[]): CheckResult {
     },
     capEvidence(evidence, 30),
   )
+}
+
+/**
+ * What the servers let Claude do, for the verdict's "It can" line: a server
+ * it starts here (and the hosts that server is given), or a server elsewhere
+ * that Claude talks to directly.
+ */
+function serverAccess(servers: readonly McpServer[]): string[] {
+  const few = (items: readonly string[]): string => `${items.slice(0, 3).join(', ')}${items.length > 3 ? ` and ${items.length - 3} more` : ''}`
+  const hostsOf = (server: McpServer): string[] => [...new Set(remoteUrls(server).map(({ url }) => url.hostname.toLowerCase()))]
+  const local = servers.filter(server => server.url === undefined)
+  const remote = [...new Set(servers.filter(server => server.url !== undefined).flatMap(hostsOf))]
+  const reached = [...new Set(local.flatMap(hostsOf))]
+  // A server at an address on this machine is one Claude talks to as well.
+  const here = servers.filter(server => server.url !== undefined && hostsOf(server).length === 0).map(server => server.name)
+  const lines: string[] = []
+  if (local.length > 0) {
+    lines.push(`start the MCP server${local.length === 1 ? '' : 's'} ${few(local.map(server => server.name))} on your machine${reached.length > 0 ? `, given the address${reached.length === 1 ? '' : 'es'} ${few(reached)}` : ''}`)
+  }
+  if (remote.length > 0) lines.push(`connect Claude to ${few(remote)}`)
+  if (here.length > 0) lines.push(`connect Claude to the MCP server${here.length === 1 ? '' : 's'} ${few(here)} on this machine`)
+  return lines
 }
 
 function referencedVariables(text: string): string[] {

@@ -56,7 +56,8 @@ export function secretChecks(ctx: ScanContext): CheckResult[] {
     const live = isLive(ctx.roleOf(file.path))
     for (const { kind, pattern } of SECRET_KEYS) {
       for (const match of findAll(text, pattern, 3)) {
-        keys.push({ file: file.path, line: match.line, excerpt: kind, status: live ? 'fail' : 'info' })
+        // A committed key is the author's leak, not a way in to you: worth a look, never a reason on its own to refuse.
+        keys.push({ file: file.path, line: match.line, excerpt: kind, status: live ? 'warn' : 'info' })
       }
     }
   }
@@ -76,7 +77,7 @@ export function secretChecks(ctx: ScanContext): CheckResult[] {
         file: file.path,
         line: first.index + 1,
         excerpt: `${filled.length} variable${filled.length === 1 ? '' : 's'} with values, first ${first.match[1]}`,
-        status: isLive(ctx.roleOf(file.path)) ? 'fail' : 'info',
+        status: isLive(ctx.roleOf(file.path)) ? 'warn' : 'info',
       })
     }
   }
@@ -90,8 +91,7 @@ export function secretChecks(ctx: ScanContext): CheckResult[] {
         advice: 'A real key in a public plugin is already leaked, and one that looks real may be bait. The value is never shown here.',
       },
       keys,
-      'fail',
-      'critical',
+      'warn',
     ),
     row(
       {
@@ -101,7 +101,7 @@ export function secretChecks(ctx: ScanContext): CheckResult[] {
         advice: 'A .env file with values ships someone\'s configuration, often their secrets.',
       },
       envFiles,
-      'fail',
+      'warn',
     ),
   ]
 }
