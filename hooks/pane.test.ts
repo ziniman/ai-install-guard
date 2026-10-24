@@ -165,6 +165,31 @@ describe('the verdict pane', () => {
     expect((await $.command.run(typed('guard', 'list'))).text).toContain('no decisions yet')
   })
 
+  test("the title names the guard's own version, read from the copy that is running", async ($, on) => {
+    const store = new Map<string, unknown>()
+    on('store.get', ($, e) => ({ value: store.get(e.key) }))
+    on('store.set', ($, e) => (store.set(e.key, e.value), { value: undefined }))
+    on('store.delete', ($, e) => (store.delete(e.key), { value: undefined }))
+    on('fs.read', ($, e, next) => (e.path.endsWith('/.claude-plugin/plugin.json') ? { value: JSON.stringify({ name: 'ai-install-guard', version: '9.9.9' }) } : next(e)))
+    serveUi(on)
+    const view: GuardView = {
+      target: '/plugin install notes@acme',
+      action: 'install',
+      stage: '',
+      verdict: { kind: 'safe', recommendation: 'Safe to install', reasons: [], counts: { pass: 3, warn: 0, fail: 0, info: 0 } },
+      rows: [],
+      expanded: [],
+      details: false,
+      confirming: false,
+    }
+    store.set('last-view', view)
+    await $.command.run(typed('guard', 'report'))
+    const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
+
+    expect(await pane.find({ type: 'Text', text: /^AI Install Guard 9\.9\.9 · \/plugin install notes@acme$/ })).toBeDefined()
+    await pane.unmount()
+  })
+
   test('the pane with no scan yet says how to start one', async ($, on) => {
     mock.store(on)
     const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })

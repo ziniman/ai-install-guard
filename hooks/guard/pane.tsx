@@ -10,6 +10,7 @@ import { changedSinceScan } from '../gate/recheck'
 import { modHost } from '../mod-host'
 import { loadReport, recordDecision, saveLastView } from './decisions'
 import { grantPass, takePass } from './passes'
+import { ownVersion } from './version'
 import { needsConfirmation, PANE_ID, primaryLabel } from './view'
 
 const viewAtom = atom({ plugin: 'ai-install-guard', key: 'view' } as const, null)
@@ -183,10 +184,12 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
   }
 
   const verdict = view.verdict
+  // The version of the guard that is running, so a screenshot or a shared report says which one judged.
+  const version = await ownVersion($)
   return (
     <Box flexDirection="column" width={width}>
       <Text bold wrap="wrap">
-        AI Install Guard · {view.target}
+        AI Install Guard{version === undefined ? '' : ` ${version}`} · {view.target}
       </Text>
       {header !== '' && (
         <Text dimColor wrap="wrap">
