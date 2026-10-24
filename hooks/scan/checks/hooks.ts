@@ -20,8 +20,8 @@ import {
 import { languageOf, localImports, networkOf, proseTest, secretName } from './code'
 import { belongsTo } from './mcp'
 import { promptConcerns } from './prompts'
-import { findAll, findFirst, spanKinds, type Match } from './text'
-import { row, worstFirst, type CheckResult, type Evidence } from './types'
+import { findAll, findFirst, judgedMatches, lineIndex, spanKinds, type Match } from './text'
+import { row, type CheckResult, type Evidence } from './types'
 
 const GROUP = 'hooks' as const
 
@@ -128,7 +128,11 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
     }
     for (const { pattern, what } of DANGERS) {
       // A key named in a docstring is a note, so every read is judged first: notes cannot crowd out a real one.
-      if (pattern === SECRET_ENV) commands.push(...worstFirst(findAll(text, pattern, 10_000).map(keyRead), 3))
+      if (pattern === SECRET_ENV) {
+        const lineOf = lineIndex(text)
+        const judge = (index: number, found: string) => ({ status: keyRead({ index, line: lineOf(index), text: found, excerpt: '' }).status ?? 'fail' })
+        commands.push(...judgedMatches(text, pattern, judge, 3).map(({ match }) => keyRead(match)))
+      }
       else for (const match of matches(pattern)) commands.push(found(match, what))
     }
     for (const match of matches(AUTO_APPROVE)) approvals.push(found(match, 'approves the tool call'))

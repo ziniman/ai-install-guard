@@ -2,8 +2,8 @@ import { languageOf, secretName } from './code'
 import { isCodeFile, isLive, type ScanContext } from './context'
 import { CREDENTIAL_PATH, DOWNLOAD_AND_RUN, NETWORK_COMMAND, NETWORK_CODE, SECRET_ENV, UNPINNED_RUNNER } from './patterns'
 import { belongsTo } from './mcp'
-import { basename, dirname, findAll, findFirst, spanKinds, type Match } from './text'
-import { row, worstFirst, type CheckResult, type Evidence, type Status } from './types'
+import { basename, dirname, findAll, findFirst, judgedMatches, lineIndex, spanKinds, type Match } from './text'
+import { row, type CheckResult, type Evidence, type Status } from './types'
 
 const GROUP = 'prompts' as const
 
@@ -126,22 +126,24 @@ type Phrase = { match: Match; status: Status; note: string }
  */
 function injectionPhrases(text: string, reachesOut: boolean): Phrase[] {
   const frontEnd = frontmatterEnd(text)
+  const quoted = ' (quoted: written about, not used)'
   const out: Phrase[] = []
-  // Every match is judged before any is dropped, the worst kept first.
   for (const pattern of INJECTION) {
-    const phrases = findAll(text, pattern, 200, index => isTagAt(text, index)).map(match =>
-      isQuoted(text, match.index, match.text.length, frontEnd) ? { match, status: 'info' as Status, note: ' (quoted: written about, not used)' } : { match, status: (reachesOut ? 'fail' : 'warn') as Status, note: '' },
-    )
-    out.push(...worstFirst(phrases, 3))
+    const judge = (index: number, found: string): { status: Status; note: string } => {
+      if (!isTagAt(text, index)) return { status: 'pass', note: '' }
+      if (isQuoted(text, index, found.length, frontEnd)) return { status: 'info', note: quoted }
+      return { status: reachesOut ? 'fail' : 'warn', note: '' }
+    }
+    for (const { match, judgement } of judgedMatches(text, pattern, judge, 3)) out.push({ match, ...judgement })
   }
   for (const pattern of HIDING) {
-    const phrases = findAll(text, pattern, 200).map((match): Phrase => {
-      if (isQuoted(text, match.index, match.text.length, frontEnd)) return { match, status: 'info', note: ' (quoted: written about, not used)' }
-      if (!/^(?:do\s+not|don|never)/i.test(match.text) && isNegated(text, match.index)) return { match, status: 'info', note: ' (warns against it)' }
-      if (!namesWayOut(paragraphAt(text, match.index))) return { match, status: 'info', note: ' (nothing in its paragraph sends data or touches credentials)' }
-      return { match, status: 'fail', note: '' }
-    })
-    out.push(...worstFirst(phrases, 3))
+    const judge = (index: number, found: string): { status: Status; note: string } => {
+      if (isQuoted(text, index, found.length, frontEnd)) return { status: 'info', note: quoted }
+      if (!/^(?:do\s+not|don|never)/i.test(found) && isNegated(text, index)) return { status: 'info', note: ' (warns against it)' }
+      if (!namesWayOut(paragraphAt(text, index))) return { status: 'info', note: ' (nothing in its paragraph sends data or touches credentials)' }
+      return { status: 'fail', note: '' }
+    }
+    for (const { match, judgement } of judgedMatches(text, pattern, judge, 3)) out.push({ match, ...judgement })
   }
   return out
 }
@@ -227,13 +229,14 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
 
     // Naming a credential file is not reading it: a fail needs a verb that reads it on the same line.
     const lines = text.split('\n')
-    const paths = findAll(text, CREDENTIAL_PATH, 200).map((match): Evidence => {
-      // The whole command: `cat \` on one line can read the key named on the next.
-      const reads = READ_VERB.test(statementAt(lines, match.line))
-      return { file: path, line: match.line, excerpt: reads ? match.excerpt : `names ${match.text.trim()}: ${match.excerpt}`, status: cap(reads ? 'fail' : 'info') }
-    })
-    credentials.push(...worstFirst(paths, 5))
-    credentials.push(...worstFirst(findAll(text, SECRET_ENV, 200).map(match => ({ file: path, line: match.line, ...secretUse(lines, match, cap) })), 5))
+    const lineOf = lineIndex(text)
+    // The whole command: `cat \` on one line can read the key named on the next.
+    const readsAt = (index: number) => ({ status: cap(READ_VERB.test(statementAt(lines, lineOf(index))) ? 'fail' : 'info') })
+    for (const { match, judgement } of judgedMatches(text, CREDENTIAL_PATH, readsAt, 5)) {
+      credentials.push({ file: path, line: match.line, excerpt: judgement.status === 'fail' ? match.excerpt : `names ${match.text.trim()}: ${match.excerpt}`, status: judgement.status })
+    }
+    const secretAt = (index: number, found: string) => secretUse(lines, { index, line: lineOf(index), text: found, excerpt: '' }, cap)
+    for (const { match } of judgedMatches(text, SECRET_ENV, secretAt, 5)) credentials.push({ file: path, line: match.line, ...secretUse(lines, match, cap) })
 
     // A local address (a preview server the skill starts) is not remote.
     const remoteOnly = (index: number) => !/^[^\n]{0,120}?https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)(?![\w.-])/i.test(text.slice(index, index + 200))
@@ -244,18 +247,15 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     // against it ("never run curl | sh") is still a warning, since negation
     // is easy to fake ("don't hesitate to run ..."). A well-known installer
     // (Homebrew's, rustup's) is a step down: worth a look, not a red flag.
-    const downloads = findAll(text, DOWNLOAD_AND_RUN, 200).map((match): Evidence => {
-      const warnsAgainst = isNegated(text, match.index)
-      const installer = knownInstaller(text.slice(match.index, match.index + 600).split('\n')[0] ?? '')
-      const what = installer === undefined ? 'download and run code' : `download and run ${installer}`
-      return {
-        file: path,
-        line: match.line,
-        excerpt: `${warnsAgainst ? 'mentions' : 'tells the model to'} ${what}: ${match.excerpt}`,
-        status: cap(installer === undefined ? (warnsAgainst ? 'warn' : 'fail') : warnsAgainst ? 'info' : 'warn'),
-      }
-    })
-    remote.push(...worstFirst(downloads, 3))
+    const downloadAt = (index: number) => {
+      const warnsAgainst = isNegated(text, index)
+      const installer = knownInstaller(text.slice(index, index + 600).split('\n')[0] ?? '')
+      return { warnsAgainst, installer, status: cap(installer === undefined ? (warnsAgainst ? 'warn' : 'fail') : warnsAgainst ? 'info' : 'warn') }
+    }
+    for (const { match, judgement } of judgedMatches(text, DOWNLOAD_AND_RUN, downloadAt, 3)) {
+      const what = judgement.installer === undefined ? 'download and run code' : `download and run ${judgement.installer}`
+      remote.push({ file: path, line: match.line, excerpt: `${judgement.warnsAgainst ? 'mentions' : 'tells the model to'} ${what}: ${match.excerpt}`, status: judgement.status })
+    }
     // An unpinned package runner counts only as a command (in a code span or
     // block), not prose about one ("npx is a package runner"). It runs the
     // newest version of a package, as most setup instructions do: noted.
@@ -334,33 +334,42 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
 
 /**
  * Install scripts that projects tell people to pipe into a shell: well known,
- * still code from the internet. Matched by exact host and path, so a
- * look-alike host (get.docker.com.example) is not one of them.
+ * still code from the internet. Matched by exact host and the installer's
+ * own path, so neither a look-alike host (get.docker.com.example) nor
+ * another file on the same host counts.
  */
-const INSTALLERS: readonly { host: string; path: string; name: string }[] = [
-  { host: 'raw.githubusercontent.com', path: '/Homebrew/install/', name: "Homebrew's installer" },
-  { host: 'sh.rustup.rs', path: '/', name: "rustup's installer" },
-  { host: 'raw.githubusercontent.com', path: '/nvm-sh/nvm/', name: "nvm's installer" },
-  { host: 'get.docker.com', path: '/', name: "Docker's installer" },
-  { host: 'bun.sh', path: '/install', name: "Bun's installer" },
-  { host: 'deno.land', path: '/install.sh', name: "Deno's installer" },
-  { host: 'astral.sh', path: '/uv/', name: "uv's installer" },
-  { host: 'install.python-poetry.org', path: '/', name: "Poetry's installer" },
-  { host: 'get.pnpm.io', path: '/install.sh', name: "pnpm's installer" },
-  { host: 'ollama.com', path: '/install.sh', name: "Ollama's installer" },
-  { host: 'claude.ai', path: '/install.sh', name: "Claude Code's installer" },
-  { host: 'tailscale.com', path: '/install.sh', name: "Tailscale's installer" },
+const INSTALLERS: readonly { host: string; path: RegExp; name: string }[] = [
+  { host: 'raw.githubusercontent.com', path: /^\/Homebrew\/install\/(?:HEAD|master|main)\/install\.sh$/, name: "Homebrew's installer" },
+  { host: 'sh.rustup.rs', path: /^\/?$/, name: "rustup's installer" },
+  { host: 'raw.githubusercontent.com', path: /^\/nvm-sh\/nvm\/(?:v\d+\.\d+\.\d+|master)\/install\.sh$/, name: "nvm's installer" },
+  { host: 'get.docker.com', path: /^\/?$/, name: "Docker's installer" },
+  { host: 'bun.sh', path: /^\/install$/, name: "Bun's installer" },
+  { host: 'deno.land', path: /^\/install\.sh$/, name: "Deno's installer" },
+  { host: 'astral.sh', path: /^\/uv\/(?:\d+\.\d+\.\d+\/)?install\.sh$/, name: "uv's installer" },
+  { host: 'install.python-poetry.org', path: /^\/?$/, name: "Poetry's installer" },
+  { host: 'get.pnpm.io', path: /^\/install\.sh$/, name: "pnpm's installer" },
+  { host: 'ollama.com', path: /^\/install\.sh$/, name: "Ollama's installer" },
+  { host: 'claude.ai', path: /^\/install\.sh$/, name: "Claude Code's installer" },
+  { host: 'tailscale.com', path: /^\/install\.sh$/, name: "Tailscale's installer" },
 ]
 
-/** The well-known installer a download-and-run command fetches, by its address, if it is one. */
+/**
+ * The well-known installer a download-and-run command fetches, if every
+ * address in it is that installer: one more address could be what runs.
+ */
 function knownInstaller(command: string): string | undefined {
-  const address = /\bhttps:\/\/[^\s'"`)]{1,300}/.exec(command)?.[0]
-  if (address === undefined) return undefined
+  const addresses = Array.from(command.matchAll(/\b[a-z][\w+.-]*:\/\/[^\s'"`)]{1,300}/gi), found => found[0])
+  if (addresses.length === 0) return undefined
+  const names = new Set<string | undefined>(addresses.map(installerAt))
+  return names.size === 1 ? [...names][0] : undefined
+}
+
+function installerAt(address: string): string | undefined {
   try {
     const url = new URL(address)
-    // Credentials or a port in the address make it something else.
-    if (url.username !== '' || url.password !== '' || url.port !== '') return undefined
-    return INSTALLERS.find(entry => url.hostname === entry.host && url.pathname.startsWith(entry.path))?.name
+    // Only https, with no credentials, port, query or fragment to change what is fetched.
+    if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.port !== '' || url.search !== '' || url.hash !== '') return undefined
+    return INSTALLERS.find(entry => url.hostname === entry.host && entry.path.test(url.pathname))?.name
   } catch {
     return undefined
   }

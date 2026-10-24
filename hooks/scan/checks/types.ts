@@ -85,17 +85,6 @@ export function severityFor(status: Status): Severity {
 /** The order evidence is shown in: red flags, things worth a look, notes, then what passed. */
 const SHOWN: Record<Status, number> = { fail: 3, warn: 2, info: 1, pass: 0 }
 
-/**
- * The worst `limit` of a check's judged findings, then at most `notes` notes.
- * Judge every match before keeping any: harmless mentions that come first
- * must not push a real finding out of the report.
- */
-export function worstFirst<T extends { status?: Status }>(items: readonly T[], limit: number, notes = 2): T[] {
-  const ranked = [...items].sort((a, b) => SHOWN[b.status ?? 'warn'] - SHOWN[a.status ?? 'warn'])
-  const flagged = ranked.filter(item => item.status !== 'info' && item.status !== 'pass').slice(0, limit)
-  return [...flagged, ...ranked.filter(item => item.status === 'info').slice(0, notes)]
-}
-
 export function capEvidence(evidence: Evidence[], max: number, fallback: Status = 'warn'): Evidence[] {
   if (evidence.length <= max) return evidence
   // A note says something; a pass only that nothing was found: notes are kept first.

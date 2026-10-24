@@ -643,7 +643,7 @@ export function localImports(ctx: ScanContext, path: string): string[] {
 
 /** A network tool started as a program: `subprocess.run(['curl', ...])`, `spawn('wget', ...)`. */
 const NETWORK_PROGRAM =
-  /\b(?:run|call|check_call|check_output|Popen|spawn|spawnSync|execFile|execFileSync|execSync|exec|system|popen)\s*\(\s*\[?\s*['"`](?:curl|wget|nc|ncat|netcat|socat|ssh|scp|sftp|telnet)\b/
+  /\b(?:run|call|check_call|check_output|Popen|spawn|spawnSync|execFile|execFileSync|execSync|exec|system|popen)\s*\(\s*\[?\s*['"`](?:(?:\/[\w.-]+)+\/)?(?:curl|wget|nc|ncat|netcat|socat|ssh|scp|sftp|telnet)\b/
 
 /**
  * An address whose host is filled in while the code runs: `"https://" + host`,
@@ -776,8 +776,10 @@ function domainsCheck(ctx: ScanContext): CheckResult {
   for (const file of codeFiles(ctx)) {
     if (!isLive(file.role) && !configFiles.has(file.path)) continue
     for (const match of active(file, /\b(?:https?|wss?|ftp):\/\/[^\s'"`<>)]{1,500}/g, 200)) {
-      // An address in prose, such as an example in a prompt, is not one the code talks to.
-      if (file.inProse(match.index)) continue
+      // An address in prose, such as an example in a prompt, is not one the code
+      // talks to; a host built to collect data is held against it anywhere.
+      const collects = COLLECTION_HOST.test(match.text)
+      if (file.inProse(match.index) && !collects) continue
       // The host is what follows any user-info: in https://a.com@b.site/ it is b.site.
       const authority = /\/\/([^/?#]{0,300})/.exec(match.text)?.[1] ?? ''
       const hasUserInfo = authority.includes('@')
@@ -794,7 +796,7 @@ function domainsCheck(ctx: ScanContext): CheckResult {
       if (COLLECTION_HOST.test(`${host}${lowered.slice(lowered.indexOf(host) + host.length)}`)) {
         const service = host.split('.').slice(-2, -1)[0] ?? ''
         const itsJob = service.length >= 4 && purpose.includes(service)
-        evidence.push(judged(file, match, itsJob ? 'info' : 'warn', itsJob ? `talks to ${host}, the service it is for` : `talks to a host often used to collect data: ${host}`))
+        evidence.push(judged(file, match, itsJob ? 'info' : 'warn', itsJob ? `talks to ${host}, the service it is for` : `talks to a host often used to collect data: ${host}`, collects))
       }
     }
   }

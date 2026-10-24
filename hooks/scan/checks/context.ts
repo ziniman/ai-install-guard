@@ -498,21 +498,28 @@ function localImports(path: string, source: string, realOf: (path: string) => st
   }
   // Python's imports are read only in Python: `import helper from 'helper'` is JavaScript's.
   const python = /\.pyw?$/i.test(path) || /^#![^\n]*\bpython/.test(source)
-  // A script's own folder is first on Python's path, so `import llm` beside it loads ./llm.py.
-  for (const match of python ? findAll(source, /^[ \t]*(?:import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*)|from[ \t]+([A-Za-z_][\w.]*)[ \t]+import\b)/gm, Number.MAX_SAFE_INTEGER) : []) {
-    const parts = /^[ \t]*(?:import[ \t]+([\w., \t]+)|from[ \t]+([\w.]+))/.exec(match.text)
-    for (const name of (parts?.[1] ?? parts?.[2] ?? '').split(',')) {
-      const module = name.trim().replace(/\./g, '/')
-      if (module !== '') add(`./${module}`, ['.py', '/__init__.py'])
-    }
+  // A script's own folder is first on Python's path, so `import llm` beside it
+  // loads ./llm.py. `import a.b` loads a and a/b; `from a import b` loads a,
+  // and a/b when b is a submodule; leading dots climb from the file's folder.
+  const pythonModule = (dots: string, dotted: string): void => {
+    const up = '../'.repeat(Math.max(0, dots.length - 1))
+    const parts = dotted.split('.').filter(part => part !== '')
+    for (let depth = 1; depth <= parts.length; depth += 1) add(`./${up}${parts.slice(0, depth).join('/')}`, ['.py', '/__init__.py'])
   }
-  for (const match of python ? findAll(source, /^[ \t]*from[ \t]+(\.+)([\w.]*)[ \t]+import[ \t]+([\w, ]+)/gm, Number.MAX_SAFE_INTEGER) : []) {
-    const parts = /from\s+(\.+)([\w.]*)\s+import\s+([\w, ]+)/.exec(match.text)
+  for (const match of python ? findAll(source, /^[ \t]*import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*)/gm, Number.MAX_SAFE_INTEGER) : []) {
+    // `import a.b as c` loads a.b: the alias is only its name here.
+    for (const name of (/import[ \t]+([\w., \t]+)/.exec(match.text)?.[1] ?? '').split(',')) pythonModule('', name.trim().split(/\s+/)[0] ?? '')
+  }
+  for (const match of python ? findAll(source, /^[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+(\([^)]{0,2000}\)|[\w, \t]+)/gm, Number.MAX_SAFE_INTEGER) : []) {
+    const parts = /from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+(\([^)]{0,2000}\)|[\w, \t]+)/.exec(match.text)
     if (parts === null) continue
-    const up = '../'.repeat(Math.max(0, (parts[1] as string).length - 1))
-    const module = (parts[2] as string).replace(/\./g, '/')
-    if (module !== '') add(`./${up}${module}`, ['.py', '/__init__.py'])
-    else for (const name of (parts[3] as string).split(',')) add(`./${up}${name.trim()}`, ['.py', '/__init__.py'])
+    const [, dots = '', module = '', list = ''] = parts
+    if (module !== '') pythonModule(dots, module)
+    // Each imported name may be a submodule: `from api import transport` can load api/transport.py.
+    for (const name of list.replace(/[()]/g, ' ').split(',')) {
+      const imported = /^\s*(\w+)/.exec(name)?.[1]
+      if (imported !== undefined) pythonModule(dots, module === '' ? imported : `${module}.${imported}`)
+    }
   }
   for (const match of findAll(source, /(?:^|[;&|]\s*)(?:source|\.)\s+["']?(\.{1,2}\/[^\s"';]{1,300})/gm, Number.MAX_SAFE_INTEGER)) {
     const spec = /(\.{1,2}\/[^\s"';]{1,300})/.exec(match.text)?.[1]

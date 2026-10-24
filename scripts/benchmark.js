@@ -60,10 +60,16 @@ function localPlugins(folder) {
   const out = [];
   for (const plugin of Array.isArray(parsed.plugins) ? parsed.plugins : []) {
     if (typeof plugin.source !== 'string' || !plugin.source.startsWith('./')) continue;
-    const dir = path.resolve(root, plugin.source);
-    // Only folders inside the marketplace, as Claude Code itself allows.
+    // Only folders inside the marketplace, as Claude Code itself allows, with
+    // every link on the way resolved: a source through a link to elsewhere is skipped.
+    let dir;
+    try {
+      dir = fs.realpathSync(path.resolve(root, plugin.source));
+    } catch {
+      continue;
+    }
     if (dir !== root && !dir.startsWith(root + path.sep)) continue;
-    if (fs.existsSync(dir) && fs.lstatSync(dir).isDirectory()) out.push({ name: String(plugin.name), dir });
+    if (fs.statSync(dir).isDirectory()) out.push({ name: String(plugin.name), dir });
   }
   return out;
 }
