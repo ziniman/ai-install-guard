@@ -276,7 +276,7 @@ async function main(argv: readonly string[], out: (text: string) => void, err: (
   // Node 18 keeps Web Crypto off the global object; the tree hash needs it.
   if (globalThis.crypto === undefined) Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true })
   const report = await scanTarget(nodeHost(), args)
-  out(args.json ? jsonReport(report) : formatReport(report, { details: args.details }))
+  out(args.json ? jsonReport(report) : formatReport(report, { details: args.details, version: VERSION }))
   return EXIT[report.verdict.kind]
 }
 
