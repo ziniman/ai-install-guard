@@ -37,7 +37,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
   }
 
   const header = [
-    view.kind === undefined ? undefined : `A ${view.kind}`,
+    view.kind === undefined ? undefined : `${/^(?:[aeiou]|MCP\b)/i.test(view.kind) ? 'An' : 'A'} ${view.kind}`,
     view.sha === undefined ? undefined : `commit ${view.sha.slice(0, 12)}`,
     view.treeHash === undefined ? undefined : `tree ${view.treeHash.slice(7, 19)}`,
   ]

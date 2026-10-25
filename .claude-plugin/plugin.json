@@ -1,6 +1,6 @@
 {
   "name": "ai-install-guard",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "A Claude Code mod that runs in the background: every /plugin install and marketplace you add, yours or Claude's, is scanned before it happens, without running any of it, and nothing installs until you approve.",
   "author": {
     "name": "Boaz Ziniman",
