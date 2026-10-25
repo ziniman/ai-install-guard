@@ -796,10 +796,12 @@ describe('Claude adding an MCP server', () => {
       expect(read(command)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('only known as the command runs') })
     }
     expect(read('claude mcp add notes -e $NAME=1 -- npx pkg')).toMatchObject({ kind: 'unreadable' })
-    expect(read('claude mcp add github -e GITHUB_TOKEN=$GITHUB_TOKEN -- npx -y @acme/github-mcp@1.0.0')).toMatchObject({ kind: 'install', request: { server: { env: { GITHUB_TOKEN: '$GITHUB_TOKEN' } } } })
+    expect(read('claude mcp add github -e GITHUB_TOKEN="$GITHUB_TOKEN" -- npx -y @acme/github-mcp@1.0.0')).toMatchObject({ kind: 'install', request: { server: { env: { GITHUB_TOKEN: '$GITHUB_TOKEN' } } } })
+    // Unquoted, the shell may split it into more settings than the one scanned.
+    expect(read('claude mcp add github -e GITHUB_TOKEN=$GITHUB_TOKEN -- npx -y @acme/github-mcp@1.0.0')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('quote it, as in -e GITHUB_TOKEN="$VALUE"') })
     // A substitution runs a command of its own: one that only reads is data, one that does more is more than the install.
-    expect(read('claude mcp add notes -e TOKEN=$(cat ~/.token) -- npx pkg')).toMatchObject({ kind: 'install' })
-    expect(read('claude mcp add notes -e TOKEN=$(curl -s https://get.example.net/t) -- npx pkg')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('runs more than the install') })
+    expect(read('claude mcp add notes -e TOKEN="$(cat ~/.token)" -- npx pkg')).toMatchObject({ kind: 'install' })
+    expect(read('claude mcp add notes -e TOKEN="$(curl -s https://get.example.net/t)" -- npx pkg')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('runs more than the install') })
   })
 
   test("a global option's value named like a subcommand does not hide the real one", () => {
@@ -814,8 +816,19 @@ describe('Claude adding an MCP server', () => {
     expect(read(`claude mcp add-json gh "{\\"command\\":\\"$CMD\\"}"`)).toMatchObject({ kind: 'unreadable' })
   })
 
+  test('a home folder, a brace range or a split value makes the server differ from the one scanned', () => {
+    for (const command of ['claude mcp add notes -- ~/bin/server', 'claude mcp add notes -- node ~/srv/n.js', 'claude mcp add n -- {b..b}ash -c x', 'claude mcp add n -- node x{1..3}.js', 'claude mcp add notes -e TOKEN=$X -- npx pkg']) {
+      expect(read(command)).toMatchObject({ kind: 'unreadable' })
+    }
+    // Quoted, they are what they say.
+    expect(read('claude mcp add notes -- "~/bin/server"')).toMatchObject({ kind: 'install', request: { server: { command: '~/bin/server' } } })
+    expect(read('claude mcp add n -- node "x{1..3}.js"')).toMatchObject({ kind: 'install' })
+    expect(splitShell('a ~/x b=~/y "~/z" c:~/w d~e').commands[0]?.expands).toEqual([1, 2, 4])
+    expect(splitShell('a $X "$Y" b=$(z) "$(w)"').commands[0]?.splits).toEqual([1, 3])
+  })
+
   test('only a secret may be filled in as the server starts; anything that changes what runs is held', () => {
-    expect(read('claude mcp add notes -e NODE_OPTIONS=$X -- node /srv/notes.js')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('NODE_OPTIONS') })
+    expect(read('claude mcp add notes -e NODE_OPTIONS="$X" -- node /srv/notes.js')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('NODE_OPTIONS') })
     expect(read('claude mcp add --transport http docs https://mcp.docs.example.net/mcp -H "X-Team: $TEAM"')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('X-Team') })
     expect(read('claude mcp add --transport http docs https://mcp.docs.example.net/mcp -H "Authorization: Bearer $PAT"')).toMatchObject({ kind: 'install' })
     expect(read(`claude mcp add-json notes '{"command":"\${CMD}"}'`)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('fills in') })

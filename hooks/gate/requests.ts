@@ -224,8 +224,11 @@ type Collected = {
  * (`cl{aude,}`). `[` on its own is the test command.
  */
 function isDynamic(word: string): boolean {
-  return word !== '[' && (/[$`*?[]/.test(word) || /\{[^}]*,[^}]*\}/.test(word))
+  return word !== '[' && (/[$`*?[]/.test(word) || BRACES.test(word))
 }
+
+/** A brace list (`{a,b}`) or range (`{a..c}`, `{1..3}`), which the shell turns into several words. */
+const BRACES = /\{[^}]*(?:,|\.\.)[^}]*\}/
 
 /**
  * Where the program of a simple command is: after `NAME=value` words and
@@ -281,8 +284,11 @@ function isClaudePlugin(words: readonly string[], index: number): boolean {
  * The install a `claude plugin` or `claude mcp` command at `index` asks for,
  * if it is one. `expands` says which of `words` the shell expands as it runs.
  */
-function claudePlugin(words: readonly string[], index: number, expands: ReadonlySet<number> = new Set()): Reading | undefined {
-  if (/^mcp$/i.test(words[index + 1] ?? '')) return claudeMcp(words.slice(index + 2), (at: number) => expands.has(at + index + 2))
+function claudePlugin(words: readonly string[], index: number, expands: ReadonlySet<number> = new Set(), splits: ReadonlySet<number> = new Set()): Reading | undefined {
+  if (/^mcp$/i.test(words[index + 1] ?? '')) {
+    const base = index + 2
+    return claudeMcp(words.slice(base), { expands: at => expands.has(at + base), splits: at => splits.has(at + base) })
+  }
   const rest = words.slice(index + 2)
   const sub = rest[0]?.toLowerCase()
   if (sub === 'install' || sub === 'i') return readInstall(rest.slice(1), 'install', 'claude plugin install')
@@ -306,7 +312,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     if (counts) out.others += inner.others
   }
   const nested = (script: string): void => merge(collectInstalls(script, found, depth + 1, true), true)
-  for (const { words, input, scripts: substitutions, writes, expands } of splitShell(command).commands) {
+  for (const { words, input, scripts: substitutions, writes, expands, splits } of splitShell(command).commands) {
     // What its substitutions run comes first, and is read as commands too.
     substitutions?.forEach(nested)
     // A write to a file is more than an install, whatever program makes it.
@@ -331,7 +337,8 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       }
       // `claude plugin …` or `claude mcp …`, also after global options (`claude --debug plugin install …`).
       const expanded = new Set(expands ?? [])
-      const reading = places.map(at => claudePlugin(words, at - 1, expanded)).find(item => item !== undefined)
+      const split = new Set(splits ?? [])
+      const reading = places.map(at => claudePlugin(words, at - 1, expanded, split)).find(item => item !== undefined)
       if (reading !== undefined) found.push(reading)
       else out.others += 1
       continue
@@ -367,7 +374,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     // `flock`), and may run it again and again: the program around it counts
     // as more than the install, so it is held.
     const inside = words.findIndex((item, at) => at > index && isClaudePlugin(words, at))
-    const reading = inside === -1 ? undefined : claudePlugin(words, inside, new Set(expands ?? []))
+    const reading = inside === -1 ? undefined : claudePlugin(words, inside, new Set(expands ?? []), new Set(splits ?? []))
     if (reading !== undefined) {
       found.push(reading)
       out.others += 1
@@ -452,10 +459,13 @@ const FILLED_IN = /\$\{[^}]*\}/
  * servers; `list`, `get`, `remove` and the rest add nothing. `expands(at)`
  * says whether the shell expands word `at` of `rest` as the command runs.
  */
-function claudeMcp(rest: readonly string[], expands: (at: number) => boolean): Reading | undefined {
+type Expansion = { expands: (at: number) => boolean; splits: (at: number) => boolean }
+
+function claudeMcp(rest: readonly string[], shell: Expansion): Reading | undefined {
   const sub = rest[0]?.toLowerCase()
-  if (sub === 'add') return readMcpAdd(rest.slice(1), at => expands(at + 1))
-  if (sub === 'add-json') return readMcpAddJson(rest.slice(1), at => expands(at + 1))
+  const after: Expansion = { expands: at => shell.expands(at + 1), splits: at => shell.splits(at + 1) }
+  if (sub === 'add') return readMcpAdd(rest.slice(1), after)
+  if (sub === 'add-json') return readMcpAddJson(rest.slice(1), after.expands)
   if (sub === 'add-from-claude-desktop') {
     return { kind: 'unreadable', label: 'claude mcp add-from-claude-desktop', reason: "it copies every MCP server in Claude Desktop's settings, which the guard does not read; add each one with claude mcp add, so each is scanned" }
   }
@@ -468,12 +478,13 @@ function claudeMcp(rest: readonly string[], expands: (at: number) => boolean): R
  * be read either way, so it is held rather than guessed at. `-e`/`--env` and
  * `-H`/`--header` take every word up to the next option, as Claude Code reads them.
  */
-function readMcpAdd(words: readonly string[], expands: (at: number) => boolean): Reading {
+function readMcpAdd(words: readonly string[], { expands, splits }: Expansion): Reading {
   const positionals: { text: string; expands: boolean }[] = []
   const env: Record<string, string> = {}
   const headers: Record<string, string> = {}
-  /** Values the shell fills in, by the name they are given to: allowed only for a secret. */
+  /** Values the shell fills in, by the name they are given to: allowed only for a secret, and only quoted. */
   const filledValues: string[] = []
+  const splitValues: string[] = []
   let scope: string | undefined
   let transport: string | undefined
   let problem: string | undefined
@@ -502,10 +513,10 @@ function readMcpAdd(words: readonly string[], expands: (at: number) => boolean):
     const name = equals === -1 ? word : word.slice(0, equals)
     const inline = equals === -1 ? undefined : word.slice(equals + 1)
     if (name === '-e' || name === '--env' || name === '-H' || name === '--header') {
-      const values = inline === undefined ? [] : [{ text: inline, expands: expands(index) }]
+      const values = inline === undefined ? [] : [{ text: inline, expands: expands(index), splits: splits(index) }]
       while (index + 1 < words.length && !(words[index + 1] as string).startsWith('-')) {
         index += 1
-        values.push({ text: words[index] as string, expands: expands(index) })
+        values.push({ text: words[index] as string, expands: expands(index), splits: splits(index) })
       }
       if (values.length === 0) problem = `${name} is given no value`
       for (const value of values) {
@@ -515,6 +526,7 @@ function readMcpAdd(words: readonly string[], expands: (at: number) => boolean):
           else {
             env[pair[1] as string] = pair[2] as string
             if (value.expands) filledValues.push(pair[1] as string)
+            if (value.splits) splitValues.push(pair[1] as string)
           }
         } else {
           const colon = value.text.indexOf(':')
@@ -523,6 +535,7 @@ function readMcpAdd(words: readonly string[], expands: (at: number) => boolean):
             const header = value.text.slice(0, colon).trim()
             headers[header] = value.text.slice(colon + 1).trim()
             if (value.expands) filledValues.push(header)
+            if (value.splits) splitValues.push(header)
           }
         }
       }
@@ -549,6 +562,11 @@ function readMcpAdd(words: readonly string[], expands: (at: number) => boolean):
   const notSecret = filledValues.find(item => !SECRET_NAME.test(item))
   if (notSecret !== undefined) {
     return { kind: 'unreadable', label, reason: `the value of ${safeLine(notSecret)} is only known as the command runs, and only a secret's may be; write it out in full` }
+  }
+  // Unquoted, what the shell fills in may split into more words: more settings than the one scanned.
+  const unquoted = splitValues[0]
+  if (unquoted !== undefined) {
+    return { kind: 'unreadable', label, reason: `the value of ${safeLine(unquoted)} is filled in unquoted, so the shell may split it into more words than the one setting scanned; quote it, as in -e ${safeLine(unquoted)}="$VALUE"` }
   }
   // An address given with no transport is checked as the remote server it names.
   const kind = transport ?? (/^https?:\/\//i.test(target.text) ? 'http' : 'stdio')
@@ -656,8 +674,10 @@ export type ShellCommand = {
   input?: string
   scripts?: string[]
   writes?: boolean
-  /** Which words the shell expands as the command runs: a variable, a substitution, or an unquoted pattern or brace list. */
+  /** Which words the shell expands as the command runs: a variable, a substitution, a tilde, or an unquoted pattern or brace list. */
   expands?: number[]
+  /** Which of those it may also split into several words: an unquoted variable or substitution. */
+  splits?: number[]
 }
 
 /**
@@ -680,6 +700,8 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   let quoted = false
   /** The shell expands part of this word as the command runs; `bare` is its unquoted text, for patterns. */
   let expands = false
+  /** Part of what it expands is unquoted, so the result may be split into several words. */
+  let splits = false
   let bare = ''
   let dynamic = false
   /** What the next word is: a word, a redirection's target, a here-document's end marker, or a here-string. */
@@ -695,7 +717,8 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     else if (next === 'herestring') current.input = word
     else if (next === 'word') {
       // An unquoted pattern (`cl*`, `x?`, `[ab]`) or brace list (`{a,b}`) is expanded; `[` alone is the test command.
-      if (expands || (word !== '[' && (/[*?[]/.test(bare) || /\{[^}]*,[^}]*\}/.test(bare)))) (current.expands ??= []).push(current.words.length)
+      if (expands || (word !== '[' && (/[*?[]/.test(bare) || BRACES.test(bare)))) (current.expands ??= []).push(current.words.length)
+      if (splits) (current.splits ??= []).push(current.words.length)
       current.words.push(word)
     }
     else if (writing && word !== '/dev/null' && !(duplicating && /^(?:\d+|-)$/.test(word))) current.writes = true
@@ -704,6 +727,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     inWord = false
     quoted = false
     expands = false
+    splits = false
     bare = ''
   }
   const endCommand = (): void => {
@@ -712,8 +736,8 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     if (current.words.length > 0 || current.input !== undefined || current.scripts !== undefined || current.writes === true) commands.push(current)
     current = { words: [] }
   }
-  /** Reads the substitution that opens at `open` (its `(` or backquote); returns where it closes. */
-  const substitution = (open: number): number => {
+  /** Reads the substitution that opens at `open` (its `(` or backquote); returns where it closes. Outside double quotes its output may be split. */
+  const substitution = (open: number, inQuotes = false): number => {
     const isBackquote = text[open] === '`'
     const close = isBackquote ? closingBackquote(text, open) : closingParen(text, open)
     const end = close === -1 ? text.length : close
@@ -725,6 +749,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     } else (current.scripts ??= []).push(body)
     dynamic = true
     expands = true
+    if (!inQuotes) splits = true
     word += text.slice(open - (isBackquote ? 0 : 1), Math.min(end + 1, text.length))
     inWord = true
     return end
@@ -752,11 +777,11 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
           continue
         }
         if (inner === '$' && text[index + 1] === '(') {
-          index = substitution(index + 1) + 1
+          index = substitution(index + 1, true) + 1
           continue
         }
         if (inner === '`') {
-          index = substitution(index) + 1
+          index = substitution(index, true) + 1
           continue
         }
         if (inner === '$') {
@@ -789,6 +814,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     if (char === '$') {
       dynamic = true
       expands = true
+      splits = true
       word += char
       inWord = true
       continue
@@ -879,6 +905,8 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       endCommand()
       continue
     }
+    // An unquoted `~` at the start of a word, or after `=` or `:` in it, is a home folder.
+    if (char === '~' && (!inWord || word.endsWith('=') || word.endsWith(':'))) expands = true
     word += char
     bare += char
     inWord = true
