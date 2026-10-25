@@ -1,8 +1,13 @@
 // Detection patterns shared by the checks. They are written as escaped
 // regular expressions so the guard's own source does not match its rules.
 
-/** A network tool at the start of a shell command or after a separator, by name or absolute path (`/usr/bin/curl`). */
-export const NETWORK_COMMAND = /(?:^|[\s;&|(`'"])(?:(?:\/[\w.-]+)+\/)?(?:curl|wget|nc|ncat|netcat|socat|telnet|ssh|scp|sftp|rsync|ftp|tftp|nslookup)(?=\s|$)/
+/**
+ * A network tool at the start of a shell command or after a separator, by
+ * name or absolute path (`/usr/bin/curl`), quoted or not (`'/usr/bin/curl' x`).
+ * Text right after `echo` or `printf` is printed, not run.
+ */
+export const NETWORK_COMMAND =
+  /(?<!\b(?:echo|printf)[ \t]{1,4}["']?)(?:^|[\s;&|(`'"])(?:(?:\/[\w.-]+)+\/)?(?:curl|wget|nc|ncat|netcat|socat|telnet|ssh|scp|sftp|rsync|ftp|tftp|nslookup)(?=\s|$|["'`][ \t]{1,16}[^\s#;&|])/
 
 /** Network access in source code. */
 export const NETWORK_CODE =

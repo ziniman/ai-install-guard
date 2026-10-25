@@ -647,10 +647,11 @@ const NETWORK_PROGRAM =
 
 /**
  * An address whose host is filled in while the code runs: `"https://" + host`,
- * `` `https://${host}` ``, f"https://{host}". Such code can send to a host it
- * never writes down, so the hosts it does name do not say where data goes.
+ * `` `https://${host}` ``, f"https://{host}", or a scheme split into pieces
+ * (`"https:/" + "/" + host`). Such code can send to a host it never writes
+ * down, so the hosts it does name do not say where data goes.
  */
-const BUILT_ADDRESS = /\b(?:https?|wss?):\/\/(?:["'`]\s*\+|\$\{|\{|%s)/
+const BUILT_ADDRESS = /\b(?:https?|wss?):\/\/(?:["'`]\s*\+|\$\{|\{|%s)|["'`](?:(?:https?|wss?):\/{0,2}|\/\/)["'`]\s*\+|\+\s*["'`]:\/\//
 
 /**
  * What the code in `paths` can reach: whether it has network code (or
@@ -672,6 +673,19 @@ export function networkOf(ctx: ScanContext, paths: readonly string[]): { sends: 
 /** Whether live code builds an address whose host is only known when it runs. */
 function buildsAddress(file: CodeFile): boolean {
   return active(file, BUILT_ADDRESS, 20).some(match => !file.inProse(match.index))
+}
+
+/**
+ * Whether `host` (with the `rest` of its address, for services known by a
+ * path such as discord.com/api/webhooks) is a host built to collect data.
+ * The match must be the host itself or a subdomain of it: a page on another
+ * host that only names one in its path (docs.example.org/webhook.site) is not.
+ */
+function collectsAt(host: string, rest: string): boolean {
+  if (host === '') return false
+  const target = `${host}${rest}`
+  const found = COLLECTION_HOST.exec(target)
+  return found !== null && found.index < host.length && (found.index === 0 || target[found.index - 1] === '.')
 }
 
 /** The hosts live code names in its own strings: not in comments, patterns or prose. */
@@ -776,14 +790,15 @@ function domainsCheck(ctx: ScanContext): CheckResult {
   for (const file of codeFiles(ctx)) {
     if (!isLive(file.role) && !configFiles.has(file.path)) continue
     for (const match of active(file, /\b(?:https?|wss?|ftp):\/\/[^\s'"`<>)]{1,500}/g, 200)) {
-      // An address in prose, such as an example in a prompt, is not one the code
-      // talks to; a host built to collect data is held against it anywhere.
-      const collects = COLLECTION_HOST.test(match.text)
-      if (file.inProse(match.index) && !collects) continue
       // The host is what follows any user-info: in https://a.com@b.site/ it is b.site.
       const authority = /\/\/([^/?#]{0,300})/.exec(match.text)?.[1] ?? ''
       const hasUserInfo = authority.includes('@')
       const host = (/(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+)/.exec(authority.slice(authority.lastIndexOf('@') + 1))?.[1] ?? '').toLowerCase()
+      const lowered = match.text.toLowerCase()
+      const collects = collectsAt(host, lowered.slice(lowered.indexOf(host) + host.length))
+      // An address in prose, such as an example in a prompt, is not one the code
+      // talks to; a host built to collect data is held against it anywhere.
+      if (file.inProse(match.index) && !collects) continue
       // A one-word host (https://x) is a placeholder, not a place on the internet.
       if (host === '' || (!host.includes('.') && !host.startsWith('['))) continue
       if (hasUserInfo) evidence.push(judged(file, match, 'warn', `an address whose real host hides after "@": ${host}`))
@@ -792,8 +807,7 @@ function domainsCheck(ctx: ScanContext): CheckResult {
       if (/^\d{1,3}(?:\.\d{1,3}){3}$|^\[/.test(host)) {
         evidence.push(judged(file, match, 'warn', `talks to a raw IP address: ${host}`))
       }
-      const lowered = match.text.toLowerCase()
-      if (COLLECTION_HOST.test(`${host}${lowered.slice(lowered.indexOf(host) + host.length)}`)) {
+      if (collects) {
         const service = host.split('.').slice(-2, -1)[0] ?? ''
         const itsJob = service.length >= 4 && purpose.includes(service)
         evidence.push(judged(file, match, itsJob ? 'info' : 'warn', itsJob ? `talks to ${host}, the service it is for` : `talks to a host often used to collect data: ${host}`, collects))
