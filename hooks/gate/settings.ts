@@ -124,12 +124,15 @@ function permissions(was: Record<string, unknown>, now: Record<string, unknown>,
 
 /** Every hook added, changed or taken away, judged by what it runs; the same hook under another matcher runs for more, so it counts. */
 function hooks(was: Record<string, unknown>, now: Record<string, unknown>, note: Note): void {
-  // A hook taken away may have been one that guarded tool calls. One moved to
-  // another matcher still runs, and is judged below as the hook it now is.
+  // A hook taken away may have been one that guarded tool calls, for every
+  // tool or for the ones its matcher names: the same hook kept for another
+  // matcher no longer covers these.
   for (const [event, groups] of Object.entries(was)) {
-    const after = new Set(hookItems(now[event]).map(entry => stable(entry.hook)))
+    const after = new Set(hookItems(now[event]).map(entry => stable(entry)))
     for (const entry of hookItems(groups)) {
-      if (!after.has(stable(entry.hook))) note(`no longer runs ${String(entry.hook.command ?? entry.hook.url ?? entry.hook.prompt ?? 'a hook')} on ${event}`, 'warn')
+      if (after.has(stable(entry))) continue
+      const matcher = typeof entry.matcher === 'string' && entry.matcher !== '' ? ` for ${entry.matcher}` : ''
+      note(`no longer runs ${String(entry.hook.command ?? entry.hook.url ?? entry.hook.prompt ?? 'a hook')} on ${event}${matcher}`, 'warn')
     }
   }
   for (const [event, groups] of Object.entries(now)) {

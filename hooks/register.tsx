@@ -55,7 +55,7 @@ export const register: Register = (on, options) => {
     if (sub === 'badge') return { text: await badge($) }
     if (sub === 'list') return { text: await list($) }
     if (sub === 'forget' && rest !== '') {
-      const count = (await forgetDecisions($, rest)).length
+      const count = (await forgetDecisions($, rest, await landedName($, rest))).length
       return { text: `AI Install Guard: forgot ${count} decision${count === 1 ? '' : 's'} about ${safeLine(rest)}.` }
     }
     return { text: USAGE }
@@ -121,6 +121,21 @@ export const register: Register = (on, options) => {
  * other, so the second is held until the first is written.
  */
 const changing = new Set<string>()
+
+/**
+ * Where a path typed to /guard forget really is, as written changes are kept:
+ * through any link, from the home folder for `~`. Undefined for a bare name.
+ */
+async function landedName($: EngineInterface, name: string): Promise<string | undefined> {
+  if (!/^(?:~(?:\/|$)|\/)/.test(name)) return undefined
+  const host = modHost($)
+  try {
+    return normalizePath(await landsAt(host, normalizePath(await expandHome(host, name))))
+  } catch {
+    // Without the home folder, the name as typed is all there is to match.
+    return undefined
+  }
+}
 
 /**
  * Gate C's judgement of one write: the refusal Claude reads, or a release to

@@ -1142,7 +1142,7 @@ describe('Claude changing settings', () => {
   test('local review: what runs for more, from somewhere else, or no more', () => {
     expect(judge({ disabledMcpjsonServers: ['evil'] }, { disabledMcpjsonServers: [] })).toEqual(['warn: no longer turns off the project MCP server evil'])
     const hook = { type: 'command', command: 'say done' }
-    expect(judge({ hooks: { PreToolUse: [{ matcher: 'Read', hooks: [hook] }] } }, { hooks: { PreToolUse: [{ matcher: '*', hooks: [hook] }] } })).toEqual(['warn: runs say done on PreToolUse'])
+    expect(judge({ hooks: { PreToolUse: [{ matcher: 'Read', hooks: [hook] }] } }, { hooks: { PreToolUse: [{ matcher: '*', hooks: [hook] }] } })).toEqual(['warn: no longer runs say done on PreToolUse for Read', 'warn: runs say done on PreToolUse'])
     expect(judge({ extraKnownMarketplaces: { acme: { source: { source: 'github', repo: 'acme/m' } } } }, { extraKnownMarketplaces: { acme: { source: { source: 'github', repo: 'evil/m' } } } })).toEqual(['warn: changes where the marketplace acme comes from'])
     expect(judge({}, { permissions: { allow: ['Bash(npm test; curl https://get.example.net:*)'] } })[0]).toMatch(/^fail: /)
     expect(judge({ apiKeyHelper: '/usr/local/bin/key' }, {})).toEqual(['info: no longer runs a command to make the API key'])
@@ -1151,10 +1151,13 @@ describe('Claude changing settings', () => {
   test('the second review: hooks taken away or turned off, runners, and exact names', () => {
     const guard = { type: 'command', command: '/usr/local/bin/check-bash' }
     // A hook that guarded tool calls, taken away, or every hook turned off.
-    expect(judge({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } }, { hooks: {} })).toEqual(['warn: no longer runs /usr/local/bin/check-bash on PreToolUse'])
-    expect(judge({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } }, {})).toEqual(['warn: no longer runs /usr/local/bin/check-bash on PreToolUse'])
+    expect(judge({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } }, { hooks: {} })).toEqual(['warn: no longer runs /usr/local/bin/check-bash on PreToolUse for Bash'])
+    expect(judge({ hooks: { PreToolUse: [{ hooks: [guard] }] } }, {})).toEqual(['warn: no longer runs /usr/local/bin/check-bash on PreToolUse'])
     expect(judge({}, { disableAllHooks: true })).toEqual(['warn: turns every hook off, any that guard tool calls included'])
     expect(judge({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } }, { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } })).toEqual([])
+    // The same hook kept for Bash but taken away from Write no longer guards Write.
+    const both = { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }, { matcher: 'Write', hooks: [guard] }] } }
+    expect(judge(both, { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } })).toEqual(['warn: no longer runs /usr/local/bin/check-bash on PreToolUse for Write'])
     // A runner held to one word still runs anything; a package manager's run needs its script named.
     for (const rule of ['Bash(sudo rm:*)', 'Bash(env FOO=1:*)', 'Bash(xargs rm:*)', 'Bash(time make:*)', 'Bash(npx cowsay:*)', 'Bash(npm run:*)', 'Bash(pnpm exec:*)', 'Bash(uv run:*)']) {
       expect(judge({}, { permissions: { allow: [rule] } })[0]).toMatch(/^fail: /)
@@ -1204,7 +1207,7 @@ describe('Claude changing settings', () => {
     seededStore(on)
     serveUi(on)
     const written: string[] = []
-    serveFixture(on, HOME, { 'proj/.claude/settings.json': { base64: btoa('{}') } })
+    serveFixture(on, HOME, { 'proj/.claude/settings.json': { base64: btoa('{}') }, 'proj/cfg': { link: '.claude' } })
     on('tool.call', { tool: 'Write' }, ($, e) => {
       written.push(e.file_path)
       return { result: { type: 'update', filePath: e.file_path, content: e.content, structuredPatch: [], originalFile: null } } as never
@@ -1216,8 +1219,8 @@ describe('Claude changing settings', () => {
       await pane.press({ key: 'install' })
       await pane.unmount()
     }
-    // Forgetting one file's approval leaves the other's.
-    expect((await $.command.run(typed('guard', `forget ${PROJECT}/.claude/settings.json`))).text).toContain('forgot 1 decision')
+    // Forgetting one file's approval, by a name a link gives it, leaves the other's.
+    expect((await $.command.run(typed('guard', `forget ${PROJECT}/cfg/settings.json`))).text).toContain('forgot 1 decision')
     expect((await $.tool.call(write(`${PROJECT}/.claude/settings.json`, widened))).deny).toContain('held this change')
     expect((await $.tool.call(write(`${PROJECT}/.claude/settings.local.json`, widened))).deny).toBeUndefined()
   })
