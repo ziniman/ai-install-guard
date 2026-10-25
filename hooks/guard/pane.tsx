@@ -190,7 +190,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
   // the counts say when more lies below it. The rows are counted without
   // wrapping, so the note may go a row early, never stay when nothing is left.
   const shownGroups = GROUPS.filter(group => rowsOf(group.id).length > 0)
-  const leastRows = verdict === undefined ? 0 : treeRows(view, header !== '', shownGroups.map(group => rowsOf(group.id).length))
+  const leastRows = verdict === undefined ? 0 : treeRows(view, header !== '', offersBadge, shownGroups.map(group => rowsOf(group.id).length))
   const moreBelow = leastRows > e.props.scroll.offset + e.props.scroll.bodyRows
   // The decision sits right under the verdict, above the counts and the
   // rows, so a long report never pushes Install and Reject out of sight.
@@ -346,15 +346,17 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
 /**
  * The fewest rows the pane's tree takes once there is a verdict, each line
  * counted as one row: the title, header and held command, the verdict box,
- * the buttons, the counts and their note, and each group of check rows.
+ * the buttons (or the decision and its badge row), the counts and their
+ * note, and each group of check rows.
  */
-function treeRows(view: GuardView, hasHeader: boolean, groupSizes: readonly number[]): number {
+export function treeRows(view: GuardView, hasHeader: boolean, offersBadge: boolean, groupSizes: readonly number[]): number {
   const verdict = view.verdict
   if (verdict === undefined) return 0
   const top = 1 + (hasHeader ? 1 : 0) + (view.request === undefined ? 0 : 1)
   // A margin, the border's two rows, the verdict, its reasons and the It can line.
   const box = 1 + 2 + 1 + verdict.reasons.length + ((verdict.access ?? []).length > 0 ? 1 : 0)
-  const decision = view.decision !== undefined ? 1 : view.confirming ? 3 : view.deciding === true ? 0 : 2
+  // Decided, the line saying so, and the Copy badge row under it with its margin when one is offered.
+  const decision = view.decision !== undefined ? 1 + (offersBadge ? 2 : 0) : view.confirming ? 3 : view.deciding === true ? 0 : 2
   const counts = 1 + 1 + (view.rows.length > 0 ? 1 : 0)
   const groups = groupSizes.reduce((sum, size) => sum + 2 + size, 0)
   return top + box + decision + counts + groups
