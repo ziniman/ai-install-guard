@@ -26,6 +26,7 @@ type Marketplace = { name: string; installLocation?: string }
 /** The target an install request names. A lookup that fails says why, as an unverifiable target. */
 export async function targetOf(host: Host, request: InstallRequest): Promise<Target> {
   try {
+    if (request.kind === 'mcp') return { kind: 'unverifiable', reason: 'an MCP server is checked from its configuration, not looked up' }
     return request.kind === 'marketplace' ? await marketplaceTarget(host, request.source) : await pluginTarget(host, request)
   } catch (error) {
     return { kind: 'unverifiable', reason: error instanceof Error ? error.message : String(error) }

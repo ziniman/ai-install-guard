@@ -8,7 +8,8 @@ import type { EngineInterface } from 'claude-code'
 import type { GuardRequest } from '../../types'
 import { pinnedDecision } from '../guard/decisions'
 import { takePass } from '../guard/passes'
-import { showScan, showUnverified, type Shown } from '../guard/run'
+import { showScan, showUnverified, type ScanHow, type Shown } from '../guard/run'
+import { row, type CheckResult } from '../scan/checks/types'
 import { sourceRoot } from '../guard/view'
 import { modHost } from '../mod-host'
 import { resolvePin } from '../scan/remote'
@@ -36,6 +37,8 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
     return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed, { why: reading.reason, toClaude: true })
   }
   const name = nameOf(reading.request)
+  // An MCP server has no repository to fetch: its configuration is what is checked.
+  if (reading.request.kind === 'mcp') return afterScan(request, name, await showScan($, name, mcpCandidate(reading.request), options))
   const host = modHost($)
   const target = await targetOf(host, reading.request)
   switch (target.kind) {
@@ -70,7 +73,32 @@ export const BROWSE_NOTE = 'AI Install Guard: plugins picked from this menu are 
 /** The name a decision is kept under, so /guard forget finds it: the plugin as typed, or the marketplace's source. */
 function nameOf(request: InstallRequest): string {
   if (request.kind === 'marketplace') return safeLine(request.source)
+  if (request.kind === 'mcp') return `MCP server ${safeLine(request.name)}`
   return safeLine(request.marketplace === undefined ? request.plugin : `${request.plugin}@${request.marketplace}`)
+}
+
+/** Where the configuration of an MCP server being added is laid out to be scanned. */
+const MCP_ROOT = '/ai-install-guard/mcp-server'
+
+/**
+ * The files an MCP server being added is scanned as: an `.mcp.json` holding
+ * that one server, so the scan's MCP checks judge it as they would in a
+ * plugin. The same command builds the same files, so an approval pins to it.
+ * A note says what the scan cannot read: the program it starts, or the
+ * server at the other end of its address.
+ */
+function mcpCandidate(request: Extract<InstallRequest, { kind: 'mcp' }>): ScanHow {
+  // Where it is kept is part of what is approved: local (the default), project (shared through .mcp.json) or user (every project).
+  const config = JSON.stringify({ scope: request.scope ?? 'local', mcpServers: { [request.name]: request.server } }, null, 2)
+  const remote = typeof request.server.url === 'string'
+  const note = remote ? 'the server at this address runs elsewhere, so only how Claude connects to it was checked' : 'the program it starts was not read, only how Claude Code starts it'
+  const notes: CheckResult[] = [
+    row(
+      { id: 'mcp.source', group: 'mcp', title: "The server's own code", advice: 'An MCP server added by a command has no files here to read. A package it starts is checked by name with the outside lookups, when they are on.' },
+      [{ file: '.mcp.json', excerpt: note, status: 'info' }],
+    ),
+  ]
+  return { files: { '.mcp.json': `${config}\n` }, root: MCP_ROOT, notes, kind: 'MCP server' }
 }
 
 /** How a held install that could not be checked is described. */

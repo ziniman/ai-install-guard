@@ -4,11 +4,13 @@
 
 import { safeLine } from '../scan/safe-text'
 
-/** One thing to add to Claude Code: a plugin from a marketplace, or a marketplace. */
+/** One thing to add to Claude Code: a plugin from a marketplace, a marketplace, or an MCP server. */
 export type InstallRequest =
   /** `marketplaceSource` is the marketplace `--marketplace` adds first: a repository or a folder. */
   | { kind: 'plugin'; verb: 'install' | 'update'; plugin: string; marketplace?: string; marketplaceSource?: string }
   | { kind: 'marketplace'; source: string }
+  /** `server` is its configuration as `.mcp.json` holds it: a command to start, or an address. */
+  | { kind: 'mcp'; name: string; scope?: string; server: Record<string, unknown> }
 
 export type Reading =
   /** Not an install, or Claude Code's own menu to pick one from, which the guard cannot hold yet. */
@@ -71,7 +73,7 @@ function readShell(command: string): Reading {
     if (others > 0) return { kind: 'unreadable', label: only.label, reason: `the command runs more than the install; run ${only.label} as a command of its own, so approving it approves only the install` }
     // The guard cannot see the shell's current folder, so a source named
     // relative to it could be another folder than the one the guard scans.
-    const source = only.request.kind === 'marketplace' ? only.request.source : only.request.marketplaceSource
+    const source = only.request.kind === 'marketplace' ? only.request.source : only.request.kind === 'plugin' ? only.request.marketplaceSource : undefined
     if (source !== undefined && !/^(?:https:\/\/|\/|~\/)/i.test(source)) {
       return {
         kind: 'unreadable',
@@ -85,8 +87,8 @@ function readShell(command: string): Reading {
   if (opaque) {
     return { kind: 'unreadable', label: 'a command built as it runs', reason: 'it runs a command only known as it runs (as in bash -c "$CMD" or eval "$X"), so the guard cannot tell whether it installs anything; run the command itself instead' }
   }
-  if (unseen && (MAY_INSTALL.test(command) || (CLAUDE_WORD.test(command) && /\bplugins?\b/i.test(command)))) {
-    return { kind: 'unreadable', label: 'a claude plugin command', reason: 'part of the command is only known as it runs, so the guard cannot tell what it installs; run claude plugin install <name>@<marketplace> as a plain command' }
+  if (unseen && (MAY_INSTALL.test(command) || (CLAUDE_WORD.test(command) && /\b(?:plugins?|mcp)\b/i.test(command)))) {
+    return { kind: 'unreadable', label: 'a claude command', reason: 'part of the command is only known as it runs, so the guard cannot tell what it installs; run claude plugin install or claude mcp add as a plain command' }
   }
   return PASS
 }
@@ -95,13 +97,13 @@ function readShell(command: string): Reading {
  * The words of a plugin install however they are joined: by spaces, quotes or
  * the commas of a list in another language (`['plugin', 'install']`).
  */
-const MAY_INSTALL = /\bplugins?\b[^\w\n]{1,8}(?:install|i|update|marketplace)\b/i
+const MAY_INSTALL = /\bplugins?\b[^\w\n]{1,8}(?:install|i|update|marketplace)\b|\bmcp\b[^\w\n]{1,8}add(?:-json|-from-claude-desktop)?\b/i
 
 /** The `claude` command's names as words of their own, not part of a path such as `~/.claude/`. */
-const CLAUDE_WORD = /(?<![\w./-])claude(?:-code|\.exe)?(?![\w./-])/i
+const CLAUDE_WORD = /(?<![\w./-])claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?(?![\w./-])/i
 
-/** Names the `claude` command goes by. */
-const CLAUDE = new Set(['claude', 'claude.exe', 'claude-code'])
+/** Names the `claude` command goes by, Windows' launchers included. */
+const CLAUDE = new Set(['claude', 'claude.exe', 'claude.cmd', 'claude.bat', 'claude.ps1', 'claude-code'])
 
 /** Programs that run their `-c` argument as a script. */
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'])
@@ -270,13 +272,14 @@ function programAt(words: readonly string[]): { index: number; scripts: string[]
   return { index, scripts, fromInput }
 }
 
-/** Whether `claude plugin …` starts at `index`. */
+/** Whether `claude plugin …` or `claude mcp …` starts at `index`. */
 function isClaudePlugin(words: readonly string[], index: number): boolean {
-  return CLAUDE.has(programName(words[index])) && /^plugins?$/i.test(words[index + 1] ?? '')
+  return CLAUDE.has(programName(words[index])) && /^(?:plugins?|mcp)$/i.test(words[index + 1] ?? '')
 }
 
-/** The install a `claude plugin` command at `index` asks for, if it is one. */
+/** The install a `claude plugin` or `claude mcp` command at `index` asks for, if it is one. */
 function claudePlugin(words: readonly string[], index: number): Reading | undefined {
+  if (/^mcp$/i.test(words[index + 1] ?? '')) return claudeMcp(words.slice(index + 2))
   const rest = words.slice(index + 2)
   const sub = rest[0]?.toLowerCase()
   if (sub === 'install' || sub === 'i') return readInstall(rest.slice(1), 'install', 'claude plugin install')
@@ -314,15 +317,17 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     // xargs fills in words from its input, which the guard does not see; for a quiet program that is only text.
     if (fromInput && !(QUIET.has(program) && !writesAnyway(program, words.slice(index + 1)))) out.unseen = true
     if (CLAUDE.has(program)) {
+      // Every `plugin` or `mcp` word is a possible subcommand: one may be a global
+      // option's value (`claude --settings mcp mcp add …`), so each is tried.
+      const places = words.flatMap((item, place) => (place > index && /^(?:plugins?|mcp)$/i.test(item) ? [place] : []))
+      const after = (at: number, offset: number): string => words[at + offset] ?? ''
       // `claude` asked to do something only known as it runs could be installing.
-      const at = words.findIndex((item, place) => place > index && /^plugins?$/i.test(item))
-      const next = (offset: number): string => words[at + offset] ?? ''
-      if (isDynamic(words[index + 1] ?? '') || (at !== -1 && (isDynamic(next(1)) || (/^marketplace$/i.test(next(1)) && isDynamic(next(2)))))) {
-        found.push({ kind: 'unreadable', label: 'a claude command', reason: 'what it asks claude to do is only known as it runs; run claude plugin install <name>@<marketplace> as a plain command' })
+      if (isDynamic(words[index + 1] ?? '') || places.some(at => isDynamic(after(at, 1)) || (/^marketplace$/i.test(after(at, 1)) && isDynamic(after(at, 2))))) {
+        found.push({ kind: 'unreadable', label: 'a claude command', reason: 'what it asks claude to do is only known as it runs; run claude plugin install or claude mcp add as a plain command' })
         continue
       }
-      // `claude plugin …`, also after global options (`claude --debug plugin install …`).
-      const reading = at === -1 ? undefined : claudePlugin(words, at - 1)
+      // `claude plugin …` or `claude mcp …`, also after global options (`claude --debug plugin install …`).
+      const reading = places.map(at => claudePlugin(words, at - 1)).find(item => item !== undefined)
       if (reading !== undefined) found.push(reading)
       else out.others += 1
       continue
@@ -419,6 +424,129 @@ function readMarketplaceAdd(words: readonly string[], command: string): Reading 
   if (source === undefined) return { kind: 'unreadable', label, reason: 'it names no source before --sparse' }
   if (options.positionals.length > 1) return { kind: 'unreadable', label, reason: 'it names more than one source' }
   return { kind: 'install', request: { kind: 'marketplace', source }, label }
+}
+
+/** An MCP server's name as `claude mcp add` takes it. */
+const MCP_NAME = /^[A-Za-z0-9][\w.-]{0,63}$/
+
+/** The MCP transports Claude Code knows: a command it starts, or an address it connects to. */
+const MCP_TRANSPORTS = new Set(['stdio', 'http', 'sse'])
+
+/**
+ * `claude mcp …`: `add`, `add-json` and `add-from-claude-desktop` add
+ * servers; `list`, `get`, `remove` and the rest add nothing.
+ */
+function claudeMcp(rest: readonly string[]): Reading | undefined {
+  const sub = rest[0]?.toLowerCase()
+  if (sub === 'add') return readMcpAdd(rest.slice(1))
+  if (sub === 'add-json') return readMcpAddJson(rest.slice(1))
+  if (sub === 'add-from-claude-desktop') {
+    return { kind: 'unreadable', label: 'claude mcp add-from-claude-desktop', reason: "it copies every MCP server in Claude Desktop's settings, which the guard does not read; add each one with claude mcp add, so each is scanned" }
+  }
+  return undefined
+}
+
+/**
+ * `claude mcp add [options] <name> <command or address> [args…]`. The
+ * server's own arguments follow `--`; an option among them without `--` could
+ * be read either way, so it is held rather than guessed at. `-e`/`--env` and
+ * `-H`/`--header` take every word up to the next option, as Claude Code reads them.
+ */
+function readMcpAdd(words: readonly string[]): Reading {
+  const positionals: string[] = []
+  const env: Record<string, string> = {}
+  const headers: Record<string, string> = {}
+  let scope: string | undefined
+  let transport: string | undefined
+  let problem: string | undefined
+  for (let index = 0; index < words.length && problem === undefined; index += 1) {
+    const word = words[index] as string
+    if (word === '--') {
+      positionals.push(...words.slice(index + 1))
+      break
+    }
+    if (!word.startsWith('-') || word === '-') {
+      positionals.push(word)
+      continue
+    }
+    // After a command the server starts, an option could be the server's or this
+    // command's. A server at an address takes no arguments, so after its address
+    // an option is this command's (`… github https://… -H "Authorization: …"`).
+    const remote = (transport ?? (/^https?:\/\//i.test(positionals[1] ?? '') ? 'http' : 'stdio')) !== 'stdio'
+    if (positionals.length >= 2 && !remote) {
+      problem = `it is unclear whether ${safeLine(word)} is for the server or for claude mcp add; put -- before the server's command and its arguments`
+      break
+    }
+    const equals = word.indexOf('=')
+    const name = equals === -1 ? word : word.slice(0, equals)
+    const inline = equals === -1 ? undefined : word.slice(equals + 1)
+    if (name === '-e' || name === '--env' || name === '-H' || name === '--header') {
+      const values = inline === undefined ? [] : [inline]
+      while (index + 1 < words.length && !(words[index + 1] as string).startsWith('-')) values.push(words[(index += 1)] as string)
+      if (values.length === 0) problem = `${name} is given no value`
+      for (const value of values) {
+        if (name === '-e' || name === '--env') {
+          const pair = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(value)
+          if (pair === null) problem = `"${safeLine(value)}" is not NAME=value`
+          else env[pair[1] as string] = pair[2] as string
+        } else {
+          const colon = value.indexOf(':')
+          if (colon <= 0) problem = `"${safeLine(value)}" is not a header (Name: value)`
+          else headers[value.slice(0, colon).trim()] = value.slice(colon + 1).trim()
+        }
+      }
+    } else if (name === '-s' || name === '--scope' || name === '-t' || name === '--transport') {
+      const value = inline ?? words[(index += 1)]
+      if (value === undefined) problem = `${name} is given no value`
+      else if (name === '-s' || name === '--scope') scope = value
+      else transport = value.toLowerCase()
+    } else {
+      problem = `the guard does not know the option ${safeLine(name)}`
+    }
+  }
+  const [name, target, ...args] = positionals
+  const label = `claude mcp add${name === undefined ? '' : ` ${safeLine(name)}`}`
+  if (problem !== undefined) return { kind: 'unreadable', label, reason: problem }
+  // What the shell fills in as the command runs would make the server added differ from the one scanned.
+  // A variable's value (`-e TOKEN=$GITHUB_TOKEN`, a header's value) is data, the usual way to pass a secret.
+  const decided = [...positionals, ...Object.keys(env), ...Object.keys(headers), scope ?? '', transport ?? '']
+  if (decided.some(isDynamic)) return { kind: 'unreadable', label, reason: 'part of the server it adds (its name, command, arguments, address or scope) is only known as the command runs, so the guard cannot check what is added; write it out in full' }
+  if (name === undefined || target === undefined) return { kind: 'unreadable', label, reason: 'it names no server, or no command or address to add' }
+  if (!MCP_NAME.test(name)) return { kind: 'unreadable', label, reason: `"${safeLine(name)}" is not a server name the guard can keep` }
+  // An address given with no transport is checked as the remote server it names.
+  const kind = transport ?? (/^https?:\/\//i.test(target) ? 'http' : 'stdio')
+  if (!MCP_TRANSPORTS.has(kind)) return { kind: 'unreadable', label, reason: `the guard does not know the transport ${safeLine(kind)}` }
+  if (kind === 'stdio') {
+    if (Object.keys(headers).length > 0) return { kind: 'unreadable', label, reason: 'it gives headers to a server started as a command' }
+    const server = { command: target, args, ...(Object.keys(env).length === 0 ? {} : { env }) }
+    return { kind: 'install', request: { kind: 'mcp', name, ...(scope === undefined ? {} : { scope }), server }, label }
+  }
+  if (args.length > 0) return { kind: 'unreadable', label, reason: 'it gives arguments to a server reached at an address' }
+  const server = { type: kind, url: target, ...(Object.keys(headers).length === 0 ? {} : { headers }), ...(Object.keys(env).length === 0 ? {} : { env }) }
+  return { kind: 'install', request: { kind: 'mcp', name, ...(scope === undefined ? {} : { scope }), server }, label }
+}
+
+/** `claude mcp add-json [options] <name> '<json>'`: the server's configuration given whole. */
+function readMcpAddJson(words: readonly string[]): Reading {
+  const options = readOptions(words, new Set(['--scope', '-s']), new Set(['--client-secret']))
+  const [name, json] = options.positionals
+  const label = `claude mcp add-json${name === undefined ? '' : ` ${safeLine(name)}`}`
+  if (options.unknown !== undefined) return { kind: 'unreadable', label, reason: `the guard does not know the option ${safeLine(options.unknown)}` }
+  // JSON's own brackets, braces and commas are not the shell's: in its argument only an expansion counts.
+  if ([name ?? '', options.values.get('--scope') ?? ''].some(isDynamic) || /[$`]/.test(json ?? '')) {
+    return { kind: 'unreadable', label, reason: 'part of the server it adds is only known as the command runs, so the guard cannot check what is added; write it out in full' }
+  }
+  if (name === undefined || json === undefined || options.positionals.length > 2) return { kind: 'unreadable', label, reason: 'it needs a server name and its configuration as one JSON argument' }
+  if (!MCP_NAME.test(name)) return { kind: 'unreadable', label, reason: `"${safeLine(name)}" is not a server name the guard can keep` }
+  let server: unknown
+  try {
+    server = JSON.parse(json)
+  } catch {
+    return { kind: 'unreadable', label, reason: 'its configuration is not valid JSON' }
+  }
+  if (typeof server !== 'object' || server === null || Array.isArray(server)) return { kind: 'unreadable', label, reason: 'its configuration is not a JSON object' }
+  const scope = options.values.get('--scope')
+  return { kind: 'install', request: { kind: 'mcp', name, ...(scope === undefined ? {} : { scope }), server: server as Record<string, unknown> }, label }
 }
 
 type Options = { positionals: string[]; values: Map<string, string>; flags: Set<string>; unknown?: string }
