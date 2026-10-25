@@ -4,6 +4,14 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.5.0 &nbsp;·&nbsp; 2026-10-25
+
+**MCP servers** - When Claude runs `claude mcp add` or `claude mcp add-json`, the guard reads the server it would add (its command and arguments or its address, environment variables and headers), checks that configuration as it checks a plugin's MCP servers, and refuses the command until you approve that exact configuration in the pane. `claude mcp add-from-claude-desktop` is held as Could not verify. The server's own code is not read yet, only how it starts or where it connects
+
+**`pane`** - The header names an MCP server as such, with "An" before it
+
+---
+
 ## v0.4.4 &nbsp;·&nbsp; 2026-10-25
 
 **`/guard badge`** - A badge names the scanned content, a hash of every file with the README read without its AI Install Guard badge, not a commit. Committing a badge makes a new commit, so a badge naming a commit could never be right for the commit that held it; this one is right in the commit that adds it and stays right until anything else changes. Badges made before keep counting as the commit or tree they name
