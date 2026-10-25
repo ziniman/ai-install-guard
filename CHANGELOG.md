@@ -8,7 +8,7 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 **`pane`** - Install, Reject and the other buttons sit right under the verdict instead of after every check, so acting on a verdict never needs a scroll, and the button row wraps instead of running off a narrow pane's edge
 
-**`plugin metadata`** - The plugin, marketplace and npm descriptions say what sets the guard apart: it is a mod that runs in the background and scans every install before it happens, with nothing to run first. The chat skill's description names the current verdicts
+**`plugin metadata`** - The plugin, marketplace and npm descriptions say what sets the guard apart: it is a mod that runs in the background and scans every `/plugin install` and marketplace add, yours or Claude's, before it happens, with nothing to run first. The chat skill's description names all four current verdicts
 
 ---
 

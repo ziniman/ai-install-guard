@@ -4,7 +4,7 @@
 
 # AI Install Guard
 
-**A Claude Code mod that runs in the background. Install it once, and every plugin and marketplace you add is scanned before it installs: nothing to run, nothing to remember.**
+**A Claude Code mod that runs in the background. Install it once, and every `/plugin install` and marketplace you add, yours or Claude's, is scanned before anything installs: nothing to run, nothing to remember.**
 
 [![npm version](https://img.shields.io/npm/v/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
 [![npm downloads](https://img.shields.io/npm/dm/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
@@ -24,7 +24,7 @@ Checking what you install is usually a separate step. You read the repository, p
 
 AI Install Guard works the other way round. It is a mod, so it lives inside Claude Code and runs in every session on its own. When you run `/plugin install`, add a marketplace, or Claude runs `claude plugin install` itself, the guard stops the install, fetches the exact commit that would be installed, reads every file without running any of it, and holds the install until you press **Install** or **Reject**.
 
-- **Automatic.** From the moment it is installed it is in the install path. There is no command to run first.
+- **Automatic.** From the moment it is installed it is in the install path. There is no command to run first. (A plugin picked from the `/plugin` menu is not held yet; type `/plugin install` instead. See [Where it steps in](#where-it-steps-in).)
 - **It catches Claude too.** Installs Claude starts by itself wait for your decision, the same as the ones you type.
 - **Pinned.** The verdict belongs to one commit and content hash, and only that version installs.
 - **Local and open.** It runs in your own session with no account or server, and every check is in this repository.
