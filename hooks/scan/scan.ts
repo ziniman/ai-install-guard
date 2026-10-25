@@ -100,7 +100,7 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
       }
       // A listed plugin's own README badge is judged against its own rows.
       const nestedCtx = buildContext(nested)
-      const nestedVersion = { treeHash: nested.inventory.treeHash, badgeHash: await badgeHash(nested.inventory.entries, nestedCtx.readme) }
+      const nestedVersion = { treeHash: nested.inventory.treeHash, badgeHash: await badgeHash(nested.inventory.entries, readmeBytes(nested, nestedCtx)) }
       const nestedResults = withBadgeClaim(await checksFor(host, nestedCtx, options), badgeClaim(nestedCtx.readme), nestedVersion)
       results = mergeResults(results, prefixed(nestedResults, source.path))
     }
@@ -124,9 +124,15 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
     results = [...results, ...extra]
   }
   const claim = badgeClaim(ctx.readme)
-  const contentPin = await badgeHash(tree.inventory.entries, ctx.readme)
+  const contentPin = await badgeHash(tree.inventory.entries, readmeBytes(tree, ctx))
   results = withBadgeClaim(sortResults(results), claim, { treeHash: tree.inventory.treeHash, badgeHash: contentPin })
   return { target, kind: ctx.kind, inventory: tree.inventory, badgeHash: contentPin, results, verdict: decide(results), ...(claim === undefined ? {} : { badgeClaim: claim }) }
+}
+
+/** The README the badge check reads, as the bytes the scan read. */
+function readmeBytes(tree: ScannedTree, ctx: ScanContext): { path: string; bytes: Uint8Array } | undefined {
+  const bytes = ctx.readme === undefined ? undefined : tree.contents.get(ctx.readme.path)
+  return ctx.readme === undefined || bytes === undefined ? undefined : { path: ctx.readme.path, bytes }
 }
 
 /**

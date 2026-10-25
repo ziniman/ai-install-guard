@@ -80,7 +80,7 @@ function judgeSource(source: unknown): { what: string; status: 'pass' | 'info' |
 }
 
 /** An AI Install Guard badge's image address, whatever it says. */
-const BADGE_URL = String.raw`https?:\/\/img\.shields\.io\/badge\/AI(?:_|%20| )Install(?:_|%20| )Guard-[^)\s"'<>]{0,400}`
+const BADGE_URL = String.raw`https?:\/\/img\.shields\.io\/badge\/AI(?:_|%20| )Install(?:_|%20| )Guard-[^) \t\r\n"'<>]{0,400}`
 
 /**
  * Every way a README carries the badge: a linked image (what /guard badge
@@ -89,9 +89,9 @@ const BADGE_URL = String.raw`https?:\/\/img\.shields\.io\/badge\/AI(?:_|%20| )In
  */
 const BADGE_CONSTRUCT = new RegExp(
   [
-    String.raw`\[\s*!\[[^\]\n]{0,500}\]\(\s*${BADGE_URL}[^)\n]{0,600}\)\s*\]\([^)\n]{0,1000}\)`,
-    String.raw`!\[[^\]\n]{0,500}\]\(\s*${BADGE_URL}[^)\n]{0,600}\)`,
-    String.raw`<a\b[^>]{0,1000}>\s*<img\b[^>]{0,1000}?${BADGE_URL}[^>]{0,1000}>\s*<\/a\s*>`,
+    String.raw`\[[ \t\r\n]*!\[[^\]\n]{0,500}\]\([ \t]*${BADGE_URL}[^)\n]{0,600}\)[ \t\r\n]*\]\([^)\n]{0,1000}\)`,
+    String.raw`!\[[^\]\n]{0,500}\]\([ \t]*${BADGE_URL}[^)\n]{0,600}\)`,
+    String.raw`<a\b[^>]{0,1000}>[ \t\r\n]*<img\b[^>]{0,1000}?${BADGE_URL}[^>]{0,1000}>[ \t\r\n]*<\/a[ \t\r\n]*>`,
     String.raw`<img\b[^>]{0,1000}?${BADGE_URL}[^>]{0,1000}>`,
     String.raw`^[ \t]{0,3}\[[^\]\n]{1,200}\]:[ \t]*${BADGE_URL}[^\n]{0,600}$`,
   ].join('|'),
@@ -100,22 +100,38 @@ const BADGE_CONSTRUCT = new RegExp(
 
 /**
  * A README as the badge hash reads it: every AI Install Guard badge taken
- * out, then every run of whitespace made one space. Adding a badge, moving it
- * or swapping it for a newer one leaves this unchanged; any other edit does not.
+ * out, then every run of ASCII whitespace made one space. Adding a badge,
+ * moving it or swapping it for a newer one leaves this unchanged; any other
+ * edit does not. Only ASCII is touched, so it can read a README byte by byte.
  */
 export function withoutBadges(text: string): string {
-  return text.replace(BADGE_CONSTRUCT, ' ').replace(/\s+/g, ' ').trim()
+  return text.replace(BADGE_CONSTRUCT, ' ').replace(/[ \t\r\n\f\v]+/g, ' ').trim()
 }
+
+const README_NAME = /^readme(?:\.md|\.markdown|\.txt)?$/i
 
 /**
  * The hash a README badge names: the tree hash, with the README counted
  * without its badges. A badge naming a commit can never match the commit that
  * adds it; this one names the content and stays right in that commit, until
  * anything else changes.
+ *
+ * The README is read from its bytes, one character each, so every byte still
+ * counts (a lossy UTF-8 reading would not). A folder with no README counts as
+ * one with an empty README.md, so a README made to hold only the badge keeps it right.
  */
-export async function badgeHash(entries: readonly InventoryEntry[], readme: { path: string; text: string } | undefined): Promise<string> {
-  if (readme === undefined) return treeHash(entries)
-  return treeHash(entries, new Map([[readme.path, await sha256Hex(withoutBadges(readme.text))]]))
+export async function badgeHash(entries: readonly InventoryEntry[], readme: { path: string; bytes: Uint8Array } | undefined): Promise<string> {
+  if (readme !== undefined) return treeHash(entries, new Map([[readme.path, await sha256Hex(withoutBadges(byteString(readme.bytes)))]]))
+  if (entries.some(entry => !entry.path.includes('/') && README_NAME.test(entry.path))) return treeHash(entries)
+  const empty: InventoryEntry = { kind: 'file', path: 'README.md', size: 0, sha256: await sha256Hex(''), isText: true }
+  return treeHash([...entries, empty])
+}
+
+/** Bytes as a string of one character each (U+0000 to U+00FF): nothing merged, nothing lost. */
+function byteString(bytes: Uint8Array): string {
+  let out = ''
+  for (let start = 0; start < bytes.length; start += 8192) out += String.fromCharCode(...bytes.subarray(start, start + 8192))
+  return out
 }
 
 /** What a README's AI Install Guard badge claims, read from its shields.io image. */

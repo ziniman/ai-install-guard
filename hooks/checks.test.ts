@@ -2037,6 +2037,23 @@ describe('a badge pinned to content, so it is right in the commit that adds it',
     expect(badgeSummary(changed)).toContain('for another version')
   })
 
+  test('with no README yet, a README made to hold only the badge keeps it right', async () => {
+    const { 'README.md': _readme, ...files } = { ...fixture('clean-plugin') }
+    const first = await scanFiles(files)
+    const made = badgeFor(viewOf(first, 'approve'))
+    if ('refusal' in made) throw new Error(made.refusal)
+    const second = await scanFiles({ ...files, 'README.md': b64(`${made.markdown}\n`) })
+    expect(second.badgeHash).toBe(first.badgeHash)
+    expect(badgeSummary(second)).toContain('for this version')
+  })
+
+  test('every byte of the README counts, even bytes that are not valid UTF-8', async () => {
+    const bytes = (last: number) => ({ base64: btoa(String.fromCharCode(...new TextEncoder().encode('# notes\n\nHello '), last, 0x0a)) })
+    const one = await scanFiles({ ...fixture('clean-plugin'), 'README.md': bytes(0x80) })
+    const other = await scanFiles({ ...fixture('clean-plugin'), 'README.md': bytes(0x81) })
+    expect(one.badgeHash).not.toBe(other.badgeHash)
+  })
+
   test('a badge claiming more than this version earns is still a warning, whatever it names', async () => {
     const files = { ...fixture('obfuscated-blob') }
     const report = await scanFiles(files)
