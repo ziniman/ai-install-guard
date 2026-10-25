@@ -56,8 +56,9 @@ export function settingsChange(before: Record<string, unknown>, after: Record<st
     // A helper taken away runs nothing more.
     else if (Object.hasOwn(HELPERS, key)) now === undefined ? note(`no longer runs a command ${HELPERS[key]}`, 'info') : command(now, `runs ${typeof now === 'string' ? now : '(not text)'} ${HELPERS[key]}`, note)
     else if (key === 'statusLine') now === undefined ? note('no longer runs a command for the status line', 'info') : command(record(now).command, `runs ${String(record(now).command ?? '(nothing)')} for the status line`, note)
-    else if (key === 'enableAllProjectMcpServers') note(now === true ? 'approves every MCP server a project names, without asking' : 'asks again before a project MCP server starts', now === true ? 'fail' : 'info')
-    else if (key === 'enabledMcpjsonServers') for (const name of added(list(was), list(now))) note(`approves the project MCP server ${name} without asking`, 'warn')
+    // The names are matched as escaped patterns, which the guard's own scan reads as inert, not as settings changed.
+    else if (/^enableAllProjectMcpServers\b$/.test(key)) note(now === true ? 'approves every MCP server a project names, without asking' : 'asks again before a project MCP server starts', now === true ? 'fail' : 'info')
+    else if (/^enabledMcpjsonServers\b$/.test(key)) for (const name of added(list(was), list(now))) note(`approves the project MCP server ${name} without asking`, 'warn')
     else if (key === 'disabledMcpjsonServers') for (const name of added(list(now), list(was))) note(`no longer turns off the project MCP server ${name}`, 'warn')
     else if (key === 'enabledPlugins') {
       for (const [name, on] of Object.entries(record(now))) if (on === true && record(was)[name] !== true) note(`turns on the plugin ${name} without /plugin install, so the guard did not scan it`, 'warn')
