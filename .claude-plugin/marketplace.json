@@ -1,6 +1,6 @@
 {
   "name": "ai-install-guard",
-  "description": "A pre-install security gate for Claude Code.",
+  "description": "A Claude Code mod that scans every install automatically, before it happens.",
   "owner": {
     "name": "Boaz Ziniman",
     "email": "ziniman@gmail.com",
@@ -10,8 +10,8 @@
     {
       "name": "ai-install-guard",
       "source": "./",
-      "version": "0.4.1",
-      "description": "Scans plugins, mods, skills and MCP servers without running them, shows a PASS / WARN / FAIL verdict, and installs nothing until you approve.",
+      "version": "0.4.2",
+      "description": "A Claude Code mod that runs in the background: every /plugin install and marketplace you add, yours or Claude's, is scanned before it happens, without running any of it, and nothing installs until you approve.",
       "category": "security",
       "keywords": [
         "security",

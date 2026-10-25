@@ -4,6 +4,14 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.4.2 &nbsp;·&nbsp; 2026-10-25
+
+**`pane`** - Install, Reject and the other buttons sit right under the verdict instead of after every check, so acting on a verdict never needs a scroll, and the button row wraps instead of running off a narrow pane's edge
+
+**`plugin metadata`** - The plugin, marketplace and npm descriptions say what sets the guard apart: it is a mod that runs in the background and scans every `/plugin install` and marketplace add, yours or Claude's, before it happens, with nothing to run first. The chat skill's description names all four current verdicts
+
+---
+
 ## v0.4.1 &nbsp;·&nbsp; 2026-10-25
 
 **`prompts`** - Text that writes about an attack is no longer read as one. A quoted "ignore previous instructions", "data exfiltration" in a list of what a skill must not do, a `<system>` placeholder with no closing tag, a key named in a `.env` example, a credential file named but not read, an author's note in an HTML comment, `npx tsc` and a command named like `/help` (Claude Code's own keeps the name) are notes. A phrase that only hides something ("silently", "without telling the user") counts when its paragraph names an address, a network tool or a credential. A hidden comment that does, or tells the model to keep quiet, is still worth a look, and a key sent anywhere but its own service still fails. Homebrew's and other well-known installers piped into a shell are worth a look; any other download and run still fails. Every match is judged before any is dropped, so mentions placed first cannot hide a real finding, and the quotes around a frontmatter value do not make it a mention

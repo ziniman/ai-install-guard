@@ -1,6 +1,6 @@
 ---
 name: ai-install-guard
-description: Scans a Claude Code plugin, Agent Skill, MCP server, mod or marketplace for security risks without running any of its code, and gives one of four verdicts, from Safe to install to Do not install, with file and line evidence. Use when someone asks whether a plugin, skill, MCP server or repository is safe to install or use, attaches a .zip, .skill or .plugin file of one, or asks to vet, audit or review one before adding it.
+description: Scans a Claude Code plugin, Agent Skill, MCP server, mod or marketplace for security risks without running any of its code, and gives one of four verdicts (No red flags, Worth a look, Do not install or Could not verify) with file and line evidence. Use when someone asks whether a plugin, skill, MCP server or repository is safe to install or use, attaches a .zip, .skill or .plugin file of one, or asks to vet, audit or review one before adding it.
 license: Apache-2.0
 ---
 

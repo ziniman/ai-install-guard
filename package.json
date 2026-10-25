@@ -1,7 +1,7 @@
 {
   "name": "ai-install-guard",
-  "version": "0.4.1",
-  "description": "A pre-install security gate for Claude Code: scans plugins, mods, skills and MCP servers without running them, and installs nothing until you approve.",
+  "version": "0.4.2",
+  "description": "A Claude Code mod that runs in the background: every /plugin install and marketplace you add, yours or Claude's, is scanned before it happens, without running any of it, and nothing installs until you approve.",
   "scripts": {
     "build:fixtures": "node scripts/build-fixtures.js",
     "build:skill": "node scripts/build-skill.js",
