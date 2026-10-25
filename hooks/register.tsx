@@ -1,9 +1,10 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
-import { BROWSE_NOTE, judge, judgeWrite } from './gate/gate'
+import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
+import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
 import { readPluginArgs, readShellCommand } from './gate/requests'
-import { keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
+import { claudeConfigDir, keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
 import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
 import { forgetDecisions, loadDecisions, loadLastView, loadReport } from './guard/decisions'
@@ -38,7 +39,10 @@ export const register: Register = (on, options) => {
   // Off unless you turn it on: the lookups send package and plugin names out.
   const lookups = options.outsideLookups === true
 
+  /** The folder Claude's shell commands run in, as the session last said: where a relative path in one lands. */
+  let cwd: string | undefined
   on('session.start', async ($, e, next) => {
+    cwd = e.cwd
     await $.command.register({
       name: 'guard',
       description: 'Scan a plugin, mod, skill or MCP server without installing it',
@@ -76,17 +80,32 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => (next.called ? next(e) : { text: 'AI Install Guard stopped this install: it failed before it could check it, so nothing was installed.' }))
 
+  // A `cd` in one shell command carries over to the next: the session says where it went.
+  on('classic.CwdChanged', ($, e, next) => {
+    cwd = e.new_cwd
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   // Gate B: Claude installing a plugin or adding a marketplace with the claude
-  // command. The command is refused, with a reason Claude reads, until the
-  // person approves that exact version in the pane.
+  // command, or changing where Claude Code loads from with any other command
+  // (a redirection, cp, git clone, curl -o, unzip). The command is refused,
+  // with a reason Claude reads, until the person approves what it adds.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const reading = readShellCommand(e.command)
-    if (reading.kind === 'pass') return next(e)
+    if (reading.kind === 'pass') {
+      const gate = await gateShell($, e.command, cwd, lookups)
+      if ('deny' in gate) return { deny: gate.deny }
+      try {
+        return await next(e)
+      } finally {
+        gate.release()
+      }
+    }
     const judged = await judge($, reading, { origin: 'tool', args: e.command, label: reading.label }, lookups)
     if (judged.kind === 'hold') return { deny: judged.text }
     if (judged.note !== undefined) $.ui.toast(judged.note)
     return next(e)
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'AI Install Guard stopped this command: it may install a plugin or add a marketplace, and the guard failed before it could check it. Nothing was installed.' }))
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'AI Install Guard stopped this command: it may install a plugin or change where Claude Code loads from, and the guard failed before it could check it. Nothing was installed or written.' }))
 
   // Gate C: Claude writing or editing a file where Claude Code loads skills,
   // commands, agents, MCP servers and plugins from. Any other file goes on at
@@ -94,7 +113,7 @@ export const register: Register = (on, options) => {
   const writeRefused = { deny: 'AI Install Guard stopped this change: it writes where Claude Code loads skills, MCP servers or plugins from, and the guard failed before it could check it. Nothing was written.' }
   // A change that goes on keeps its place claimed until it is written, so a second change there waits its turn.
   on('tool.call', { tool: 'Write' }, async ($, e, next) => {
-    const gate = await gateWrite($, { tool: 'Write', file_path: e.file_path, content: e.content }, lookups)
+    const gate = await gateWrite($, { tool: 'Write', file_path: e.file_path, content: e.content }, lookups, await claudeFolder($))
     if ('deny' in gate) return { deny: gate.deny }
     try {
       return await next(e)
@@ -103,7 +122,7 @@ export const register: Register = (on, options) => {
     }
   }).catch(($, e, next) => (next.called ? next(e) : writeRefused))
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
-    const gate = await gateWrite($, { tool: 'Edit', file_path: e.file_path, old_string: e.old_string, new_string: e.new_string, ...(e.replace_all === undefined ? {} : { replace_all: e.replace_all }) }, lookups)
+    const gate = await gateWrite($, { tool: 'Edit', file_path: e.file_path, old_string: e.old_string, new_string: e.new_string, ...(e.replace_all === undefined ? {} : { replace_all: e.replace_all }) }, lookups, await claudeFolder($))
     if ('deny' in gate) return { deny: gate.deny }
     try {
       return await next(e)
@@ -113,6 +132,14 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => (next.called ? next(e) : writeRefused))
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($, e) => drawPane($, e))
+}
+
+/** Where CLAUDE_CONFIG_DIR keeps Claude's own folder, when it moves it from ~/.claude: looked up once, when first needed. */
+let configDir: Promise<string | undefined> | undefined
+
+function claudeFolder($: EngineInterface): Promise<string | undefined> {
+  configDir ??= claudeConfigDir(modHost($)).catch(() => undefined)
+  return configDir
 }
 
 /**
@@ -141,9 +168,9 @@ async function landedName($: EngineInterface, name: string): Promise<string | un
  * call once the write is done. A file outside the places Claude Code loads
  * from claims nothing.
  */
-async function gateWrite($: EngineInterface, input: WriteInput, lookups: boolean): Promise<{ deny: string } | { release: () => void }> {
+async function gateWrite($: EngineInterface, input: WriteInput, lookups: boolean, configDir: string | undefined): Promise<{ deny: string } | { release: () => void }> {
   const free = { release: () => undefined }
-  const reading = await readWrite(modHost($), input)
+  const reading = await readWrite(modHost($), input, configDir)
   if (reading.kind === 'pass') return free
   const path = safeLine(normalizePath(input.file_path))
   // Claimed where the change really lands, so a link to the same skill or file is the same place,
@@ -160,6 +187,42 @@ async function gateWrite($: EngineInterface, input: WriteInput, lookups: boolean
       release()
       return judged
     }
+    return { release }
+  } catch (error) {
+    release()
+    throw error
+  }
+}
+
+/**
+ * Gate B's judgement of a shell command that is no install: the refusal
+ * Claude reads, or a release to call once it has run. A command that changes
+ * nothing where Claude Code loads from claims nothing and goes on at once.
+ */
+async function gateShell($: EngineInterface, command: string, cwd: string | undefined, lookups: boolean): Promise<{ deny: string } | { release: () => void }> {
+  const free = { release: () => undefined }
+  let change: ShellChange
+  try {
+    change = await readShellChange(modHost($), command, cwd, () => claudeFolder($))
+  } catch {
+    // This runs before every shell command: one that cannot be read fails only when it names Claude's own folder.
+    if (!NAMES_CLAUDE.test(command)) return free
+    return { deny: 'AI Install Guard stopped this command: it names a place Claude Code loads from, and the guard failed before it could read what it changes there. Nothing was written.' }
+  }
+  if (change.kind === 'pass') return free
+  const place = change.claim
+  if (place !== undefined && changing.has(place)) return { deny: `AI Install Guard held this command: another change to ${change.label.replace(/^a change to /, '')} is being checked or written. Nothing was written. Make one change at a time, then run this one again.` }
+  if (place !== undefined) changing.add(place)
+  const release = () => {
+    if (place !== undefined) changing.delete(place)
+  }
+  try {
+    const judged = await judgeShell($, change, command, lookups)
+    if (judged.kind === 'hold') {
+      release()
+      return { deny: judged.text }
+    }
+    if (judged.note !== undefined) $.ui.toast(judged.note)
     return { release }
   } catch (error) {
     release()

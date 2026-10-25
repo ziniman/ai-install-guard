@@ -210,7 +210,7 @@ describe("reading Claude's shell commands", () => {
 
   test('splits like a shell: quotes, separators, redirections and here-documents', () => {
     expect(splitShell(`a 'b c' "d \\"e\\"" f\\ g; h && i | j 2>&1 > out < in`).commands.map(item => item.words)).toEqual([['a', 'b c', 'd "e"', 'f g'], ['h'], ['i'], ['j']])
-    expect(splitShell('cat <<-END\n\tbody\n\tEND\nnext').commands).toEqual([{ words: ['cat'], input: 'body' }, { words: ['next'] }])
+    expect(splitShell('cat <<-END\n\tbody\n\tEND\nnext').commands).toEqual([{ words: ['cat'], input: 'body', feeds: 'body\n' }, { words: ['next'] }])
     expect(splitShell('echo $HOME').dynamic).toBe(true)
     expect(splitShell("echo '$HOME'").dynamic).toBe(false)
   })

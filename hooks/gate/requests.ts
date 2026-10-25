@@ -103,22 +103,22 @@ const MAY_INSTALL = /\bplugins?\b[^\w\n]{1,8}(?:install|i|update|marketplace)\b|
 const CLAUDE_WORD = /(?<![\w./-])claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?(?![\w./-])/i
 
 /** Names the `claude` command goes by, Windows' launchers included. */
-const CLAUDE = new Set(['claude', 'claude-code'].flatMap(name => [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`, `${name}.ps1`]))
+export const CLAUDE = new Set(['claude', 'claude-code'].flatMap(name => [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`, `${name}.ps1`]))
 
 /** Programs that run their `-c` argument as a script. */
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'])
+export const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'])
 
 /**
  * Programs that run code in another language: given inline, from their
  * input or from a file, it is code the guard does not read.
  */
-const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'osascript', 'pwsh', 'powershell', 'lua', 'tclsh', 'rscript', 'julia', 'swift', 'groovy', 'jshell'])
+export const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'osascript', 'pwsh', 'powershell', 'lua', 'tclsh', 'rscript', 'julia', 'swift', 'groovy', 'jshell'])
 
 /**
  * Programs that only print, read or wait: an install's words among their
  * arguments are text, and running one beside an install adds nothing to it.
  */
-const QUIET = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'less', 'more', 'jq', 'sort', 'uniq', 'wc', 'tr', 'cut', 'ls', 'pwd', 'true', 'false', 'sleep', 'test', '[', 'date', 'which', 'type', 'column', 'nl', 'fold'])
+export const QUIET = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'less', 'more', 'jq', 'sort', 'uniq', 'wc', 'tr', 'cut', 'ls', 'pwd', 'true', 'false', 'sleep', 'test', '[', 'date', 'which', 'type', 'column', 'nl', 'fold'])
 
 /** A quiet program that writes a file all the same: `sort -o`, `uniq in out`. */
 function writesAnyway(program: string, args: readonly string[]): boolean {
@@ -175,7 +175,7 @@ const GIT_VALUES = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace
  * and names included, is text. `hooks` is set when a configuration points it
  * at hooks the guard cannot read.
  */
-function gitScripts(args: readonly string[]): { scripts: string[]; hooks: boolean } {
+export function gitScripts(args: readonly string[]): { scripts: string[]; hooks: boolean } {
   const scripts: string[] = []
   let hooks = false
   let index = 0
@@ -223,7 +223,7 @@ type Collected = {
  * substitution, a pathname pattern (`claud[e]`, `cl*`) or a brace list
  * (`cl{aude,}`). `[` on its own is the test command.
  */
-function isDynamic(word: string): boolean {
+export function isDynamic(word: string): boolean {
   return word !== '[' && (/[$`*?[]/.test(word) || BRACES.test(word))
 }
 
@@ -236,7 +236,7 @@ const BRACES = /\{[^}]*(?:,|\.\.)[^}]*\}/
  * shell text (`env -S`); `fromInput` is set when its words come in part
  * from input (`xargs`).
  */
-function programAt(words: readonly string[]): { index: number; scripts: string[]; fromInput: boolean } {
+export function programAt(words: readonly string[]): { index: number; scripts: string[]; fromInput: boolean } {
   const scripts: string[] = []
   let fromInput = false
   let index = 0
@@ -396,7 +396,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
 }
 
 /** The last part of a program's path, lower-cased: `/usr/bin/Claude` is `claude`. */
-function programName(word: string | undefined): string {
+export function programName(word: string | undefined): string {
   return (word ?? '').split(/[\\/]/).pop()?.toLowerCase() ?? ''
 }
 
@@ -697,6 +697,12 @@ export type ShellCommand = {
   expands?: number[]
   /** Which of those it may also split into several words: an unquoted variable or substitution. */
   splits?: number[]
+  /** The files its redirections write: whether each appends, and whether the shell expands its name as it runs. */
+  targets?: { path: string; append: boolean; expands: boolean }[]
+  /** The exact text a here-document or here-string feeds it, each ending in a new line, when the shell expands none of it. */
+  feeds?: string
+  /** Its input comes from a here-document or here-string the shell expands as it runs, so the text is only known then. */
+  feedsExpand?: boolean
 }
 
 /**
@@ -725,16 +731,21 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   let dynamic = false
   /** What the next word is: a word, a redirection's target, a here-document's end marker, or a here-string. */
   let next: 'word' | 'target' | 'marker' | 'herestring' = 'word'
-  /** For a redirection's target: whether the redirection writes, and whether it duplicates a descriptor (`>&2`). */
+  /** For a redirection's target: whether the redirection writes, appends, and whether it duplicates a descriptor (`>&2`). */
   let writing = false
+  let appending = false
   let duplicating = false
   let stripTabs = false
   const heredocs: { marker: string; stripTabs: boolean; quoted: boolean; command: ShellCommand }[] = []
   const endWord = (): void => {
     if (!inWord) return
     if (next === 'marker') heredocs.push({ marker: word, stripTabs, quoted, command: current })
-    else if (next === 'herestring') current.input = word
-    else if (next === 'word') {
+    else if (next === 'herestring') {
+      current.input = word
+      // A here-string is fed with a new line after it.
+      if (expands) current.feedsExpand = true
+      else current.feeds = `${word}\n`
+    } else if (next === 'word') {
       // An unquoted pattern (`cl*`, `x?`, `[ab]`) or brace list (`{a,b}`) is expanded; `[` alone is the test command.
       // A pattern or a brace list or range also becomes several words.
       const multiplies = word !== '[' && (/[*?[]/.test(bare) || BRACES.test(bare))
@@ -742,7 +753,11 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       if (splits || multiplies) (current.splits ??= []).push(current.words.length)
       current.words.push(word)
     }
-    else if (writing && word !== '/dev/null' && !(duplicating && /^(?:\d+|-)$/.test(word))) current.writes = true
+    else if (writing && word !== '/dev/null' && !(duplicating && /^(?:\d+|-)$/.test(word))) {
+      current.writes = true
+      const multiplies = /[*?[]/.test(bare) || BRACES.test(bare)
+      ;(current.targets ??= []).push({ path: word, append: appending, expands: expands || multiplies })
+    }
     next = 'word'
     word = ''
     inWord = false
@@ -875,6 +890,9 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
           if (bodies.length > 0) (heredoc.command.scripts ??= []).push(...bodies)
           if (/[$`]/.test(heredoc.command.input)) dynamic = true
         }
+        // Each line is fed with its new line; an unquoted body's `$`, backquotes and backslashes are the shell's to read.
+        if (!heredoc.quoted && /[$`\\]/.test(heredoc.command.input)) heredoc.command.feedsExpand = true
+        else heredoc.command.feeds = lines.map(line => `${line}\n`).join('')
         index = end
       }
       continue
@@ -915,6 +933,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
         continue
       }
       writing = operator === '>' || char === '&'
+      appending = operator === '>' && text[index + 1] === '>'
       duplicating = false
       while (text[index + 1] === '>' || text[index + 1] === '&' || text[index + 1] === '|') {
         if (text[index + 1] === '&') duplicating = true

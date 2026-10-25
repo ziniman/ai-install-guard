@@ -8,9 +8,11 @@ import type { EngineInterface } from 'claude-code'
 import type { GuardRequest } from '../../types'
 import { decisionFor, pinnedDecision } from '../guard/decisions'
 import { takePass } from '../guard/passes'
-import { scanOnly, showScan, showUnverified, type ScanHow, type Shown } from '../guard/run'
+import { scanOnly, showScan, showUnverified, type ScanHow, type ShowOptions, type Shown } from '../guard/run'
 import type { Host } from '../scan/host'
-import { landsAt, type WriteReading } from './writes'
+import { landsAt, readWrite, type WriteReading } from './writes'
+import type { ShellChange } from './shell-change'
+import type { RemoteSpec } from '../scan/remote'
 import { sha256Hex, treeHash } from '../scan/hash'
 import type { InventoryEntry } from '../scan/inventory'
 import type { ScanReport } from '../scan/scan'
@@ -55,22 +57,27 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
       // This reason can quote a marketplace's own catalog: the person reads it, Claude does not.
       return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed, { why: target.reason, toClaude: false })
     }
-    case 'remote': {
-      // The commit the install would take now. A rejection of it stands
-      // without a new scan; an approval is checked against a new one, which
-      // may judge worse (a lookup turned on since may know it as malware).
-      const pin = await resolvePin(host, target.spec).catch(() => undefined)
-      if (pin !== undefined) {
-        const decided = await pinnedDecision($, { root: sourceRoot(target.spec.url, pin.subdir), sha: pin.sha }).catch(() => undefined)
-        if (decided?.decision === 'rejected') return rejected(request, name, ` at commit ${pin.sha.slice(0, 12)}`, decided.decidedAt)
-      }
-      // The scan fetches exactly the commit just looked up, so the verdict is about what installs.
-      const spec = pin === undefined ? target.spec : { url: target.spec.url, ref: pin.sha, ...(pin.subdir === undefined ? {} : { subdir: pin.subdir }) }
-      return afterScan(request, name, await showScan($, name, { remote: spec }, options))
-    }
+    case 'remote':
+      return judgeRemote($, name, target.spec, request, options)
     case 'local':
       return afterScan(request, name, await showScan($, name, { folder: target.path }, options))
   }
+}
+
+/**
+ * A repository at the commit it would give now. A rejection of that commit
+ * stands without a new scan; an approval is checked against a new one, which
+ * may judge worse (a lookup turned on since may know it as malware).
+ */
+async function judgeRemote($: EngineInterface, name: string, wanted: RemoteSpec, request: GuardRequest, options: ShowOptions): Promise<Judgement> {
+  const pin = await resolvePin(modHost($), wanted).catch(() => undefined)
+  if (pin !== undefined) {
+    const decided = await pinnedDecision($, { root: sourceRoot(wanted.url, pin.subdir), sha: pin.sha }).catch(() => undefined)
+    if (decided?.decision === 'rejected') return rejected(request, name, ` at commit ${pin.sha.slice(0, 12)}`, decided.decidedAt)
+  }
+  // The scan fetches exactly the commit just looked up, so the verdict is about what arrives.
+  const spec = pin === undefined ? wanted : { url: wanted.url, ref: pin.sha, ...(pin.subdir === undefined ? {} : { subdir: pin.subdir }) }
+  return afterScan(request, name, await showScan($, name, { remote: spec }, options))
 }
 
 /**
@@ -81,7 +88,7 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
  * finds nothing; otherwise it is held. A change to an installed plugin is
  * held as Could not verify.
  */
-export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReading, { kind: 'pass' }>, request: GuardRequest, lookups: boolean): Promise<Judgement> {
+export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReading, { kind: 'pass' }>, request: GuardRequest, lookups: boolean, copied = false): Promise<Judgement> {
   if (await takePass($, { origin: request.origin, args: request.args })) return { kind: 'allow', note: `AI Install Guard: writing ${request.label}, as you allowed` }
   const options = { action: 'install' as const, request, lookups }
   if (reading.kind === 'unreadable') {
@@ -94,15 +101,43 @@ export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReadi
     const how: ScanHow = { files: {}, root: reading.path, kind: 'settings change' }
     return afterScan(request, reading.label, await showScan($, reading.label, how, { ...options, report: await settingsReport(reading) }))
   }
-  const host = modHost($)
-  const how = await promptCandidate(host, reading)
-  const first = await scanOnly(host, reading.label, how, { lookups }).catch(() => undefined)
-  if (first?.verdict.kind === 'safe') return { kind: 'allow', note: `AI Install Guard: checked ${reading.label}: No red flags` }
+  // Text Claude writes itself goes on when it has no red flags; text copied from elsewhere is always shown.
+  return scanThenHold($, reading.label, await promptCandidate(modHost($), reading), request, options, !copied)
+}
+
+/**
+ * Scans `how` first with no pane: what was approved before goes on, and so
+ * does what has no red flags when `quiet`; anything else is held in the pane.
+ */
+async function scanThenHold($: EngineInterface, label: string, how: ScanHow, request: GuardRequest, options: ShowOptions, quiet: boolean): Promise<Judgement> {
+  const first = await scanOnly(modHost($), label, how, { lookups: options.lookups }).catch(() => undefined)
+  if (quiet && first?.verdict.kind === 'safe') return { kind: 'allow', note: `AI Install Guard: checked ${label}: No red flags` }
   if (first?.inventory !== undefined) {
     const earlier = await decisionFor($, { treeHash: first.inventory.treeHash }, first.verdict.kind).catch(() => undefined)
-    if (earlier?.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${reading.label} on ${day(earlier.decidedAt)}; writing it` }
+    if (earlier?.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${label} on ${day(earlier.decidedAt)}; writing it` }
   }
-  return afterScan(request, reading.label, await showScan($, reading.label, how, { ...options, ...(first === undefined ? {} : { report: first }) }))
+  return afterScan(request, label, await showScan($, label, how, { ...options, ...(first === undefined ? {} : { report: first }) }))
+}
+
+/**
+ * What the guard does with a shell command that changes where Claude Code
+ * loads from. Text it writes is judged as Claude's Write of it would be; a
+ * file it copies, as text copied in, is always shown; a folder copied in, or
+ * a repository cloned, is scanned and held; anything else is Could not
+ * verify, which Install anyway lets through once, as that exact command.
+ */
+export async function judgeShell($: EngineInterface, change: Exclude<ShellChange, { kind: 'pass' }>, command: string, lookups: boolean): Promise<Judgement> {
+  const request = (label: string): GuardRequest => ({ origin: 'tool', args: command, label, subject: 'command' })
+  if (change.kind === 'write') {
+    const reading = await readWrite(modHost($), change.input, change.configDir)
+    if (reading.kind === 'pass') return { kind: 'allow' }
+    return judgeWrite($, reading, request(reading.label), lookups, change.copied)
+  }
+  if (change.kind === 'unreadable') return judgeWrite($, change, request(change.label), lookups)
+  if (await takePass($, { origin: 'tool', args: command })) return { kind: 'allow', note: `AI Install Guard: writing ${change.label}, as you allowed` }
+  const options: ShowOptions = { action: 'install', request: request(change.label), lookups }
+  if (change.kind === 'folder') return scanThenHold($, change.label, { folder: change.path }, request(change.label), options, false)
+  return judgeRemote($, change.label, change.spec, request(change.label), options)
 }
 
 /**
@@ -198,6 +233,8 @@ function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement
 
 /** The words an answer uses for what was held: an install, or a write. */
 function wordsFor(request: GuardRequest): { thing: string; done: string; doing: string; again: string } {
+  // A pass lets exactly the command through, so a change a command makes is made again by running it again.
+  if (request.subject === 'command') return { thing: 'change', done: 'Nothing was written', doing: 'running it', again: 'run the same command again' }
   return request.subject === 'write'
     ? { thing: 'change', done: 'Nothing was written', doing: 'writing it', again: 'make the same change again' }
     : { thing: 'install', done: 'Nothing was installed', doing: 'installing it', again: 'run the same command again' }
@@ -213,7 +250,7 @@ function rejected(request: GuardRequest, name: string, where: string, decidedAt:
   const when = decidedAt === undefined ? '' : ` on ${day(decidedAt)}`
   if (request.origin === 'tool') {
     const words = wordsFor(request)
-    return { kind: 'hold', text: `AI Install Guard: the person rejected this exact version of ${name}${where}${when}. ${words.done}. Do not ${request.subject === 'write' ? 'write it' : 'install it'} or try another way.` }
+    return { kind: 'hold', text: `AI Install Guard: the person rejected this exact version of ${name}${where}${when}. ${words.done}. Do not ${request.subject === 'write' || request.subject === 'command' ? 'write it' : 'install it'} or try another way.` }
   }
   return { kind: 'hold', text: `AI Install Guard: you rejected ${name}${where}${when}. Nothing was installed. /guard forget ${name} judges it again.` }
 }
@@ -240,7 +277,7 @@ function hold(
     const next = placed
       ? `The verdict and the Install and Reject buttons are in the guard's pane. Tell the person the ${words.thing} waits for their decision there, and ${words.again} only after they say they approved it.`
       : 'This session cannot show the guard\'s pane, so the person cannot approve it here.'
-    return { kind: 'hold', text: `AI Install Guard held this ${words.thing} for the person to review: ${unverified ? `it ${what}${more.toClaude === true ? why : ''}` : what}. ${words.done}. Do not retry it or ${request.subject === 'write' ? 'write it' : 'install it'} another way. ${next}` }
+    return { kind: 'hold', text: `AI Install Guard held this ${words.thing} for the person to review: ${unverified ? `it ${what}${more.toClaude === true ? why : ''}` : what}. ${words.done}. Do not retry it or ${request.subject === 'write' || request.subject === 'command' ? 'write it' : 'install it'} another way. ${next}` }
   }
   const said = unverified ? `AI Install Guard ${what}${why}.` : `AI Install Guard: ${what}.`
   if (!placed) {

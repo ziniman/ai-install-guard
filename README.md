@@ -6,7 +6,7 @@
 
 **A Claude Code mod that runs in the background. Install it once, and every `/plugin install` and marketplace you add, yours or Claude's, is scanned before anything installs: nothing to run, nothing to remember.**
 
-[![AI Install Guard: No red flags at 95576254e98f](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_95576254e98f-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:95576254e98f2a5a2d8566b3f6c6dece68d1890a79c9afe20405921990509d33, read without this badge")
+[![AI Install Guard: No red flags at 6b04dbe49d03](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_6b04dbe49d03-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:6b04dbe49d03e4e485ec7070a0c054217d6ffeeb9997d117e04030af349e1a01, read without this badge")
 
 [![npm version](https://img.shields.io/npm/v/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
 [![npm downloads](https://img.shields.io/npm/dm/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
@@ -33,7 +33,7 @@ AI Install Guard works the other way round. It is a mod, so it lives inside Clau
 
 Everything you add to Claude Code runs with your permissions. A plugin can ship shell hooks that run every session, an MCP server can download and launch a package, a mod can read files or auto-approve tools, and a skill can carry hidden instructions the model will follow. The install prompt asks you to trust the author, and an update can change the files after you looked.
 
-> **Status: early development.** `/plugin install` and `/plugin marketplace add`, the same installs when Claude runs `claude plugin` itself, MCP servers Claude adds with `claude mcp add` or writes into a configuration, skills, commands and agents Claude writes with a red flag, and settings changes that widen what Claude may do, are held until you approve the exact version the guard scanned. `/guard scan` checks a folder or a repository before you install it anywhere. The other gates are being built in stages; see [Where it steps in](#where-it-steps-in) and [Roadmap](#roadmap).
+> **Status: early development.** `/plugin install` and `/plugin marketplace add`, the same installs when Claude runs `claude plugin` itself, MCP servers Claude adds with `claude mcp add` or writes into a configuration, skills, commands and agents Claude writes with a red flag, settings changes that widen what Claude may do, and the same changes when Claude makes them with a shell command (a redirection, `cp`, `git clone`, `curl -o`, `unzip`), are held until you approve the exact version the guard scanned. `/guard scan` checks a folder or a repository before you install it anywhere. The other gates are being built in stages; see [Where it steps in](#where-it-steps-in) and [Roadmap](#roadmap).
 
 ## Who it is for
 
@@ -59,7 +59,7 @@ Approvals are remembered by commit and content hash, so the same version is neve
 | Claude's own commands | `claude mcp add` and `claude mcp add-json` (`add-from-claude-desktop` is held as Could not verify) | Refused until you approve that exact server configuration | Yes |
 | Claude's own writes | Files Claude writes or edits in skill, command and agent folders, MCP servers in `.mcp.json` or `~/.claude.json`, any file of an installed plugin | Checked as they would land: a skill, command or agent with no red flags goes on with a note, anything else is refused until you approve | Yes |
 | Claude's own settings | Claude writing or editing `settings.json` or `settings.local.json` (the project's, yours, an organization's) | A change that widens what Claude may do or run is refused until you approve it; one that only narrows it goes on | Yes |
-| Claude's own copies | Files copied, cloned or downloaded into those folders with the shell | Refused until scanned | Next stage |
+| Claude's own shell commands | Files written, copied, moved, linked, cloned, downloaded or unpacked into those folders and files with the shell (`>`, `tee`, `cp`, `mv`, `ln`, `rsync`, `git clone`, `curl -o`, `wget`, `unzip`, `tar -x`, `sed -i`) | Text Claude writes is checked as a Write of it would be; a file or folder copied in, or a repository cloned, is scanned and waits for you; what cannot be known before it runs (a download, an archive, a link) is Could not verify | Yes |
 | Mod loading | Any mod about to load, however it got there, including plugins picked from the `/plugin` menu | Refused if its files do not match what you approved | Later |
 | First use of a skill | Skills and commands, including ones copied in by hand | Blocked until scanned | Later |
 | Session start | Anything installed while the guard was not running | Scanned, with Keep or Uninstall | Later |
@@ -98,6 +98,17 @@ Settings decide what Claude runs without asking, what runs on its own and where 
 - **Goes on:** a rule that only blocks or asks, a stricter mode, and settings that run nothing (theme, model).
 
 The approval covers that exact file.
+
+### Claude changing those places with the shell
+
+Claude can make the same changes with a shell command instead of Write, so the guard reads every shell command for the files it writes, without running it. A command that writes nowhere Claude Code loads from goes on at once, with nothing read. One that does is judged by what lands:
+
+- **Text the command holds** (a here-document, `echo`, `printf`, `tee`) is checked exactly as a Write of that text would be: a skill with no red flags goes on with a note, a settings change that widens what Claude may do waits, and so on. An append is checked as the file it makes.
+- **A file or folder copied or moved in** (`cp`, `mv`, `install`, `rsync`, `ditto`, `cat a > b`) is scanned where it is now and always waits for you, even with no red flags, since it comes from somewhere else. The approval covers that exact content.
+- **A repository cloned in** (`git clone`) is scanned at the commit it would clone and waits for you, as a plugin install does.
+- **What cannot be known before it runs** is Could not verify: a download (`curl -o`, `wget`), an archive unpacked (`unzip`, `tar -x`), an edit made by a program (`sed -i`), a link (`ln -s`, which would load whatever it points to, now and later), a `git pull` or checkout in one of those folders, and a program the guard does not know that is given one of those paths. Install anyway lets that exact command through once.
+
+A command that makes more than one such change is held: make each change on its own. Relative paths are read from the folder the session is in, which the guard follows as Claude changes it, and from any `cd` earlier in the same command; a folder that `CLAUDE_CONFIG_DIR` names counts as `~/.claude`. Code the guard does not read (inline Python or Node, an `awk` or `sed` program that writes files, a script piped into a shell, a program or path only known as it runs) is held only when the command names one of those places. A script file, such as a skill's own script run from where it is installed, is judged like any program, by the paths it is given; one that writes there on its own is not seen, and the later skill and session-start gates are the backstop for that.
 
 ## Red flags, and what it can do
 
@@ -191,11 +202,12 @@ A security tool should be held to its own rules, so here is everything this mod 
 
 | Capability | Why |
 |------------|-----|
-| `process.run` | Runs `git` to resolve a ref and fetch one commit into the guard's own temporary folder (made with `mktemp` and removed with `rm` afterwards), `claude plugin validate` on a candidate (it reads source and runs none of it), `claude plugin list --available --json` and `claude plugin marketplace list --json` to find where a plugin you install comes from, `readlink` to see where a symbolic link points without following it, and `printenv HOME` to expand `~`. It never runs anything from a candidate. |
-| `fs.read`, `fs.list`, `fs.stat` | Reads the candidate's files to scan them, and a marketplace's catalog in Claude Code's own copy of it. It writes no files itself; only `git` writes, into the guard's temporary folder. |
+| `process.run` | Runs `git` to resolve a ref and fetch one commit into the guard's own temporary folder (made with `mktemp` and removed with `rm` afterwards), `claude plugin validate` on a candidate (it reads source and runs none of it), `claude plugin list --available --json` and `claude plugin marketplace list --json` to find where a plugin you install comes from, `readlink` to see where a symbolic link points without following it, `printenv HOME` to expand `~`, and `printenv CLAUDE_CONFIG_DIR` to know where Claude's own folder is when that variable moves it. It never runs anything from a candidate. |
+| `fs.read`, `fs.list`, `fs.stat` | Reads the candidate's files to scan them, and a marketplace's catalog in Claude Code's own copy of it. For a write Claude is about to make where Claude Code loads from, reads where the path really lands and, for a copy or an append, the file it copies or adds to. It writes no files itself; only `git` writes, into the guard's temporary folder. |
 | `command.run` (hook) | Intercepts `/plugin`, so `/plugin install` and `/plugin marketplace add` are scanned and held until you approve them. Every other `/plugin` command goes on untouched. |
 | `command.run` (call) | When you press Install, runs your own `/plugin` command again, after checking the version is still the one you approved. |
-| `tool.call` (hook) | Reads the text of each shell command Claude is about to run, to catch `claude plugin install`, `claude mcp add` and their kin, and refuses those until you approve. Reads the path of each file Claude is about to write or edit, and, only for one in a skill, command, agent, plugin or MCP configuration, the content it would write. Every other command and every other tool goes on untouched; it never rewrites or answers one. |
+| `tool.call` (hook) | Reads the text of each shell command Claude is about to run, to catch `claude plugin install`, `claude mcp add` and their kin, and the files the command writes, and refuses those that change where Claude Code loads from until you approve. Reads the path of each file Claude is about to write or edit, and, only for one in a skill, command, agent, plugin or MCP configuration, the content it would write. Every other command and every other tool goes on untouched; it never rewrites or answers one. |
+| `classic.CwdChanged` (hook) | Notes the folder Claude's shell commands run in when it changes, so a relative path in a later command is read where it lands. It changes nothing. |
 | `command.register` | Adds the `/guard` command. |
 | `store`, `state` | Remembers your decisions and the last report, holds what the pane shows, and keeps a one-time pass for an install you allowed anyway. |
 | `ui` | The verdict pane, its status line and toasts, and copying the report. |
@@ -258,7 +270,7 @@ If even that fails, set `"ai-install-guard@ai-install-guard": false` under `enab
 - **Install it first.** It judges only mods that load after it. For a company, the strongest setup is deploying it through managed settings so it loads first.
 - **No per-plugin block for classic shell hooks.** Claude Code runs them outside mods, so the guard scans before install and uninstalls on reject.
 - **The `/plugin` menu is not gated yet.** A plugin picked from the menu installs without a scan; the guard says so when the menu opens. The mod loading gate in a later stage closes this. Until then, install with `/plugin install <name>@<marketplace>`.
-- **Claude's commands are read, not run.** The guard finds an install in a shell command however it is quoted or wrapped (`env`, `sudo`, `sh -c`, `eval`, a here-document), and holds a command it cannot read (one built while it runs, a script piped into a shell, inline code for another language) as Could not verify. A script file that installs something is not read; the mod loading gate is the backstop for that.
+- **Claude's commands are read, not run.** The guard finds an install in a shell command however it is quoted or wrapped (`env`, `sudo`, `sh -c`, `eval`, a here-document), and holds a command it cannot read (one built while it runs, a script piped into a shell, inline code for another language) as Could not verify. It finds the files a command writes the same way, through the programs it knows; a program that writes into Claude's folders on its own, without being given the path (an installer script, a package run with `npx`), is not seen. A script file that installs something is not read; the mod loading, skill and session-start gates are the backstop for that.
 - **Between Install and the install itself** Claude Code fetches the plugin again. The guard checks the commit just before, and a commit is fixed content, but a marketplace that names a branch rather than a commit can move in that moment. The scan warns about such marketplaces.
 
 ## Roadmap
@@ -271,7 +283,7 @@ If even that fails, set `"ai-install-guard@ai-install-guard": false` under `enab
 6. [x] Gate on Claude adding MCP servers with `claude mcp add`
 7. [x] Gate on Claude writing skills, commands, agents, MCP configuration and installed plugins' files
 8. [x] Gate on Claude changing settings
-9. [ ] Gate on Claude's shell copies into skill, plugin and configuration folders
+9. [x] Gate on Claude's shell writes, copies, clones and downloads into skill, plugin and configuration folders
 10. [ ] Module load gate with hash match, skill gate, session-start reconciliation
 11. [ ] Update diffs and the optional model review
 12. [ ] Full documentation
