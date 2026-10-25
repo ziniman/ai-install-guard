@@ -116,6 +116,9 @@ const MARKDOWN_EXTENSIONS = new Set(['md', 'mdx', 'markdown'])
 
 const PROMPT_DIRS = ['skills', 'commands', 'agents', 'output-styles']
 
+/** Plain-text files a prompt may tell the model to read, besides Markdown. */
+const PROMPT_TEXT = /\.(?:txt|text|rst|prompt)$/i
+
 const TEST_SEGMENTS = new Set(['test', 'tests', '__tests__', 'fixtures', '__fixtures__', 'testdata', 'spec', 'specs', 'e2e', 'test-support', 'testing', 'test-utils', 'test-helpers', '__mocks__', 'mocks'])
 
 const DOC_NAMES = /^(readme|changelog|changes|history|license|licence|copying|notice|contributing|code_of_conduct|security|authors)(\..*)?$/i
@@ -217,7 +220,8 @@ export function buildContext(tree: ScannedTree): ScanContext {
     realOf('hooks/hooks.json') !== undefined ||
     realOf('.mcp.json') !== undefined ||
     files.some(file => PROMPT_DIRS.some(dir => file.path.startsWith(`${dir}/`)))
-  const kind: CandidateKind = realOf('SKILL.md') !== undefined
+  // A disk that ignores case loads skill.md as SKILL.md, so either makes a skill.
+  const kind: CandidateKind = realOf('SKILL.md') !== undefined || [...paths].some(path => !path.includes('/') && /^skill\.md$/i.test(path))
     ? 'skill'
     : hasPluginLayout
       ? 'plugin'
@@ -362,7 +366,8 @@ export function buildContext(tree: ScannedTree): ScanContext {
   for (let index = 0; index < prompts.length; index += 1) {
     const body = text(prompts[index] as string) ?? ''
     for (const path of [...paths, ...linkPaths]) {
-      if (!isMarkdown(path) || !namedIn(body, path)) continue
+      // Markdown or plain text: a skill may keep its instructions in references/notes.txt.
+      if (!(isMarkdown(path) || PROMPT_TEXT.test(path)) || !namedIn(body, path)) continue
       const real = aliases.get(path) ?? path
       if (paths.has(real) && !promptSet.has(real)) {
         promptSet.add(real)

@@ -6,9 +6,11 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { GuardRequest } from '../../types'
-import { pinnedDecision } from '../guard/decisions'
+import { decisionFor, pinnedDecision } from '../guard/decisions'
 import { takePass } from '../guard/passes'
-import { showScan, showUnverified, type ScanHow, type Shown } from '../guard/run'
+import { scanOnly, showScan, showUnverified, type ScanHow, type Shown } from '../guard/run'
+import type { Host } from '../scan/host'
+import { landsAt, type WriteReading } from './writes'
 import { row, type CheckResult } from '../scan/checks/types'
 import { sourceRoot } from '../guard/view'
 import { modHost } from '../mod-host'
@@ -38,7 +40,7 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
   }
   const name = nameOf(reading.request)
   // An MCP server has no repository to fetch: its configuration is what is checked.
-  if (reading.request.kind === 'mcp') return afterScan(request, name, await showScan($, name, mcpCandidate(reading.request), options))
+  if (reading.request.kind === 'mcp') return afterScan(request, name, await showScan($, name, mcpCandidate([reading.request]), options))
   const host = modHost($)
   const target = await targetOf(host, reading.request)
   switch (target.kind) {
@@ -67,6 +69,40 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
   }
 }
 
+/**
+ * What the guard does with a file Claude is about to write where Claude Code
+ * loads from. An MCP server written into a configuration is held, as one
+ * added by command is. A skill, command or agent Claude writes itself is
+ * scanned first with no pane and goes through, with a note, when the scan
+ * finds nothing; otherwise it is held. A change to an installed plugin is
+ * held as Could not verify.
+ */
+export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReading, { kind: 'pass' }>, request: GuardRequest, lookups: boolean): Promise<Judgement> {
+  if (await takePass($, { origin: request.origin, args: request.args })) return { kind: 'allow', note: `AI Install Guard: writing ${request.label}, as you allowed` }
+  const options = { action: 'install' as const, request, lookups }
+  if (reading.kind === 'unreadable') {
+    const shown = await showUnverified($, reading.label, reading.reason, options)
+    return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed, { why: reading.reason, toClaude: true })
+  }
+  if (reading.kind === 'mcp') return afterScan(request, reading.label, await showScan($, reading.label, mcpCandidate(reading.servers), options))
+  const host = modHost($)
+  const how = await promptCandidate(host, reading)
+  const first = await scanOnly(host, reading.label, how, { lookups }).catch(() => undefined)
+  if (first?.verdict.kind === 'safe') return { kind: 'allow', note: `AI Install Guard: checked ${reading.label}: No red flags` }
+  if (first?.inventory !== undefined) {
+    const earlier = await decisionFor($, { treeHash: first.inventory.treeHash }, first.verdict.kind).catch(() => undefined)
+    if (earlier?.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${reading.label} on ${day(earlier.decidedAt)}; writing it` }
+  }
+  return afterScan(request, reading.label, await showScan($, reading.label, how, { ...options, ...(first === undefined ? {} : { report: first }) }))
+}
+
+/** Where a prompt Claude writes is scanned: a skill as its real folder once the write lands, a command or agent as the one file. */
+async function promptCandidate(host: Host, reading: Extract<WriteReading, { kind: 'prompt' }>): Promise<ScanHow> {
+  // The scan reads the folder where it really is, links followed (on macOS /tmp is /private/tmp).
+  if (reading.folder !== undefined) return { overlay: { root: await landsAt(host, reading.folder), rel: reading.rel, content: reading.content }, kind: 'skill' }
+  return { files: { [reading.rel]: reading.content }, root: `/ai-install-guard/${reading.what}/${reading.rel.slice(reading.rel.lastIndexOf('/') + 1)}`, kind: reading.what }
+}
+
 /** What the plugins menu cannot promise yet. */
 export const BROWSE_NOTE = 'AI Install Guard: plugins picked from this menu are not scanned yet. To scan one first, run /plugin install <name>@<marketplace>'
 
@@ -91,10 +127,18 @@ const MCP_ROOT = '/ai-install-guard/mcp-server'
  * A note says what the scan cannot read: the program it starts, or the
  * server at the other end of its address.
  */
-function mcpCandidate(request: Extract<InstallRequest, { kind: 'mcp' }>): ScanHow {
-  // Where it is kept is part of what is approved: local (the default), project (shared through .mcp.json) or user (every project).
-  const config = JSON.stringify({ scope: request.scope ?? 'local', mcpServers: { [request.name]: request.server } }, null, 2)
-  const remote = typeof request.server.url === 'string'
+function mcpCandidate(servers: readonly { name: string; scope?: string; server: Record<string, unknown> }[]): ScanHow {
+  // Where each is kept is part of what is approved: local (the default), project (shared through .mcp.json) or user (every project).
+  const only = servers.length === 1 ? servers[0] : undefined
+  const keys = servers.map(item => (servers.filter(other => other.name === item.name).length > 1 ? `${item.name} (${item.scope ?? 'local'})` : item.name))
+  const config = JSON.stringify(
+    only !== undefined
+      ? { scope: only.scope ?? 'local', mcpServers: { [only.name]: only.server } }
+      : { scopes: Object.fromEntries(servers.map((item, at) => [keys[at], item.scope ?? 'local'])), mcpServers: Object.fromEntries(servers.map((item, at) => [keys[at], item.server])) },
+    null,
+    2,
+  )
+  const remote = servers.every(item => typeof item.server.url === 'string')
   const note = remote ? 'the server at this address runs elsewhere, so only how Claude connects to it was checked' : 'the program it starts was not read, only how Claude Code starts it'
   const notes: CheckResult[] = [
     row(
@@ -102,7 +146,7 @@ function mcpCandidate(request: Extract<InstallRequest, { kind: 'mcp' }>): ScanHo
       [{ file: '.mcp.json', excerpt: note, status: 'info' }],
     ),
   ]
-  return { files: { '.mcp.json': `${config}\n` }, root: `${MCP_ROOT}/${request.name}`, notes, kind: 'MCP server' }
+  return { files: { '.mcp.json': `${config}\n` }, root: `${MCP_ROOT}/${servers.map(item => item.name).join('+')}`, notes, kind: servers.length === 1 ? 'MCP server' : 'MCP servers' }
 }
 
 /** How a held install that could not be checked is described. */
@@ -114,22 +158,30 @@ function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement
   const where = sha === undefined ? '' : ` at commit ${sha.slice(0, 12)}`
   // The same files approved before (through /guard scan, or an earlier install), and judged no
   // worse now, need no second press.
-  if (shown.view.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${name}${where} on ${day(shown.view.decidedAt ?? Date.now())}; installing it` }
+  if (shown.view.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${name}${where} on ${day(shown.view.decidedAt ?? Date.now())}; ${wordsFor(request).doing}` }
   if (shown.view.decision === 'rejected') return rejected(request, name, where, shown.view.decidedAt)
   if (shown.superseded) return superseded(request)
   return hold(request, shown.report.verdict, where, shown.placed, { report: shown.text })
 }
 
+/** The words an answer uses for what was held: an install, or a write. */
+function wordsFor(request: GuardRequest): { thing: string; done: string; doing: string; again: string } {
+  return request.subject === 'write'
+    ? { thing: 'change', done: 'Nothing was written', doing: 'writing it', again: 'make the same change again' }
+    : { thing: 'install', done: 'Nothing was installed', doing: 'installing it', again: 'run the same command again' }
+}
+
 /** Another scan took the pane before this one finished: nothing to press, so nothing installs. */
 function superseded(request: GuardRequest): Judgement {
-  const text = `AI Install Guard: another scan took the pane before the one for ${request.label} finished, so nothing was installed.`
+  const text = `AI Install Guard: another scan took the pane before the one for ${request.label} finished, so ${wordsFor(request).done.toLowerCase()}.`
   return { kind: 'hold', text: request.origin === 'tool' ? `${text} Do not retry it now; tell the person, and run it again once they ask.` : `${text} Run it again to review it.` }
 }
 
 function rejected(request: GuardRequest, name: string, where: string, decidedAt: number | undefined): Judgement {
   const when = decidedAt === undefined ? '' : ` on ${day(decidedAt)}`
   if (request.origin === 'tool') {
-    return { kind: 'hold', text: `AI Install Guard: the person rejected this exact version of ${name}${where}${when}. Nothing was installed. Do not install it or try another way.` }
+    const words = wordsFor(request)
+    return { kind: 'hold', text: `AI Install Guard: the person rejected this exact version of ${name}${where}${when}. ${words.done}. Do not ${request.subject === 'write' ? 'write it' : 'install it'} or try another way.` }
   }
   return { kind: 'hold', text: `AI Install Guard: you rejected ${name}${where}${when}. Nothing was installed. /guard forget ${name} judges it again.` }
 }
@@ -152,10 +204,11 @@ function hold(
   // Do not install and Could not verify install only through Install anyway, which asks twice.
   const button = unverified || verdict.kind === 'reject' ? 'Install anyway (it asks you to confirm)' : 'Install'
   if (request.origin === 'tool') {
+    const words = wordsFor(request)
     const next = placed
-      ? 'The verdict and the Install and Reject buttons are in the guard\'s pane. Tell the person the install waits for their decision there, and run the same command again only after they say they approved it.'
+      ? `The verdict and the Install and Reject buttons are in the guard's pane. Tell the person the ${words.thing} waits for their decision there, and ${words.again} only after they say they approved it.`
       : 'This session cannot show the guard\'s pane, so the person cannot approve it here.'
-    return { kind: 'hold', text: `AI Install Guard held this install for the person to review: ${unverified ? `it ${what}${more.toClaude === true ? why : ''}` : what}. Nothing was installed. Do not retry it or install it another way. ${next}` }
+    return { kind: 'hold', text: `AI Install Guard held this ${words.thing} for the person to review: ${unverified ? `it ${what}${more.toClaude === true ? why : ''}` : what}. ${words.done}. Do not retry it or ${request.subject === 'write' ? 'write it' : 'install it'} another way. ${next}` }
   }
   const said = unverified ? `AI Install Guard ${what}${why}.` : `AI Install Guard: ${what}.`
   if (!placed) {
