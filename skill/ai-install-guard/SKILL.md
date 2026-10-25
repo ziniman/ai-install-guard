@@ -33,6 +33,7 @@ node /mnt/skills/user/ai-install-guard/scripts/scan.js --details --ref v1.2.0 --
 - Give the script the archive exactly as it was attached. Do not unpack it, open its files or run anything from it first: the script unpacks it into a temporary folder of its own, refuses paths that would land outside it, and removes the folder afterwards.
 - `--ref <branch|tag|commit>` picks the version of a repository (the default branch otherwise). `--path <folder>` scans one folder, such as one plugin of a marketplace. When the script says an archive holds several plugins or skills side by side, ask the person which one they mean and scan it with `--path`.
 - `--json` prints the same report as JSON.
+- `--badge` also prints the README badge for a No red flags or Worth a look verdict. Offer it only to someone scanning their own project who asks for a badge.
 - `--lookups` also checks the packages it starts against the OSV vulnerability database and its name against Anthropic's official plugins. It sends those names to `api.osv.dev` and `raw.githubusercontent.com`, so use it only when the person agrees.
 - The exit status is the verdict: 0 No red flags, 1 Worth a look, 2 Do not install, 3 Could not verify, 64 a usage mistake. A status other than 0 is the answer, not a crash: read the output.
 
