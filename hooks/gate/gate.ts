@@ -11,6 +11,10 @@ import { takePass } from '../guard/passes'
 import { scanOnly, showScan, showUnverified, type ScanHow, type Shown } from '../guard/run'
 import type { Host } from '../scan/host'
 import { landsAt, type WriteReading } from './writes'
+import { sha256Hex, treeHash } from '../scan/hash'
+import type { InventoryEntry } from '../scan/inventory'
+import type { ScanReport } from '../scan/scan'
+import { decide } from '../scan/verdict'
 import { row, type CheckResult } from '../scan/checks/types'
 import { sourceRoot } from '../guard/view'
 import { modHost } from '../mod-host'
@@ -85,6 +89,11 @@ export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReadi
     return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed, { why: reading.reason, toClaude: true })
   }
   if (reading.kind === 'mcp') return afterScan(request, reading.label, await showScan($, reading.label, mcpCandidate(reading.servers), options))
+  // A settings change that widens what Claude may do always waits, judged by what it widens.
+  if (reading.kind === 'settings') {
+    const how: ScanHow = { files: {}, root: reading.path, kind: 'settings change' }
+    return afterScan(request, reading.label, await showScan($, reading.label, how, { ...options, report: await settingsReport(reading) }))
+  }
   const host = modHost($)
   const how = await promptCandidate(host, reading)
   const first = await scanOnly(host, reading.label, how, { lookups }).catch(() => undefined)
@@ -94,6 +103,29 @@ export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReadi
     if (earlier?.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${reading.label} on ${day(earlier.decidedAt)}; writing it` }
   }
   return afterScan(request, reading.label, await showScan($, reading.label, how, { ...options, ...(first === undefined ? {} : { report: first }) }))
+}
+
+/**
+ * A settings change as a report: one row of what it widens and narrows,
+ * the verdict that row gives, and a tree of the one file the change makes,
+ * its path included, so an approval covers that exact file.
+ */
+async function settingsReport(reading: Extract<WriteReading, { kind: 'settings' }>): Promise<ScanReport> {
+  const bytes = new TextEncoder().encode(reading.content)
+  const entries: InventoryEntry[] = [{ kind: 'file', path: 'settings.json', size: bytes.length, sha256: await sha256Hex(`${reading.path}\u0000${reading.content}`), isText: true }]
+  const results = [
+    row(
+      {
+        id: 'settings.change',
+        group: 'structure',
+        title: 'What the change lets Claude do',
+        advice: 'Settings decide what Claude runs without asking, what runs on its own, and where its traffic goes. Approve a change only if you asked for it.',
+      },
+      reading.evidence,
+    ),
+  ]
+  // Kept under the file's own path, so /guard forget <path> finds this file's decisions and no other's.
+  return { target: reading.label, inventory: { root: reading.path, entries, totalBytes: bytes.length, treeHash: await treeHash(entries), skipped: [] }, results, verdict: decide(results) }
 }
 
 /** Where a prompt Claude writes is scanned: a skill as its real folder once the write lands, a command or agent as the one file. */

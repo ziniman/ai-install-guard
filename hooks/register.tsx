@@ -3,7 +3,7 @@ import { atom, update } from 'claude-code'
 
 import { BROWSE_NOTE, judge, judgeWrite } from './gate/gate'
 import { readPluginArgs, readShellCommand } from './gate/requests'
-import { normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
+import { keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
 import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
 import { forgetDecisions, loadDecisions, loadLastView, loadReport } from './guard/decisions'
@@ -55,7 +55,7 @@ export const register: Register = (on, options) => {
     if (sub === 'badge') return { text: await badge($) }
     if (sub === 'list') return { text: await list($) }
     if (sub === 'forget' && rest !== '') {
-      const count = (await forgetDecisions($, rest)).length
+      const count = (await forgetDecisions($, rest, await landedName($, rest))).length
       return { text: `AI Install Guard: forgot ${count} decision${count === 1 ? '' : 's'} about ${safeLine(rest)}.` }
     }
     return { text: USAGE }
@@ -123,6 +123,20 @@ export const register: Register = (on, options) => {
 const changing = new Set<string>()
 
 /**
+ * Where a path typed to /guard forget really is, as written changes are kept
+ * (`keptAt`), from the home folder for `~`. Undefined for a bare name.
+ */
+async function landedName($: EngineInterface, name: string): Promise<string | undefined> {
+  const host = modHost($)
+  try {
+    return await keptAt(host, await expandHome(host, name.replace(/^~\\/, '~/')))
+  } catch {
+    // Without the home folder, the name as typed is all there is to match.
+    return undefined
+  }
+}
+
+/**
  * Gate C's judgement of one write: the refusal Claude reads, or a release to
  * call once the write is done. A file outside the places Claude Code loads
  * from claims nothing.
@@ -132,7 +146,9 @@ async function gateWrite($: EngineInterface, input: WriteInput, lookups: boolean
   const reading = await readWrite(modHost($), input)
   if (reading.kind === 'pass') return free
   const path = safeLine(normalizePath(input.file_path))
-  const place = (reading.kind === 'prompt' ? reading.folder : undefined) ?? path
+  // Claimed where the change really lands, so a link to the same skill or file is the same place,
+  // and without regard to case, since a disk that ignores case has one file under both names.
+  const place = normalizePath(await landsAt(modHost($), (reading.kind === 'prompt' ? reading.folder : undefined) ?? input.file_path.replace(/\\/g, '/'))).toLowerCase()
   if (changing.has(place)) return { deny: `AI Install Guard held this change: another change to ${reading.label} is being checked or written. Nothing was written. Make one change at a time, then make this one again.` }
   changing.add(place)
   const release = () => {

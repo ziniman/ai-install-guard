@@ -47,14 +47,15 @@ export async function recordDecision($: EngineInterface, decision: Decision): Pr
 
 /**
  * Removes the decisions about `name`: its target as typed, its folder, or the
- * last part of either. A name inside another (tool in my-tool-2) does not count.
+ * last part of either; `landed` is where the name, as a path, really is. A
+ * name inside another (tool in my-tool-2) does not count.
  */
-export async function forgetDecisions($: EngineInterface, name: string): Promise<Decision[]> {
+export async function forgetDecisions($: EngineInterface, name: string, landed?: string): Promise<Decision[]> {
   const all = await loadDecisions($)
   const last = (path: string): string => path.replace(/\/+$/, '').split('/').pop() ?? path
   // Stored paths are display-safe; compare the name both as typed and made
   // safe, without trailing slashes.
-  const wanted = new Set([name, safeLine(name)].map(value => value.replace(/\/+$/, '')))
+  const wanted = new Set([name, safeLine(name), ...(landed === undefined ? [] : [landed, safeLine(landed)])].map(value => value.replace(/\/+$/, '')))
   const matches = (item: Decision): boolean =>
     [item.target, item.root ?? '', last(item.target), last(item.root ?? '')].some(candidate => candidate !== '' && wanted.has(candidate.replace(/\/+$/, '')))
   const kept = all.filter(item => !matches(item))

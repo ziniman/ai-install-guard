@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.7.0 &nbsp;·&nbsp; 2026-10-25
+
+**Settings** - When Claude writes or edits `settings.json` or `settings.local.json` (the project's, yours or an organization's), the guard compares the file before and after. A change that widens what Claude may do or run waits for you, judged by what it widens: an allow rule for any shell command, `bypassPermissions`, a hook or helper that reaches out, a redirected `ANTHROPIC_BASE_URL` or proxy, or approving every project MCP server is a red flag; any other allow rule, hook or helper, a removed deny rule or hook, every hook turned off, or a plugin turned on outside `/plugin install` is worth a look. An allow rule for a program that runs whatever it is given (`sudo`, `env`, `xargs`, `npx`, or `npm run` with no script named) counts as any shell command. A change that only narrows what runs, or touches nothing that runs, goes on. Each settings file's approvals are its own, a file is found under the name a link gives it, and a settings file inside a plugin or skill folder is that plugin's or skill's
+
+---
+
 ## v0.6.0 &nbsp;·&nbsp; 2026-10-25
 
 **Claude's writes** - When Claude writes or edits a file with its Write or Edit tool in a place Claude Code loads from, the guard checks it as it would land. A skill (its whole folder with the new file in it), command or agent with no red flags goes on with a note; one worth a look or worse is refused until you approve that exact content. An MCP server added or changed in `.mcp.json` or `~/.claude.json` gets the same checks as `claude mcp add` and always waits for you. A change to an installed plugin's files is held as Could not verify. Any other file goes on at once, with nothing read. What cannot be read for certain in those places (a relative path, a write through a link, an edit the guard cannot replay) is held, and two changes to one skill at once are taken one at a time

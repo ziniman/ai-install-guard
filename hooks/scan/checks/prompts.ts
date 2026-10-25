@@ -474,6 +474,11 @@ function countBefore(positions: number[], index: number): number {
   return low
 }
 
+/** Whether an allowed-tools or permission rule lets Claude run any shell command, and why. */
+export function wideShellGrant(tool: string): string | undefined {
+  return judgeTool(tool)?.why
+}
+
 function judgeTool(tool: string): { status: Status; why: string } | undefined {
   const bash = /^Bash\s*(?:\(([\s\S]*)\))?$/i.exec(tool.trim())
   if (bash === null) return undefined
