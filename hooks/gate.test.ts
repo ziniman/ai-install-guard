@@ -2,12 +2,12 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 
 import { readPluginArgs, readShellCommand, splitShell } from './gate/requests'
-import { normalizePath, readWrite, writePlace } from './gate/writes'
+import { keptAt, normalizePath, readWrite, writePlace } from './gate/writes'
 import { settingsChange } from './gate/settings'
 import { PANE_ID } from './guard/view'
 import type { Host, RunResult } from './scan/host'
 import { FIXTURES } from './test-support/fixtures.gen'
-import { HOME, paneProps, serveFixture, serveUi, typed, type FixtureFiles } from './test-support/memfs'
+import { HOME, memoryHost, paneProps, serveFixture, serveUi, typed, type FixtureFiles } from './test-support/memfs'
 
 function fixture(name: string): FixtureFiles {
   const files = FIXTURES[name]
@@ -1223,6 +1223,15 @@ describe('Claude changing settings', () => {
     expect((await $.command.run(typed('guard', `forget ${PROJECT}/cfg/settings.json`))).text).toContain('forgot 1 decision')
     expect((await $.tool.call(write(`${PROJECT}/.claude/settings.json`, widened))).deny).toContain('held this change')
     expect((await $.tool.call(write(`${PROJECT}/.claude/settings.local.json`, widened))).deny).toBeUndefined()
+  })
+
+  test('forget finds a path where the write gate kept it', async () => {
+    const host = memoryHost(HOME, { 'proj/.claude/settings.json': { base64: btoa('{}') }, 'proj/cfg': { link: '.claude' }, 'proj/deep/inner': { link: '../.claude/skills' }, 'proj/.claude/skills/x/SKILL.md': { base64: btoa('x') } })
+    expect(await keptAt(host, `${PROJECT}/cfg/settings.json`)).toBe(`${PROJECT}/.claude/settings.json`)
+    // A link is followed before the `..` after it, as the system does.
+    expect(await keptAt(host, `${PROJECT}/deep/inner/../settings.json`)).toBe(`${PROJECT}/.claude/settings.json`)
+    expect(await keptAt(host, 'C:\\Users\\me\\.claude\\settings.json')).toBe('C:/Users/me/.claude/settings.json')
+    expect(await keptAt(host, 'settings.json')).toBeUndefined()
   })
 
   test('one settings file is changed once at a time, under any name a link gives it', async ($, on) => {

@@ -130,6 +130,17 @@ export async function readWrite(host: Host, input: WriteInput): Promise<WriteRea
   return { kind: 'prompt', label, what, content: after, ...(place.kind === 'skill' && place.folder !== undefined ? { folder: place.folder } : {}), rel: place.rel }
 }
 
+/**
+ * Where a change written to `path` is kept, as the write gate keeps it: the
+ * path followed through every link before any `..` after it, then shown
+ * plainly. Undefined for a relative path, which the gate never keeps.
+ */
+export async function keptAt(host: Host, path: string): Promise<string | undefined> {
+  const raw = slashed(path)
+  if (!/^(?:\/|[A-Za-z]:\/)/.test(raw)) return undefined
+  return normalizePath(await landsAt(host, raw))
+}
+
 /** The most of a skill, command or agent file the guard reads, as the scan does. */
 const MAX_PROMPT_BYTES = 4 * 1024 * 1024
 /** The most of an MCP configuration it reads: the user's own holds every project's settings. */

@@ -3,7 +3,7 @@ import { atom, update } from 'claude-code'
 
 import { BROWSE_NOTE, judge, judgeWrite } from './gate/gate'
 import { readPluginArgs, readShellCommand } from './gate/requests'
-import { landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
+import { keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
 import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
 import { forgetDecisions, loadDecisions, loadLastView, loadReport } from './guard/decisions'
@@ -123,14 +123,13 @@ export const register: Register = (on, options) => {
 const changing = new Set<string>()
 
 /**
- * Where a path typed to /guard forget really is, as written changes are kept:
- * through any link, from the home folder for `~`. Undefined for a bare name.
+ * Where a path typed to /guard forget really is, as written changes are kept
+ * (`keptAt`), from the home folder for `~`. Undefined for a bare name.
  */
 async function landedName($: EngineInterface, name: string): Promise<string | undefined> {
-  if (!/^(?:~(?:\/|$)|\/)/.test(name)) return undefined
   const host = modHost($)
   try {
-    return normalizePath(await landsAt(host, normalizePath(await expandHome(host, name))))
+    return await keptAt(host, await expandHome(host, name.replace(/^~\\/, '~/')))
   } catch {
     // Without the home folder, the name as typed is all there is to match.
     return undefined
