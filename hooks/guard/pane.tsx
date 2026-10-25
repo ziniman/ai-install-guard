@@ -186,6 +186,8 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
   const verdict = view.verdict
   // The version of the guard that is running, so a screenshot or a shared report says which one judged.
   const version = await ownVersion($)
+  // The decision sits right under the verdict, above the counts and the
+  // rows, so a long report never pushes Install and Reject out of sight.
   return (
     <Box flexDirection="column" width={width}>
       <Text bold wrap="wrap">
@@ -225,15 +227,52 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
         </Box>
       )}
 
-      {verdict !== undefined && (
-        <Text>
-          {countsText(verdict.counts)}
+      {verdict !== undefined && view.decision === undefined && !view.confirming && view.deciding !== true && (
+        <Box key="actions" flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
+          {(view.treeHash !== undefined || (view.action === 'install' && view.request !== undefined)) && (
+            <Button key="install" label={primaryLabel(view)} hotkey="i" variant={needsConfirmation(view) ? 'secondary' : 'primary'} onPress={primary} />
+          )}
+          <Button key="reject" label="Reject" hotkey="r" variant={needsConfirmation(view) ? 'primary' : 'secondary'} onPress={decide('rejected', false)} />
+          <Button key="details" label={view.details ? 'Fewer details' : 'Details'} hotkey="d" onPress={() => update($, viewAtom, current => (current === null ? current : { ...current, details: !current.details }))} />
+          <Button key="copy" label="Copy report" hotkey="c" onPress={copy} />
+          {offersBadge && <Button key="badge" label="Copy badge" hotkey="b" onPress={copyBadge} />}
+        </Box>
+      )}
+
+      {verdict !== undefined && view.confirming && view.deciding !== true && (
+        <Box key="confirm-row" flexDirection="column" marginTop={1}>
+          <Text color="warning" wrap="wrap">
+            The verdict is {verdict.recommendation}. {primaryLabel(view)}?
+          </Text>
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+            <Button key="confirm" label={`Yes, ${primaryLabel(view).toLowerCase()}`} hotkey="y" onPress={decide('approved', true)} />
+            <Button key="cancel" label="Cancel" hotkey="n" variant="primary" onPress={() => update($, viewAtom, current => (current === null ? current : { ...current, confirming: false }))} />
+          </Box>
+        </Box>
+      )}
+
+      {view.decision !== undefined && (
+        <Text color={view.decision === 'approved' ? 'success' : 'error'}>
+          {view.treeHash === undefined ? 'Allowed once' : view.decision === 'approved' ? 'Approved' : 'Rejected'}
+          {view.decidedAt === undefined ? '' : ` on ${new Date(view.decidedAt).toISOString().slice(0, 10)}`}
+          {view.treeHash === undefined ? '. Nothing could be pinned, so nothing is remembered; the same install is held again next time.' : '. The decision is saved for this exact version; /guard forget clears it.'}
         </Text>
       )}
-      {verdict !== undefined && view.rows.length > 0 && (
-        <Text dimColor wrap="wrap">
-          Quoted text comes from the scanned files and is untrusted.
-        </Text>
+      {view.decision !== undefined && offersBadge && (
+        <Box key="after-decision" flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
+          <Button key="badge" label="Copy badge" hotkey="b" onPress={copyBadge} />
+        </Box>
+      )}
+
+      {verdict !== undefined && (
+        <Box key="counts" flexDirection="column" marginTop={1}>
+          <Text>{countsText(verdict.counts)}</Text>
+          {view.rows.length > 0 && (
+            <Text dimColor wrap="wrap">
+              Quoted text comes from the scanned files and is untrusted.
+            </Text>
+          )}
+        </Box>
       )}
 
       {GROUPS.filter(group => rowsOf(group.id).length > 0).map(group => (
@@ -287,42 +326,6 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
         </Box>
       ))}
 
-      {verdict !== undefined && view.decision === undefined && !view.confirming && view.deciding !== true && (
-        <Box key="actions" flexDirection="row" gap={1} marginTop={1}>
-          {(view.treeHash !== undefined || (view.action === 'install' && view.request !== undefined)) && (
-            <Button key="install" label={primaryLabel(view)} hotkey="i" variant={needsConfirmation(view) ? 'secondary' : 'primary'} onPress={primary} />
-          )}
-          <Button key="reject" label="Reject" hotkey="r" variant={needsConfirmation(view) ? 'primary' : 'secondary'} onPress={decide('rejected', false)} />
-          <Button key="details" label={view.details ? 'Fewer details' : 'Details'} hotkey="d" onPress={() => update($, viewAtom, current => (current === null ? current : { ...current, details: !current.details }))} />
-          <Button key="copy" label="Copy report" hotkey="c" onPress={copy} />
-          {offersBadge && <Button key="badge" label="Copy badge" hotkey="b" onPress={copyBadge} />}
-        </Box>
-      )}
-
-      {verdict !== undefined && view.confirming && view.deciding !== true && (
-        <Box key="confirm-row" flexDirection="column" marginTop={1}>
-          <Text color="warning" wrap="wrap">
-            The verdict is {verdict.recommendation}. {primaryLabel(view)}?
-          </Text>
-          <Box flexDirection="row" gap={1}>
-            <Button key="confirm" label={`Yes, ${primaryLabel(view).toLowerCase()}`} hotkey="y" onPress={decide('approved', true)} />
-            <Button key="cancel" label="Cancel" hotkey="n" variant="primary" onPress={() => update($, viewAtom, current => (current === null ? current : { ...current, confirming: false }))} />
-          </Box>
-        </Box>
-      )}
-
-      {view.decision !== undefined && (
-        <Text color={view.decision === 'approved' ? 'success' : 'error'}>
-          {view.treeHash === undefined ? 'Allowed once' : view.decision === 'approved' ? 'Approved' : 'Rejected'}
-          {view.decidedAt === undefined ? '' : ` on ${new Date(view.decidedAt).toISOString().slice(0, 10)}`}
-          {view.treeHash === undefined ? '. Nothing could be pinned, so nothing is remembered; the same install is held again next time.' : '. The decision is saved for this exact version; /guard forget clears it.'}
-        </Text>
-      )}
-      {view.decision !== undefined && offersBadge && (
-        <Box key="after-decision" flexDirection="row" gap={1} marginTop={1}>
-          <Button key="badge" label="Copy badge" hotkey="b" onPress={copyBadge} />
-        </Box>
-      )}
     </Box>
   )
 }

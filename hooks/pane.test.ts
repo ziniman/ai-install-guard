@@ -621,3 +621,24 @@ describe('the README badge, PR review round two', () => {
     expect(badgeFor(view(`${'a'.repeat(250)}/${'b'.repeat(250)}`))).toEqual({ refusal: 'The folder name is too long to show in a badge.' })
   })
 })
+
+describe('the decision first', () => {
+  for (const surface of SURFACES) {
+    test(`the buttons come right after the verdict, before the counts and the rows (${surface})`, async ($, on) => {
+      mock.store(on)
+      serveUi(on)
+      serveFixture(on, ROOT, fixture('obfuscated-blob'))
+      await $.command.run(typed('guard', `scan ${ROOT}`))
+      const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface, component: 'Pane', requestId: PANE_ID, props: paneProps() })
+      const order = (await pane.findAll({ type: 'Box' })).map(box => box.key).filter((key): key is string => key !== undefined)
+      const at = (key: string) => order.indexOf(key)
+      expect(at('verdict')).toBeGreaterThanOrEqual(0)
+      expect(at('actions')).toBe(at('verdict') + 1)
+      expect(at('actions')).toBeLessThan(at('counts'))
+      expect(at('counts')).toBeLessThan(order.findIndex(key => key.startsWith('group-')))
+      // However many buttons there are, they wrap within the pane rather than run off its edge.
+      expect((await pane.find({ key: 'actions' }))?.props.flexWrap).toBe('wrap')
+      await pane.unmount()
+    })
+  }
+})
