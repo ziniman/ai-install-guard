@@ -5,7 +5,9 @@
 
 import type { Host } from '../scan/host'
 import { safeLine } from '../scan/safe-text'
+import type { Evidence } from '../scan/checks/types'
 import { mcpServerProblem } from './requests'
+import { settingsChange } from './settings'
 
 /** One MCP server a configuration file would hold: where it is kept, and its configuration. */
 export type McpEntry = { name: string; scope: string; server: Record<string, unknown>; invalid?: boolean }
@@ -19,6 +21,8 @@ export type WriteReading =
    */
   | { kind: 'prompt'; label: string; what: 'skill' | 'command' | 'agent' | 'output style'; content: string; folder?: string; rel: string }
   | { kind: 'mcp'; label: string; servers: McpEntry[] }
+  /** A settings change that widens what Claude may do: the file it makes, and what it widens or narrows. */
+  | { kind: 'settings'; label: string; path: string; content: string; evidence: Evidence[] }
   | { kind: 'unreadable'; label: string; reason: string }
 
 /** What Claude's Write and Edit tools are given. */
@@ -32,6 +36,7 @@ type Place =
   | { kind: 'plugins' }
   | { kind: 'mcp-project' }
   | { kind: 'mcp-user' }
+  | { kind: 'settings' }
 
 const PASS: WriteReading = { kind: 'pass' }
 
@@ -68,6 +73,8 @@ export function writePlace(rawPath: string): Place | undefined {
   const name = lower.slice(lower.lastIndexOf('/') + 1)
   if (name === '.mcp.json') return { kind: 'mcp-project' }
   if (name === '.claude.json') return { kind: 'mcp-user' }
+  // A project's or the user's settings, beside .claude's other files, and an organization's.
+  if (/(?:^|\/)\.claude\/settings(?:\.local)?\.json$/.test(lower) || name === 'managed-settings.json') return { kind: 'settings' }
   const found = /(?:^|\/)\.claude\/(skills|commands|agents|output-styles|plugins)\//.exec(lower)
   if (found === null) return undefined
   const area = found[1] as 'skills' | 'commands' | 'agents' | 'output-styles' | 'plugins'
@@ -103,7 +110,7 @@ export async function readWrite(host: Host, input: WriteInput): Promise<WriteRea
   // A write to a link changes where the link leads, which a scan does not read.
   if ((await host.stat(raw).catch(() => undefined))?.isLink === true) return held('it writes through a link, and the guard reads files, not where links lead; write the file the link points to')
   // The file as it is now is read only when it is needed: for an edit, or to compare a configuration's servers.
-  const config = place.kind === 'mcp-project' || place.kind === 'mcp-user'
+  const config = place.kind === 'mcp-project' || place.kind === 'mcp-user' || place.kind === 'settings'
   const current = input.tool === 'Edit' || config ? await readText(host, raw, config ? MAX_CONFIG_BYTES : MAX_PROMPT_BYTES) : { text: undefined }
   if ('tooLarge' in current) return held(`the file is ${current.tooLarge} bytes, more than the guard reads`)
   if ('unreadable' in current) return held('the guard could not read the file as it is now, so it cannot tell what the change makes')
@@ -111,6 +118,7 @@ export async function readWrite(host: Host, input: WriteInput): Promise<WriteRea
   const after = input.tool === 'Write' ? input.content : edited(before, input)
   // Claude Code matches an edit more loosely than the guard can replay it, so one the guard cannot replay may still apply.
   if (after === undefined) return held('the guard could not make this edit to the file as it is now, so it cannot check what it makes; write the whole file instead')
+  if (place.kind === 'settings') return settingsWrite(shown, path, before, after)
   if (config) return mcpWrite(place.kind, shown, before, after, path.slice(0, path.lastIndexOf('/')) || '/')
   const what = place.kind
   const label = what === 'skill' ? `the skill ${safeLine(place.name)}` : `the ${what} ${safeLine(place.rel.slice(place.rel.indexOf('/') + 1))}`
@@ -160,6 +168,28 @@ function edited(before: string | undefined, input: Extract<WriteInput, { tool: '
   if (input.replace_all === true) return before.split(input.old_string).join(input.new_string)
   if (count > 1) return undefined
   return before.replace(input.old_string, () => input.new_string)
+}
+
+/**
+ * A settings file before and after: held when the change widens what Claude
+ * may do or run; a change that only narrows it, or touches nothing that runs,
+ * goes on. A file that does not parse is no settings Claude Code could use.
+ */
+function settingsWrite(shown: string, path: string, before: string | undefined, after: string): WriteReading {
+  const now = parseObject(after)
+  if (now === undefined) return PASS
+  const evidence = settingsChange(parseObject(before ?? '') ?? {}, now, shown)
+  if (!evidence.some(item => item.status === 'warn' || item.status === 'fail')) return PASS
+  return { kind: 'settings', label: `the settings in ${shown}`, path, content: after, evidence }
+}
+
+function parseObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(text.trim() === '' ? '{}' : text)
+    return isRecord(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**

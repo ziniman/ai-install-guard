@@ -177,7 +177,8 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
 /** Code passed inline to an interpreter (`python3 -c "..."`, `node -e "..."`). */
 const INLINE_CODE = /\b(?:python[23]?|node|deno|bun|perl|ruby|php|osascript|pwsh|powershell)(?:\.exe)?\s+(?:-[A-Za-z]*\s+)*-(?:c|e|E|r|Command)\b/
 
-function dangersIn(command: string): string[] {
+/** What makes a shell command a red flag in a hook: it reaches out, runs downloaded code, touches keys or changes settings. */
+export function dangersIn(command: string): string[] {
   const found = DANGERS.filter(({ pattern }) => pattern.test(command)).map(({ what }) => what)
   // Inline code is judged as code: a socket, a process or a network call in it fails.
   if (INLINE_CODE.test(command) && [NETWORK_CODE, PROCESS_CODE, PYTHON_PROCESS, CODE_FROM_TEXT, PYTHON_CODE_FROM_TEXT, /\bsocket\b/].some(pattern => pattern.test(command))) {
