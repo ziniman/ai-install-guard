@@ -17,9 +17,10 @@ import {
   WRITE_CODE,
   WRITE_SHELL,
 } from './patterns'
-import { languageOf, secretName } from './code'
+import { languageOf, localImports, networkOf, proseTest, secretName } from './code'
+import { belongsTo } from './mcp'
 import { promptConcerns } from './prompts'
-import { findAll, findFirst, spanKinds, type Match } from './text'
+import { findAll, findFirst, judgedMatches, lineIndex, spanKinds, type Match } from './text'
 import { row, type CheckResult, type Evidence } from './types'
 
 const GROUP = 'hooks' as const
@@ -90,6 +91,7 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
     if (text === undefined) continue
     // Read as the interpreter the hook runs it with, not as its name suggests.
     const kindAt = spanKinds(text, ctx.interpreters.get(file.path) ?? languageOf(file.path, text))
+    const inProse = proseTest(text, kindAt)
     const isInert = (match: Match): boolean => ['comment', 'regex', 'trailing-comment'].includes(kindAt(match.index))
     const found = (match: Match, what: string): Evidence => {
       const shown = `${what}: ${what === 'reads secret environment variables' ? secretName(match) : match.excerpt}`
@@ -98,6 +100,23 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
       // After code on the same line, a comment may be hiding a command: a warning at least.
       if (kind === 'trailing-comment') return { file: file.path, line: match.line, excerpt: `${shown} (in a comment after code)`, status: 'warn' }
       return { file: file.path, line: match.line, excerpt: shown, status: 'fail' }
+    }
+    // A key is judged by where the script, and the local modules it imports, can send it.
+    let reach: ReturnType<typeof networkOf> | undefined
+    const keyRead = (match: Match): Evidence => {
+      const item = found(match, 'reads secret environment variables')
+      if (item.status !== 'fail') return item
+      // A docstring or message that names the key describes it; a download in prose would not be excused.
+      if (inProse(match.index)) return { ...item, excerpt: `${item.excerpt} (in prose, such as a docstring, not code)`, status: 'info' }
+      const name = secretName(match)
+      if (/process\.env|os\.environ|printenv|\benv\b/.test(match.text)) return item
+      reach ??= networkOf(ctx, localImports(ctx, file.path))
+      if (!reach.sends) return { ...item, excerpt: `reads ${name}; neither it nor what it imports has network code`, status: 'info' }
+      // An address built while it runs could be anywhere, whatever hosts the code also names.
+      if (!reach.builtAddress && reach.hosts.length > 0 && reach.hosts.every(host => belongsTo(name, host))) {
+        return { ...item, excerpt: `uses ${name} with ${reach.hosts.slice(0, 3).join(', ')}, the service it belongs to`, status: 'info' }
+      }
+      return item
     }
     // Gates (does the script write at all?) count every match but those in
     // whole-line comments or real patterns: a trailing comment is no proof.
@@ -108,7 +127,13 @@ export function hookChecks(ctx: ScanContext): CheckResult[] {
       return [...all.filter(match => !isInert(match)).slice(0, 3), ...all.filter(isInert).slice(0, 2)]
     }
     for (const { pattern, what } of DANGERS) {
-      for (const match of matches(pattern)) commands.push(found(match, what))
+      // A key named in a docstring is a note, so every read is judged first: notes cannot crowd out a real one.
+      if (pattern === SECRET_ENV) {
+        const lineOf = lineIndex(text)
+        const judge = (index: number, found: string) => ({ status: keyRead({ index, line: lineOf(index), text: found, excerpt: '' }).status ?? 'fail' })
+        commands.push(...judgedMatches(text, pattern, judge, 3).map(({ match }) => keyRead(match)))
+      }
+      else for (const match of matches(pattern)) commands.push(found(match, what))
     }
     for (const match of matches(AUTO_APPROVE)) approvals.push(found(match, 'approves the tool call'))
     const writes = live(WRITE_SHELL) || live(WRITE_CODE)

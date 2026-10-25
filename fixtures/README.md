@@ -36,7 +36,7 @@ note on its row.
 | `skill-credentials` | `prompts.credentials` | Do not install |
 | `skill-bash-wildcard` | `prompts.tools`, as "It can: run any shell command without asking, in the build skill" | No red flags |
 | `skill-remote-instructions` | `prompts.remote` | Worth a look |
-| `command-name-collision` | `prompts.names` | Worth a look |
+| `command-name-collision` | `prompts.names`, as a note (Claude Code's own `/help` keeps the bare name) | No red flags |
 | `scanner-pass-readme` | `prompts.scanner`, and its `curl` hook still fails | Do not install |
 | `script-exec` | `code.execution`, as "It can: start git" | No red flags |
 | `obfuscated-blob` | `code.obfuscation` | Worth a look |
@@ -50,5 +50,6 @@ note on its row.
 | `mcp-curl` | `mcp.launch` (an MCP server that downloads a script and runs it); the address in its script is a note | Do not install |
 | `lfs-pointer` | `structure.fetched` (a command stored as a Git LFS pointer; it has no `.gitattributes`, which would apply the filter to this repository) | Do not install |
 | `mcp-remote-secret` | `mcp.credentials` (an Anthropic key sent to another host) | Do not install |
+| `benign-mentions` | nothing: a review plugin that quotes an injection phrase, names its key in a `.env` example and a docstring, runs `npx tsc`, lists key file names never to send, and sends its Anthropic key only to Anthropic (shown as "It can: use your ANTHROPIC_API_KEY with api.anthropic.com") | No red flags |
 
 Name nothing here `*.test.ts`: the test runner would pick it up.

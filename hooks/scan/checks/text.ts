@@ -41,6 +41,45 @@ export function findAll(text: string, pattern: RegExp, limit = 20, keep?: (index
   return matches
 }
 
+/** A lookup from an index in `text` to its 1-based line number. */
+export function lineIndex(text: string): (index: number) => number {
+  const starts = lineStarts(text)
+  return index => lineAt(starts, index)
+}
+
+/**
+ * A pattern's matches, judged before any is counted and the worst kept: up
+ * to `limit` that `judge` fails, then warnings to fill `limit`, then up to
+ * `notes` notes. A judgement of `pass` is dropped. However many harmless
+ * matches come first, they cannot use up the limit and hide a real one.
+ */
+export function judgedMatches<J extends { status: 'pass' | 'info' | 'warn' | 'fail' }>(
+  text: string,
+  pattern: RegExp,
+  judge: (index: number, found: string) => J,
+  limit: number,
+  notes = 2,
+): { match: Match; judgement: J }[] {
+  const sticky = new RegExp(pattern.source, `${pattern.flags.replace(/[gy]/g, '')}y`)
+  const judged = new Map<number, J>()
+  const judgementAt = (index: number): J => {
+    let known = judged.get(index)
+    if (known === undefined) {
+      sticky.lastIndex = index
+      known = judge(index, sticky.exec(text)?.[0] ?? '')
+      judged.set(index, known)
+    }
+    return known
+  }
+  const out: { match: Match; judgement: J }[] = []
+  for (const [status, count] of [['fail', limit], ['warn', limit], ['info', notes]] as const) {
+    const room = status === 'info' ? count : count - out.length
+    if (room <= 0) continue
+    for (const match of findAll(text, pattern, room, index => judgementAt(index).status === status)) out.push({ match, judgement: judgementAt(match.index) })
+  }
+  return out
+}
+
 /** The first match, or undefined. */
 export function findFirst(text: string, pattern: RegExp): Match | undefined {
   return findAll(text, pattern, 1)[0]

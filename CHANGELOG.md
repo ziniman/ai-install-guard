@@ -4,6 +4,20 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.4.1 &nbsp;·&nbsp; 2026-10-25
+
+**`prompts`** - Text that writes about an attack is no longer read as one. A quoted "ignore previous instructions", "data exfiltration" in a list of what a skill must not do, a `<system>` placeholder with no closing tag, a key named in a `.env` example, a credential file named but not read, an author's note in an HTML comment, `npx tsc` and a command named like `/help` (Claude Code's own keeps the name) are notes. A phrase that only hides something ("silently", "without telling the user") counts when its paragraph names an address, a network tool or a credential. A hidden comment that does, or tells the model to keep quiet, is still worth a look, and a key sent anywhere but its own service still fails. Homebrew's and other well-known installers piped into a shell are worth a look; any other download and run still fails. Every match is judged before any is dropped, so mentions placed first cannot hide a real finding, and the quotes around a frontmatter value do not make it a mention
+
+**`hooks`** - A hook script is judged with the local modules it imports: a key it reads fails only when that code can send it somewhere other than the key's own service, and a docstring that names the key is a note. A file passed to a launcher script (`bash run.sh hook.py`) is read as its own language, not as shell
+
+**`code`** - Words in a string that read as prose, such as a review prompt that names `eval()` or `169.254.169.254`, are notes. A key used only with its own service, a key file's bare name in a list with no network or home folder in the file, `core.hooksPath=/dev/null`, a permission mode named in a list, a zero-width joiner inside an emoji, and a data-collection host that is the plugin's own service (a Telegram plugin talking to Telegram) are no longer flagged. JavaScript counts as minified only when its long lines are mostly code, not a long prompt string; a minified library under `assets/` or `vendor/` and a large file are notes
+
+**`mod`** - Whether a mod calls itself cosmetic is read from its manifest's description when it has one, and never from a README image's alt text
+
+**`benchmark`** - `scripts/benchmark.js` scans every plugin a marketplace ships in its own folder and counts the verdicts. CI runs it on Anthropic's official marketplace at a pinned commit and fails if a change flags more: 50 of its 53 plugins now scan with no red flags and none as Do not install, against 38 and 4 in 0.4.0
+
+---
+
 ## v0.4.0 &nbsp;·&nbsp; 2026-10-25
 
 **`verdict`** - The verdict now answers one question, whether anything is suspicious: **No red flags**, **Worth a look**, **Do not install** or **Could not verify**. What a candidate can do (shell hooks, MCP servers it starts or connects to, network access, Bash allowed without asking, programs its scripts start) is listed beside it on an "It can" line, like an app's permissions, and no longer makes it look worse on its own. Against Anthropic's official marketplace, No red flags went from 21 of 54 plugins to 39, and Do not install from 12 to 4

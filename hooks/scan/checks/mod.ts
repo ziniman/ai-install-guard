@@ -164,7 +164,11 @@ export function modChecks(ctx: ScanContext, validator: ValidatorReport | undefin
     for (const name of dedupe(info.envNames)) medium.push({ file: name.file, line: name.line, excerpt: `reads the environment variable ${name.name}`, status: 'info' })
   }
 
-  const description = [ctx.manifest?.description, ctx.manifest?.name, proseOf(ctx.readme?.text ?? '').slice(0, 800)].filter(item => typeof item === 'string').join('\n')
+  // What the mod says it is: its manifest's description when it has one, the
+  // README's opening prose only when it does not. A README's screenshots and
+  // asides ("a green banner when the proof passes") describe a page, not the mod.
+  const manifestDescription = typeof ctx.manifest?.description === 'string' && ctx.manifest.description.trim() !== '' ? ctx.manifest.description : undefined
+  const description = [manifestDescription ?? proseOf(ctx.readme?.text ?? '').slice(0, 800), ctx.manifest?.name].filter(item => typeof item === 'string').join('\n')
   const cosmetic = COSMETIC.exec(description)
   const strongest = uses.find(item => item.capability.risk === 'high')
   const mismatch: Evidence[] =
@@ -235,13 +239,14 @@ export function baseForm(phrase: string): string {
   return phrase.replace(/^([a-z]+?)(?:(?<=(?:sh|ch|x|z|ss))es|s)\b/, '$1').replace(/ and can /, ' and ')
 }
 
-/** A README's prose: no code, links, images, badges, HTML or URLs. */
+/** A README's prose: no code, images (alt text included), badges, HTML or URLs; a link keeps its words. */
 function proseOf(markdown: string): string {
   return markdown
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/`[^`\n]*`/g, ' ')
     .replace(/<[^>\n]+>/g, ' ')
-    .replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g, (_, label: string) => (label.includes('[') ? ' ' : label))
+    .replace(/!\[[^\]\n]*\]\([^)\n]*\)/g, ' ')
+    .replace(/\[([^\]\n]*)\]\([^)\n]*\)/g, (_, label: string) => (label.includes('[') ? ' ' : label))
     .replace(/\bhttps?:\/\/\S+/g, ' ')
 }
 

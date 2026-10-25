@@ -10,6 +10,11 @@ permissions:
 env:
   # The mod API is early access and changes between releases: bump on purpose.
   CLAUDE_CODE_VERSION: 2.1.308
+  # The official marketplace commit the benchmark scans, and what it may
+  # flag. Move them together, on purpose, after reading the new flags.
+  OFFICIAL_MARKETPLACE_SHA: 58267944f92187b7d6a1c822165c96c81c864806
+  OFFICIAL_MAX_RED: 0
+  OFFICIAL_MAX_LOOK: 3
 
 jobs:
   validate:
@@ -68,6 +73,28 @@ jobs:
           name: ai-install-guard-skill
           path: dist/ai-install-guard-skill.zip
           if-no-files-found: error
+
+      # Anthropic's own marketplace, at one commit: well-made plugins that should
+      # scan with no red flags. A change to the checks that makes them noisier
+      # fails here. Its files are only read, never installed or run.
+      - name: Fetch the official marketplace
+        run: |
+          mkdir -p "$RUNNER_TEMP/official"
+          cd "$RUNNER_TEMP/official"
+          git init -q
+          git fetch -q --depth 1 https://github.com/anthropics/claude-plugins-official.git "$OFFICIAL_MARKETPLACE_SHA"
+          git -c core.hooksPath=/dev/null checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$OFFICIAL_MARKETPLACE_SHA"
+
+      - name: Benchmark on the official marketplace
+        run: |
+          set -o pipefail
+          {
+            echo '### Official marketplace benchmark'
+            echo '```'
+            node scripts/benchmark.js "$RUNNER_TEMP/official" --max-red "$OFFICIAL_MAX_RED" --max-look "$OFFICIAL_MAX_LOOK" 2>&1
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Release preview
         run: |
