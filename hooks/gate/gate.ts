@@ -127,9 +127,9 @@ async function scanThenHold($: EngineInterface, label: string, how: ScanHow, req
  * verify, which Install anyway lets through once, as that exact command.
  */
 export async function judgeShell($: EngineInterface, change: Exclude<ShellChange, { kind: 'pass' }>, command: string, lookups: boolean): Promise<Judgement> {
-  const request = (label: string): GuardRequest => ({ origin: 'tool', args: command, label, subject: 'write' })
+  const request = (label: string): GuardRequest => ({ origin: 'tool', args: command, label, subject: 'command' })
   if (change.kind === 'write') {
-    const reading = await readWrite(modHost($), change.input)
+    const reading = await readWrite(modHost($), change.input, change.configDir)
     if (reading.kind === 'pass') return { kind: 'allow' }
     return judgeWrite($, reading, request(reading.label), lookups, change.copied)
   }
@@ -233,6 +233,8 @@ function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement
 
 /** The words an answer uses for what was held: an install, or a write. */
 function wordsFor(request: GuardRequest): { thing: string; done: string; doing: string; again: string } {
+  // A pass lets exactly the command through, so a change a command makes is made again by running it again.
+  if (request.subject === 'command') return { thing: 'change', done: 'Nothing was written', doing: 'running it', again: 'run the same command again' }
   return request.subject === 'write'
     ? { thing: 'change', done: 'Nothing was written', doing: 'writing it', again: 'make the same change again' }
     : { thing: 'install', done: 'Nothing was installed', doing: 'installing it', again: 'run the same command again' }
@@ -248,7 +250,7 @@ function rejected(request: GuardRequest, name: string, where: string, decidedAt:
   const when = decidedAt === undefined ? '' : ` on ${day(decidedAt)}`
   if (request.origin === 'tool') {
     const words = wordsFor(request)
-    return { kind: 'hold', text: `AI Install Guard: the person rejected this exact version of ${name}${where}${when}. ${words.done}. Do not ${request.subject === 'write' ? 'write it' : 'install it'} or try another way.` }
+    return { kind: 'hold', text: `AI Install Guard: the person rejected this exact version of ${name}${where}${when}. ${words.done}. Do not ${request.subject === 'write' || request.subject === 'command' ? 'write it' : 'install it'} or try another way.` }
   }
   return { kind: 'hold', text: `AI Install Guard: you rejected ${name}${where}${when}. Nothing was installed. /guard forget ${name} judges it again.` }
 }
@@ -275,7 +277,7 @@ function hold(
     const next = placed
       ? `The verdict and the Install and Reject buttons are in the guard's pane. Tell the person the ${words.thing} waits for their decision there, and ${words.again} only after they say they approved it.`
       : 'This session cannot show the guard\'s pane, so the person cannot approve it here.'
-    return { kind: 'hold', text: `AI Install Guard held this ${words.thing} for the person to review: ${unverified ? `it ${what}${more.toClaude === true ? why : ''}` : what}. ${words.done}. Do not retry it or ${request.subject === 'write' ? 'write it' : 'install it'} another way. ${next}` }
+    return { kind: 'hold', text: `AI Install Guard held this ${words.thing} for the person to review: ${unverified ? `it ${what}${more.toClaude === true ? why : ''}` : what}. ${words.done}. Do not retry it or ${request.subject === 'write' || request.subject === 'command' ? 'write it' : 'install it'} another way. ${next}` }
   }
   const said = unverified ? `AI Install Guard ${what}${why}.` : `AI Install Guard: ${what}.`
   if (!placed) {

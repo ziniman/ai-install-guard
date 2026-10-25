@@ -16,7 +16,7 @@ export type ShellChange =
   /** A change the guard cannot check: held as Could not verify. `claim` is the place it would change, when known. */
   | { kind: 'unreadable'; label: string; reason: string; claim?: string }
   /** Text that lands in one file, judged as Claude's Write of it would be. `copied` when it comes from another file, so it is shown even with no red flags. */
-  | { kind: 'write'; label: string; input: { tool: 'Write'; file_path: string; content: string }; copied: boolean; claim: string }
+  | { kind: 'write'; label: string; input: { tool: 'Write'; file_path: string; content: string }; copied: boolean; claim: string; configDir?: string }
   /** A folder copied in as a skill, or into one: scanned where it is now. */
   | { kind: 'folder'; label: string; path: string; claim: string }
   /** A repository cloned in: scanned at the commit it would clone. */
@@ -43,11 +43,13 @@ type Found = { write: ShellWrite; path: string; landed: string; place: ReturnTyp
  * there passes; one that changes one thing is turned into what the gate
  * judges; anything else there is held as one the guard cannot read.
  */
-export async function readShellChange(host: Host, command: string, cwd: string | undefined): Promise<ShellChange> {
+export async function readShellChange(host: Host, command: string, cwd: string | undefined, claudeFolder: () => Promise<string | undefined> = async () => undefined): Promise<ShellChange> {
   const read = readShellWrites(command, cwd)
   // A part only known as it runs counts when it names Claude's own folder.
   let hidden: Unseen | undefined = read.unseen.find(item => NAMES_CLAUDE.test(item.text ?? command))
   if (read.writes.length === 0) return hidden === undefined ? PASS : unseen(hidden)
+  // Only a command that writes looks up where CLAUDE_CONFIG_DIR keeps Claude's folder.
+  const configDir = await claudeFolder()
 
   let home: string | undefined | null = null
   const homeFolder = async (): Promise<string | undefined> => {
@@ -60,6 +62,8 @@ export async function readShellChange(host: Host, command: string, cwd: string |
       const found = await homeFolder()
       return found === undefined ? undefined : `${found}${path.slice(1)}`
     }
+    // Another user's home (`~root`) is not looked up: where it is stays unknown.
+    if (path.startsWith('~')) return undefined
     if (/^(?:\/|[A-Za-z]:\/)/.test(path)) return path
     if (named.cwd === undefined) return undefined
     const base = await absolute({ path: named.cwd, cwd: undefined })
@@ -72,16 +76,16 @@ export async function readShellChange(host: Host, command: string, cwd: string |
     const to = await absolute(write.to)
     if (to === undefined) {
       // Relative to a folder only known as it runs: a place only when its own words name one.
-      if (writePlace(write.to.path) !== undefined || coversPlace(write.to.path)) unreadable.push({ label: `a change to ${safeLine(write.to.path)}`, reason: 'it writes to a path relative to a folder only known as it runs' })
+      if (writePlace(write.to.path, configDir) !== undefined || coversPlace(write.to.path, configDir)) unreadable.push({ label: `a change to ${safeLine(write.to.path)}`, reason: 'it writes to a path relative to a folder only known as it runs' })
       else hidden ??= NAMES_CLAUDE.test(command) ? { reason: 'it writes to a path relative to a folder only known as it runs' } : undefined
       continue
     }
     for (const { path, source } of await landings(host, write, to, absolute)) {
       const landed = normalizePath(await landsAt(host, path))
-      const place = writePlace(landed) ?? writePlace(normalizePath(path))
+      const place = writePlace(landed, configDir) ?? writePlace(normalizePath(path), configDir)
       // Anything unpacked or checked out below a folder that holds the home folder can reach ~/.claude.
       const holder = write.kind === 'unknown' && write.deep === true ? await homeFolder() : undefined
-      const covers = coversPlace(landed) || coversPlace(normalizePath(path)) || (holder !== undefined && (holder === landed || holder.startsWith(`${landed.replace(/\/+$/, '')}/`)))
+      const covers = coversPlace(landed, configDir) || coversPlace(normalizePath(path), configDir) || (holder !== undefined && (holder === landed || holder.startsWith(`${landed.replace(/\/+$/, '')}/`)))
       // Taking a file away adds nothing, except a settings file's rules.
       if (write.kind === 'remove' ? place?.kind !== 'settings' : place === undefined && !covers) continue
       found.push({ write, path, landed, place, covers, ...(source === undefined ? {} : { source }) })
@@ -96,7 +100,7 @@ export async function readShellChange(host: Host, command: string, cwd: string |
   }
   const [failed] = unreadable
   if (failed !== undefined) return { kind: 'unreadable', ...failed }
-  return judgeable(host, found[0] as Found)
+  return judgeable(host, found[0] as Found, configDir)
 }
 
 /**
@@ -115,15 +119,21 @@ async function landings(host: Host, write: ShellWrite, to: string, absolute: (na
 }
 
 /**
- * A path that is Claude's own folder, or one of the folders it loads
- * skills, commands, agents, output styles or plugins from, as a whole.
+ * A path that is Claude's own folder (~/.claude, a project's .claude, or the
+ * one CLAUDE_CONFIG_DIR names), or one of the folders it loads skills,
+ * commands, agents, output styles or plugins from, as a whole.
  */
-export function coversPlace(path: string): boolean {
-  return /(?:^|\/)\.claude(?:\/(?:skills|commands|agents|output-styles|plugins))?$/.test(path.toLowerCase().replace(/\/+$/, ''))
+export function coversPlace(path: string, configDir?: string): boolean {
+  const lower = path.toLowerCase().replace(/\/+$/, '')
+  const areas = '(?:\\/(?:skills|commands|agents|output-styles|plugins))?$'
+  if (new RegExp(`(?:^|\\/)\\.claude${areas}`).test(lower)) return true
+  if (configDir === undefined) return false
+  const dir = normalizePath(configDir).toLowerCase().replace(/\/+$/, '')
+  return lower === dir || (lower.startsWith(`${dir}/`) && new RegExp(`^${areas}`).test(lower.slice(dir.length)))
 }
 
 /** The one change found, as the gate judges it. */
-async function judgeable(host: Host, one: Found): Promise<ShellChange> {
+async function judgeable(host: Host, one: Found, configDir: string | undefined): Promise<ShellChange> {
   const { write, place } = one
   const shown = safeLine(one.landed)
   const label = `a change to ${shown}`
@@ -131,9 +141,12 @@ async function judgeable(host: Host, one: Found): Promise<ShellChange> {
   const folder = place?.kind === 'skill' ? place.folder : undefined
   const claim = (folder === undefined ? one.landed : normalizePath(await landsAt(host, folder))).toLowerCase()
   const held = (reason: string): ShellChange => ({ kind: 'unreadable', label, reason, claim })
-  if (one.covers) return held(`it writes over ${shown} as a whole, where Claude Code keeps what it loads, so the guard cannot tell what it adds; change one skill, command or file at a time`)
+  if (one.covers) {
+    const what = write.kind === 'unknown' ? `${write.what} would land in` : 'it writes over'
+    return held(`${what} ${shown} as a whole, where Claude Code keeps what it loads, so the guard cannot tell what it adds; change one skill, command or file at a time`)
+  }
   if (place?.kind === 'plugins') return held('it changes the files of a plugin Claude Code installed, outside any install, so what runs would no longer be what was approved')
-  const write1 = (content: string, copied: boolean): ShellChange => ({ kind: 'write', label, input: { tool: 'Write', file_path: one.path, content }, copied, claim })
+  const write1 = (content: string, copied: boolean): ShellChange => ({ kind: 'write', label, input: { tool: 'Write', file_path: one.path, content }, copied, claim, ...(configDir === undefined ? {} : { configDir }) })
   switch (write.kind) {
     case 'content': {
       if (!write.append) return write1(write.content, false)
@@ -144,7 +157,7 @@ async function judgeable(host: Host, one: Found): Promise<ShellChange> {
     case 'remove':
       return write1('{}', false)
     case 'unknown':
-      return held(`${write.what} lands there, and what it is is only known as it runs; write the file's text with Write, or copy a file that is already there`)
+      return held(`${write.what} would land there, and what it is is only known as it runs; write the file's text with Write, or copy a file that is already there`)
     case 'clone': {
       if (write.submodules) return held("it also clones the repository's submodules, which the guard does not read; clone without --recurse-submodules")
       try {
@@ -170,7 +183,10 @@ async function judgeable(host: Host, one: Found): Promise<ShellChange> {
         return write1(text, true)
       }
       const source = safeLine(one.source)
-      const kind = (await host.stat(one.source).catch(() => undefined))?.kind
+      const stat = await host.stat(one.source).catch(() => undefined)
+      const kind = stat?.kind
+      // A link copied as a link loads whatever it points to, now and later; copied as a file, it is still not the file the guard would read.
+      if (stat?.isLink === true) return held(`it copies ${source}, which is a link, so what lands is whatever it points to, now and after any later change, which no scan can pin; copy the file it points to instead`)
       if (kind === undefined) return held(`it copies ${source}, which is not there yet: what a command makes before it copies cannot be checked before it runs; make it first, then copy it in a command of its own`)
       if (kind === 'dir') {
         if (place?.kind !== 'skill' && place?.kind !== 'command' && place?.kind !== 'agent' && place?.kind !== 'output style') return held(`it copies the folder ${source} over a configuration file`)

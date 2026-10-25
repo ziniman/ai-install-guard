@@ -51,7 +51,7 @@ const NO_CONTENT = new Set([
   'hexdump', 'xxd', 'od', 'strings', 'mkdir', 'rmdir', 'chmod', 'chown', 'chgrp', 'touch', 'xattr', 'lsof', 'printenv', 'whereis', 'man', 'help',
   'export', 'unset', 'set', 'alias', 'unalias', 'local', 'declare', 'typeset', 'readonly', 'read', 'exit', 'return', 'wait', 'trap', 'shift', 'shopt',
   'history', 'hash', 'umask', 'ulimit', '[[', ']]', ':', 'fi', 'done', 'esac', '}', 'for', 'select', 'case', 'function', 'in', 'kill', 'pkill', 'ps',
-  'id', 'whoami', 'hostname', 'uname', 'tput', 'clear', 'bc', 'expr', 'seq', 'yes', 'awk', 'gawk', 'paste', 'join', 'look', 'zcat', 'gzcat',
+  'id', 'whoami', 'hostname', 'uname', 'tput', 'clear', 'bc', 'expr', 'seq', 'yes', 'paste', 'join', 'look', 'zcat', 'gzcat',
 ])
 
 /** Words that open or continue a compound command before the command itself: `if`, `then cp …`, `do mv …`, `! test`. */
@@ -71,9 +71,13 @@ const COPY_VALUES: Record<string, { short: string; long: readonly string[] }> = 
   gmv: { short: 'tS', long: ['--target-directory', '--suffix'] },
   install: { short: 'tmogS', long: ['--target-directory', '--mode', '--owner', '--group', '--suffix'] },
   ln: { short: 'tS', long: ['--target-directory', '--suffix'] },
+  scp: { short: 'cFiJlLoPS', long: [] },
   rsync: { short: 'efTBM', long: ['--rsh', '--filter', '--exclude', '--include', '--exclude-from', '--include-from', '--files-from', '--chmod', '--chown', '--log-file', '--partial-dir', '--temp-dir', '--backup-dir', '--suffix', '--rsync-path', '--port', '--password-file', '--compare-dest', '--copy-dest', '--link-dest', '--block-size', '--max-size', '--min-size', '--timeout', '--bwlimit', '--remote-option', '--out-format', '--info', '--debug', '--iconv', '--usermap', '--groupmap'] },
   ditto: { short: '', long: ['--arch', '--bom'] },
 }
+
+/** A path on another machine, as rsync and scp name one (`host:path`, `user@host:path`, `rsync://`); a drive letter is not a host. */
+const REMOTE = /^(?:rsync:\/\/|scp:\/\/|(?:[^/@:\s]+@)?[^/:\s]{2,}:)/
 
 /** curl's short options that take a value; of them `o` names the file it writes, `c` and `D` other files it writes. */
 const CURL_VALUES = 'ocDdHXuAebFTxwKmryYzCEQtUP'
@@ -188,12 +192,17 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     if (script !== undefined) {
       if (unknown(flag + 1)) out.unseen.push({ reason: `${program} runs a script only known as it runs` })
       else readNested(script, where, out, depth)
-    } else if (command.input !== undefined) readNested(command.input, where, out, depth)
-    else out.unseen.push({ reason: `${program} runs a script the guard does not read`, text: ownText })
+      return
+    }
+    if (command.input !== undefined) return readNested(command.input, where, out, depth)
+    // A script file is code already on disk, judged as any program is, by the paths it is given.
+    const file = args.findIndex(arg => !arg.startsWith('-'))
+    if (file !== -1) return pathsGiven(lastPart(args[file] as string), args.slice(file + 1), at => unknown(file + 1 + at), named, writes)
+    out.unseen.push({ reason: `${program} runs a script from its input, which the guard does not read`, text: ownText })
     return
   }
   if (program === 'source' || program === '.') {
-    out.unseen.push({ reason: 'it runs a script the guard does not read', text: ownText })
+    if (args[0] !== undefined) pathsGiven(lastPart(args[0]), args.slice(1), at => unknown(1 + at), named, writes)
     return
   }
   if (program === 'eval') {
@@ -201,11 +210,28 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     return
   }
   if (INTERPRETERS.has(program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1'))) {
-    out.unseen.push({ reason: `${program} runs code the guard does not read`, text: ownText })
+    // Code given inline, or read from input, is not read; it counts when it names Claude's folder.
+    const inline = args.some(arg => INLINE_CODE.test(arg))
+    const file = args.findIndex(arg => !arg.startsWith('-'))
+    const module = args.findIndex(arg => arg === '-m')
+    if (inline || command.input !== undefined || (file === -1 && module === -1)) {
+      out.unseen.push({ reason: `${program} runs code the guard does not read`, text: ownText })
+      return
+    }
+    // A script file or a module (`python3 -m pip …`) is code already on disk: judged by the paths it is given, not by where it is.
+    const from = module !== -1 ? module + 2 : file + 1
+    pathsGiven(module !== -1 ? (args[module + 1] ?? program) : lastPart(args[file] as string), args.slice(from), at => unknown(from + at), named, writes)
     return
   }
   if (program === 'find') {
     readFind(args, where, out, depth, writes, named)
+    return
+  }
+  // awk's program can write a file (`print > "f"`) or run a command; one that might is code the guard does not read.
+  if (/^[gmn]?awk$/.test(program)) {
+    const fromFile = args.some(arg => arg === '-f' || arg.startsWith('--file'))
+    const text = args.find(arg => !arg.startsWith('-'))
+    if (fromFile || (text !== undefined && /[>|]|\bsystem\s*\(|\bgetline\b/.test(text))) out.unseen.push({ reason: `${program} runs a program that may write files`, text: ownText })
     return
   }
   if (Object.hasOwn(COPY_VALUES, program)) {
@@ -248,7 +274,7 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     return
   }
   if (program === 'sed' || program === 'gsed') {
-    readSedInPlace(args, unknown, named, writes, dynamicPath)
+    readSedInPlace(args, unknown, named, writes, dynamicPath, out, ownText)
     return
   }
   if (program === 'dd') {
@@ -269,12 +295,29 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     return
   }
   // A program the guard does not know: judged by the paths it is given.
+  pathsGiven(program, args, unknown, named, writes)
+}
+
+/**
+ * The options an interpreter takes code inline with: `-c` (Python, shells),
+ * `-e` and `-E` (Node, Perl, Ruby, Lua, osascript, also bundled as `-pe` or
+ * `-lne`), `-p` and `--eval`/`--print` (Node, Bun), `-r` (PHP), `-Command`
+ * (PowerShell).
+ */
+const INLINE_CODE = /^(?:-c|-[A-Za-z]*[eE]|-p|-r|--eval(?:=.*)?|--print(?:=.*)?|-Command|-command)$/
+
+/**
+ * What a program the guard does not read may write: anywhere among the paths
+ * it is given, each one word that names a path (`.`, `~`, or with a `/`),
+ * as an argument or an option's value (`--dir=~/.claude/skills`).
+ */
+function pathsGiven(program: string, args: readonly string[], unknown: (at: number) => boolean, named: (path: string) => Named, writes: Writes): void {
   args.forEach((arg, at) => {
     const path = arg.startsWith('-') ? (/^--?[\w-]+=(.+)$/.exec(arg)?.[1] ?? '') : arg
     // A path is one word: text with spaces in it is a message, such as a pull request's body.
     if (path === '' || unknown(at) || /\s/.test(path) || /^[A-Za-z][\w+.-]*:\/\//.test(path)) return
     if (path === '.' || path === '..' || path.startsWith('~') || path.includes('/')) {
-      writes({ kind: 'unknown', to: named(path), what: `${program} is given this path, and the guard cannot tell what it writes there` })
+      writes({ kind: 'unknown', to: named(path), what: `what ${program} writes when given this path` })
     }
   })
 }
@@ -349,7 +392,8 @@ function printfText(format: string, args: readonly string[]): string | undefined
 
 /** A path joined to the folder it is relative to: an absolute path or `~` stands alone; relative to an unknown folder it is unknown. */
 function join(cwd: string | undefined, path: string): string | undefined {
-  if (/^(?:\/|~(?:\/|$)|[A-Za-z]:[\\/])/.test(path)) return path
+  // `~user` stands alone too: it is another user's home, never a relative path.
+  if (/^(?:\/|~|[A-Za-z]:[\\/])/.test(path)) return path
   return cwd === undefined ? undefined : `${cwd.replace(/\/+$/, '')}/${path}`
 }
 
@@ -435,6 +479,8 @@ function readCopy(program: string, args: readonly string[], unknown: (at: number
   if (fills && dest !== undefined && !unknown(dest.at)) return writes({ kind: 'unknown', to: named(dest.value), what: `files ${program} copies from paths only known as it runs`, deep: true })
   if (dest === undefined || sources.length === 0) return
   if (unknown(dest.at)) return dynamicPath()
+  // A copy to another machine writes nothing here.
+  if ((program === 'rsync' || program === 'scp') && REMOTE.test(dest.value)) return
   if (sources.some(item => unknown(item.at))) {
     return writes({ kind: 'unknown', to: named(dest.value), what: `files ${program} copies from paths only known as it runs`, deep: true })
   }
@@ -442,8 +488,8 @@ function readCopy(program: string, args: readonly string[], unknown: (at: number
     return writes({ kind: 'unknown', to: named(dest.value), what: flags.has('-x') ? 'the files unpacked from an archive' : 'an archive ditto makes', deep: flags.has('-x') })
   }
   // A source on another machine: what arrives is only known as it runs.
-  if (program === 'rsync' && sources.some(item => /^[^/]*:|^rsync:\/\//.test(item.value))) {
-    return writes({ kind: 'unknown', to: named(dest.value), what: 'files rsync fetches from another machine', deep: true })
+  if ((program === 'rsync' || program === 'scp') && sources.some(item => REMOTE.test(item.value))) {
+    return writes({ kind: 'unknown', to: named(dest.value), what: `files ${program} fetches from another machine`, deep: true })
   }
   const noTarget = flags.has('-T') || flags.has('--no-target-directory')
   const into = targetDir !== undefined || (!noTarget && (sources.length > 1 || /[\\/]$/.test(dest.value))) ? true : noTarget ? false : undefined
@@ -502,10 +548,11 @@ function readGit(args: readonly string[], unknown: (at: number) => boolean, wher
     return writes({ kind: 'clone', to: inTree(target), url: repo.value, ...(ref === undefined ? {} : { ref }), submodules })
   }
   if (sub === 'worktree' && rest[0] === 'add') {
-    const path = rest.slice(1).find(arg => !arg.startsWith('-'))
+    // `-b`, `-B` and `--reason` take a value: the path is the first plain word after them.
+    const path = options(rest.slice(1), 'bB', ['--reason', '--orphan']).plain[0]
     if (path === undefined) return
-    if (!known) return dynamicPath()
-    return writes({ kind: 'unknown', to: inTree(path), what: 'a checkout git makes', deep: true })
+    if (!known || unknown(base + 1 + path.at)) return dynamicPath()
+    return writes({ kind: 'unknown', to: inTree(path.value), what: 'a checkout git makes', deep: true })
   }
   if (sub === 'archive') {
     const output = rest.find(arg => arg.startsWith('--output='))?.slice('--output='.length) ?? (rest.includes('-o') ? rest[rest.indexOf('-o') + 1] : undefined)
@@ -613,8 +660,11 @@ function readArchive(program: string, args: readonly string[], unknown: (at: num
   writes({ kind: 'unknown', to: named(folder), what: `the files ${program} unpacks`, deep: true })
 }
 
-/** `sed -i`: each file it edits in place. */
-function readSedInPlace(args: readonly string[], unknown: (at: number) => boolean, named: (path: string) => Named, writes: Writes, dynamicPath: () => void): void {
+/** `sed -i`: each file it edits in place; and a script whose `w` command writes a file, or whose `e` runs one. */
+function readSedInPlace(args: readonly string[], unknown: (at: number) => boolean, named: (path: string) => Named, writes: Writes, dynamicPath: () => void, out: ShellWrites, ownText: string): void {
+  if (args.some(arg => !arg.startsWith('-') && /(?:^|[/;}\d$])\s*[wWe](?:\s+\S|$)/m.test(arg)) || args.some(arg => arg === '-f' || arg.startsWith('--file'))) {
+    out.unseen.push({ reason: 'sed runs a script that may write files', text: ownText })
+  }
   const inPlace = args.findIndex(arg => /^-[A-Za-z]*i/.test(arg) || arg.startsWith('--in-place'))
   if (inPlace === -1) return
   let script = !args.some(arg => /^-[A-Za-z]*[ef]/.test(arg) || arg.startsWith('--expression') || arg.startsWith('--file'))

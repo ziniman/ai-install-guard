@@ -4,7 +4,7 @@ import { atom, update } from 'claude-code'
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
 import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
 import { readPluginArgs, readShellCommand } from './gate/requests'
-import { keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
+import { claudeConfigDir, keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
 import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
 import { forgetDecisions, loadDecisions, loadLastView, loadReport } from './guard/decisions'
@@ -113,7 +113,7 @@ export const register: Register = (on, options) => {
   const writeRefused = { deny: 'AI Install Guard stopped this change: it writes where Claude Code loads skills, MCP servers or plugins from, and the guard failed before it could check it. Nothing was written.' }
   // A change that goes on keeps its place claimed until it is written, so a second change there waits its turn.
   on('tool.call', { tool: 'Write' }, async ($, e, next) => {
-    const gate = await gateWrite($, { tool: 'Write', file_path: e.file_path, content: e.content }, lookups)
+    const gate = await gateWrite($, { tool: 'Write', file_path: e.file_path, content: e.content }, lookups, await claudeFolder($))
     if ('deny' in gate) return { deny: gate.deny }
     try {
       return await next(e)
@@ -122,7 +122,7 @@ export const register: Register = (on, options) => {
     }
   }).catch(($, e, next) => (next.called ? next(e) : writeRefused))
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
-    const gate = await gateWrite($, { tool: 'Edit', file_path: e.file_path, old_string: e.old_string, new_string: e.new_string, ...(e.replace_all === undefined ? {} : { replace_all: e.replace_all }) }, lookups)
+    const gate = await gateWrite($, { tool: 'Edit', file_path: e.file_path, old_string: e.old_string, new_string: e.new_string, ...(e.replace_all === undefined ? {} : { replace_all: e.replace_all }) }, lookups, await claudeFolder($))
     if ('deny' in gate) return { deny: gate.deny }
     try {
       return await next(e)
@@ -132,6 +132,14 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => (next.called ? next(e) : writeRefused))
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($, e) => drawPane($, e))
+}
+
+/** Where CLAUDE_CONFIG_DIR keeps Claude's own folder, when it moves it from ~/.claude: looked up once, when first needed. */
+let configDir: Promise<string | undefined> | undefined
+
+function claudeFolder($: EngineInterface): Promise<string | undefined> {
+  configDir ??= claudeConfigDir(modHost($)).catch(() => undefined)
+  return configDir
 }
 
 /**
@@ -160,9 +168,9 @@ async function landedName($: EngineInterface, name: string): Promise<string | un
  * call once the write is done. A file outside the places Claude Code loads
  * from claims nothing.
  */
-async function gateWrite($: EngineInterface, input: WriteInput, lookups: boolean): Promise<{ deny: string } | { release: () => void }> {
+async function gateWrite($: EngineInterface, input: WriteInput, lookups: boolean, configDir: string | undefined): Promise<{ deny: string } | { release: () => void }> {
   const free = { release: () => undefined }
-  const reading = await readWrite(modHost($), input)
+  const reading = await readWrite(modHost($), input, configDir)
   if (reading.kind === 'pass') return free
   const path = safeLine(normalizePath(input.file_path))
   // Claimed where the change really lands, so a link to the same skill or file is the same place,
@@ -195,7 +203,7 @@ async function gateShell($: EngineInterface, command: string, cwd: string | unde
   const free = { release: () => undefined }
   let change: ShellChange
   try {
-    change = await readShellChange(modHost($), command, cwd)
+    change = await readShellChange(modHost($), command, cwd, () => claudeFolder($))
   } catch {
     // This runs before every shell command: one that cannot be read fails only when it names Claude's own folder.
     if (!NAMES_CLAUDE.test(command)) return free

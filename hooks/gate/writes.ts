@@ -65,11 +65,21 @@ export function normalizePath(path: string): string {
 /**
  * Where a write lands, by its path alone, or undefined for any other file.
  * Matched without regard to case, since a disk that ignores case loads
- * `.Claude/Skills` as `.claude/skills`.
+ * `.Claude/Skills` as `.claude/skills`. `configDir` is the folder
+ * CLAUDE_CONFIG_DIR names, when it moves Claude's own from ~/.claude: a path
+ * in it is read as one in ~/.claude.
  */
-export function writePlace(rawPath: string): Place | undefined {
+export function writePlace(rawPath: string, configDir?: string): Place | undefined {
   const path = normalizePath(rawPath)
   const lower = path.toLowerCase()
+  if (configDir !== undefined) {
+    const dir = normalizePath(configDir).replace(/\/+$/, '')
+    if (dir !== '' && lower.startsWith(`${dir.toLowerCase()}/`)) {
+      const place = writePlace(`/.claude${path.slice(dir.length)}`)
+      // A skill's folder is the real one, not the ~/.claude it was read as.
+      return place?.kind === 'skill' && place.folder !== undefined ? { ...place, folder: `${dir}${place.folder.slice('/.claude'.length)}` } : place
+    }
+  }
   const name = lower.slice(lower.lastIndexOf('/') + 1)
   // A file in a plugin or a skill folder is that plugin's or skill's, whatever it is named.
   const found = /(?:^|\/)\.claude\/(skills|commands|agents|output-styles|plugins)\//.exec(lower)
@@ -98,7 +108,7 @@ export function writePlace(rawPath: string): Place | undefined {
  * loads from (a relative path, a write through a link, a file it cannot read,
  * an edit it cannot replay) is held, never passed.
  */
-export async function readWrite(host: Host, input: WriteInput): Promise<WriteReading> {
+export async function readWrite(host: Host, input: WriteInput, configDir?: string): Promise<WriteReading> {
   const raw = slashed(input.file_path)
   const path = normalizePath(raw)
   const shown = safeLine(path)
@@ -107,7 +117,7 @@ export async function readWrite(host: Host, input: WriteInput): Promise<WriteRea
   if (!/^(?:\/|[A-Za-z]:\/)/.test(raw)) return held('it names a path relative to a folder the guard cannot see; give the full path')
   // Where it really lands counts first: a link on the way can lead into .claude, and the system follows it before a `..` after it.
   const landed = await landsAt(host, raw)
-  const place = writePlace(landed) ?? writePlace(path)
+  const place = writePlace(landed, configDir) ?? writePlace(path, configDir)
   if (place === undefined) return PASS
   if (place.kind === 'plugins') return held('it changes the files of a plugin Claude Code installed, outside any install, so what runs would no longer be what was approved')
   // A write to a link changes where the link leads, which a scan does not read.
@@ -139,6 +149,17 @@ export async function keptAt(host: Host, path: string): Promise<string | undefin
   const raw = slashed(path)
   if (!/^(?:\/|[A-Za-z]:\/)/.test(raw)) return undefined
   return normalizePath(await landsAt(host, raw))
+}
+
+/**
+ * The folder CLAUDE_CONFIG_DIR names, where it is really, when it moves
+ * Claude's own folder from ~/.claude; undefined when it is not set.
+ */
+export async function claudeConfigDir(host: Host): Promise<string | undefined> {
+  const { exitCode, stdout } = await host.run(['printenv', 'CLAUDE_CONFIG_DIR'])
+  const dir = stdout.trim()
+  if (exitCode !== 0 || !/^(?:\/|[A-Za-z]:[\\/])/.test(dir)) return undefined
+  return normalizePath(await landsAt(host, slashed(dir)))
 }
 
 /** The most of a skill, command or agent file the guard reads, as the scan does. */

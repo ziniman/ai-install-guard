@@ -8,6 +8,8 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 **Claude's shell commands** - The guard now reads every shell command Claude runs for the files it writes, without running it, and holds a change where Claude Code loads from as it holds a Write. Text the command holds (a here-document, `echo`, `printf`, `tee`) is checked as a Write of that text; a file or folder copied, moved or synced in is scanned and always waits for you; a repository cloned in is scanned at the commit it would clone; a download, an archive unpacked, a `sed -i` edit, a link, a checkout there, or a program given one of those paths is Could not verify. A command that makes more than one such change, or runs code the guard does not read while naming Claude's folder, is held. Relative paths are read from the session's current folder, which the guard follows as it changes
 
+**Claude's writes** - A folder that `CLAUDE_CONFIG_DIR` names is read as `~/.claude`, for Write and Edit as for the shell, so skills and settings kept there are checked too
+
 ---
 
 ## v0.7.0 &nbsp;·&nbsp; 2026-10-25
