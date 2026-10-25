@@ -67,6 +67,12 @@ jobs:
       - name: Build and test the chat skill
         run: npm run test:skill
 
+      # The README badge names the content it was scanned at, so a PR that
+      # changes anything refreshes it with `npm run badge`. This scans the
+      # merged result with the scanner it builds.
+      - name: README badge is for this version
+        run: node scripts/badge.js --check
+
       - name: Keep the chat skill zip
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

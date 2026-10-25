@@ -6,7 +6,7 @@
 
 **A Claude Code mod that runs in the background. Install it once, and every `/plugin install` and marketplace you add, yours or Claude's, is scanned before anything installs: nothing to run, nothing to remember.**
 
-[![AI Install Guard: No red flags at 327a844be088](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_327a844be088-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:327a844be0887cf9c1b5f748f23f64330d85045dc2a55efe47867db0f7e01c75, read without this badge")
+[![AI Install Guard: No red flags at 93c22dd92ddb](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_93c22dd92ddb-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:93c22dd92ddbe271ab697013a67d7b73ec1de53bf5b16222898ce8710eba96a9, read without this badge")
 
 [![npm version](https://img.shields.io/npm/v/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
 [![npm downloads](https://img.shields.io/npm/dm/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
@@ -158,7 +158,7 @@ A badge is a picture anyone can paste, so the guard never trusts one:
 
 - **When you see one:** scan the repository yourself with `/guard scan owner/repo`, adding `--path <folder>` when the badge names a folder. The report says whether the badge is for the version you scanned. Your own scan is what counts.
 - **When the guard meets one:** a README badge that claims a better verdict than the guard's own scan is a warning, saying the badge is outdated or, when it names this very version, was never earned. A badge that matches is only noted. It never lifts a verdict.
-- **When the code changes:** the badge still names the old content. A new version needs a new scan and a new badge.
+- **When the code changes:** the badge still names the old content. A new version needs a new scan and a new badge. To keep yours current, make the badge the last step of each change; this repository does it in every pull request with [`scripts/badge.js`](scripts/badge.js), and its CI fails when the badge is not for the pull request's own files.
 
 ## What the guard itself can do
 
