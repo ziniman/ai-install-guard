@@ -103,7 +103,7 @@ const MAY_INSTALL = /\bplugins?\b[^\w\n]{1,8}(?:install|i|update|marketplace)\b|
 const CLAUDE_WORD = /(?<![\w./-])claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?(?![\w./-])/i
 
 /** Names the `claude` command goes by, Windows' launchers included. */
-const CLAUDE = new Set(['claude', 'claude.exe', 'claude.cmd', 'claude.bat', 'claude.ps1', 'claude-code'])
+const CLAUDE = new Set(['claude', 'claude-code'].flatMap(name => [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`, `${name}.ps1`]))
 
 /** Programs that run their `-c` argument as a script. */
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'])
@@ -277,9 +277,12 @@ function isClaudePlugin(words: readonly string[], index: number): boolean {
   return CLAUDE.has(programName(words[index])) && /^(?:plugins?|mcp)$/i.test(words[index + 1] ?? '')
 }
 
-/** The install a `claude plugin` or `claude mcp` command at `index` asks for, if it is one. */
-function claudePlugin(words: readonly string[], index: number): Reading | undefined {
-  if (/^mcp$/i.test(words[index + 1] ?? '')) return claudeMcp(words.slice(index + 2))
+/**
+ * The install a `claude plugin` or `claude mcp` command at `index` asks for,
+ * if it is one. `expands` says which of `words` the shell expands as it runs.
+ */
+function claudePlugin(words: readonly string[], index: number, expands: ReadonlySet<number> = new Set()): Reading | undefined {
+  if (/^mcp$/i.test(words[index + 1] ?? '')) return claudeMcp(words.slice(index + 2), (at: number) => expands.has(at + index + 2))
   const rest = words.slice(index + 2)
   const sub = rest[0]?.toLowerCase()
   if (sub === 'install' || sub === 'i') return readInstall(rest.slice(1), 'install', 'claude plugin install')
@@ -303,7 +306,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     if (counts) out.others += inner.others
   }
   const nested = (script: string): void => merge(collectInstalls(script, found, depth + 1, true), true)
-  for (const { words, input, scripts: substitutions, writes } of splitShell(command).commands) {
+  for (const { words, input, scripts: substitutions, writes, expands } of splitShell(command).commands) {
     // What its substitutions run comes first, and is read as commands too.
     substitutions?.forEach(nested)
     // A write to a file is more than an install, whatever program makes it.
@@ -327,7 +330,8 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
         continue
       }
       // `claude plugin …` or `claude mcp …`, also after global options (`claude --debug plugin install …`).
-      const reading = places.map(at => claudePlugin(words, at - 1)).find(item => item !== undefined)
+      const expanded = new Set(expands ?? [])
+      const reading = places.map(at => claudePlugin(words, at - 1, expanded)).find(item => item !== undefined)
       if (reading !== undefined) found.push(reading)
       else out.others += 1
       continue
@@ -363,7 +367,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     // `flock`), and may run it again and again: the program around it counts
     // as more than the install, so it is held.
     const inside = words.findIndex((item, at) => at > index && isClaudePlugin(words, at))
-    const reading = inside === -1 ? undefined : claudePlugin(words, inside)
+    const reading = inside === -1 ? undefined : claudePlugin(words, inside, new Set(expands ?? []))
     if (reading !== undefined) {
       found.push(reading)
       out.others += 1
@@ -433,13 +437,25 @@ const MCP_NAME = /^[A-Za-z0-9][\w.-]{0,63}$/
 const MCP_TRANSPORTS = new Set(['stdio', 'http', 'sse'])
 
 /**
- * `claude mcp …`: `add`, `add-json` and `add-from-claude-desktop` add
- * servers; `list`, `get`, `remove` and the rest add nothing.
+ * An environment variable or header that holds a secret: the one kind of
+ * value that may be filled in as the server starts (`-e TOKEN=$GITHUB_TOKEN`,
+ * `Authorization: Bearer ${PAT}`). Any other value changes what the server
+ * does (`NODE_OPTIONS`, `PATH`), so it must be written out to be checked.
  */
-function claudeMcp(rest: readonly string[]): Reading | undefined {
+const SECRET_NAME = /token|key|secret|passw|pat$|auth|credential|cookie|session|bearer/i
+
+/** Text Claude Code fills in when it starts the server: `${VAR}` or `${VAR:-default}`. */
+const FILLED_IN = /\$\{[^}]*\}/
+
+/**
+ * `claude mcp …`: `add`, `add-json` and `add-from-claude-desktop` add
+ * servers; `list`, `get`, `remove` and the rest add nothing. `expands(at)`
+ * says whether the shell expands word `at` of `rest` as the command runs.
+ */
+function claudeMcp(rest: readonly string[], expands: (at: number) => boolean): Reading | undefined {
   const sub = rest[0]?.toLowerCase()
-  if (sub === 'add') return readMcpAdd(rest.slice(1))
-  if (sub === 'add-json') return readMcpAddJson(rest.slice(1))
+  if (sub === 'add') return readMcpAdd(rest.slice(1), at => expands(at + 1))
+  if (sub === 'add-json') return readMcpAddJson(rest.slice(1), at => expands(at + 1))
   if (sub === 'add-from-claude-desktop') {
     return { kind: 'unreadable', label: 'claude mcp add-from-claude-desktop', reason: "it copies every MCP server in Claude Desktop's settings, which the guard does not read; add each one with claude mcp add, so each is scanned" }
   }
@@ -452,27 +468,32 @@ function claudeMcp(rest: readonly string[]): Reading | undefined {
  * be read either way, so it is held rather than guessed at. `-e`/`--env` and
  * `-H`/`--header` take every word up to the next option, as Claude Code reads them.
  */
-function readMcpAdd(words: readonly string[]): Reading {
-  const positionals: string[] = []
+function readMcpAdd(words: readonly string[], expands: (at: number) => boolean): Reading {
+  const positionals: { text: string; expands: boolean }[] = []
   const env: Record<string, string> = {}
   const headers: Record<string, string> = {}
+  /** Values the shell fills in, by the name they are given to: allowed only for a secret. */
+  const filledValues: string[] = []
   let scope: string | undefined
   let transport: string | undefined
   let problem: string | undefined
+  const fixed = (at: number, what: string): void => {
+    if (expands(at)) problem ??= `${what} is only known as the command runs, so the guard cannot check what is added; write it out in full`
+  }
   for (let index = 0; index < words.length && problem === undefined; index += 1) {
     const word = words[index] as string
     if (word === '--') {
-      positionals.push(...words.slice(index + 1))
+      for (let at = index + 1; at < words.length; at += 1) positionals.push({ text: words[at] as string, expands: expands(at) })
       break
     }
     if (!word.startsWith('-') || word === '-') {
-      positionals.push(word)
+      positionals.push({ text: word, expands: expands(index) })
       continue
     }
     // After a command the server starts, an option could be the server's or this
     // command's. A server at an address takes no arguments, so after its address
     // an option is this command's (`… github https://… -H "Authorization: …"`).
-    const remote = (transport ?? (/^https?:\/\//i.test(positionals[1] ?? '') ? 'http' : 'stdio')) !== 'stdio'
+    const remote = (transport ?? (/^https?:\/\//i.test(positionals[1]?.text ?? '') ? 'http' : 'stdio')) !== 'stdio'
     if (positionals.length >= 2 && !remote) {
       problem = `it is unclear whether ${safeLine(word)} is for the server or for claude mcp add; put -- before the server's command and its arguments`
       break
@@ -481,63 +502,76 @@ function readMcpAdd(words: readonly string[]): Reading {
     const name = equals === -1 ? word : word.slice(0, equals)
     const inline = equals === -1 ? undefined : word.slice(equals + 1)
     if (name === '-e' || name === '--env' || name === '-H' || name === '--header') {
-      const values = inline === undefined ? [] : [inline]
-      while (index + 1 < words.length && !(words[index + 1] as string).startsWith('-')) values.push(words[(index += 1)] as string)
+      const values = inline === undefined ? [] : [{ text: inline, expands: expands(index) }]
+      while (index + 1 < words.length && !(words[index + 1] as string).startsWith('-')) {
+        index += 1
+        values.push({ text: words[index] as string, expands: expands(index) })
+      }
       if (values.length === 0) problem = `${name} is given no value`
       for (const value of values) {
         if (name === '-e' || name === '--env') {
-          const pair = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(value)
-          if (pair === null) problem = `"${safeLine(value)}" is not NAME=value`
-          else env[pair[1] as string] = pair[2] as string
+          const pair = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(value.text)
+          if (pair === null) problem ??= `"${safeLine(value.text)}" is not NAME=value`
+          else {
+            env[pair[1] as string] = pair[2] as string
+            if (value.expands) filledValues.push(pair[1] as string)
+          }
         } else {
-          const colon = value.indexOf(':')
-          if (colon <= 0) problem = `"${safeLine(value)}" is not a header (Name: value)`
-          else headers[value.slice(0, colon).trim()] = value.slice(colon + 1).trim()
+          const colon = value.text.indexOf(':')
+          if (colon <= 0) problem ??= `"${safeLine(value.text)}" is not a header (Name: value)`
+          else {
+            const header = value.text.slice(0, colon).trim()
+            headers[header] = value.text.slice(colon + 1).trim()
+            if (value.expands) filledValues.push(header)
+          }
         }
       }
     } else if (name === '-s' || name === '--scope' || name === '-t' || name === '--transport') {
+      const at = inline === undefined ? index + 1 : index
       const value = inline ?? words[(index += 1)]
       if (value === undefined) problem = `${name} is given no value`
-      else if (name === '-s' || name === '--scope') scope = value
-      else transport = value.toLowerCase()
+      else {
+        fixed(at, name === '-s' || name === '--scope' ? 'its scope' : 'its transport')
+        if (name === '-s' || name === '--scope') scope = value
+        else transport = value.toLowerCase()
+      }
     } else {
       problem = `the guard does not know the option ${safeLine(name)}`
     }
   }
   const [name, target, ...args] = positionals
-  const label = `claude mcp add${name === undefined ? '' : ` ${safeLine(name)}`}`
+  const label = `claude mcp add${name === undefined ? '' : ` ${safeLine(name.text)}`}`
   if (problem !== undefined) return { kind: 'unreadable', label, reason: problem }
-  // What the shell fills in as the command runs would make the server added differ from the one scanned.
-  // A variable's value (`-e TOKEN=$GITHUB_TOKEN`, a header's value) is data, the usual way to pass a secret.
-  const decided = [...positionals, ...Object.keys(env), ...Object.keys(headers), scope ?? '', transport ?? '']
-  if (decided.some(isDynamic)) return { kind: 'unreadable', label, reason: 'part of the server it adds (its name, command, arguments, address or scope) is only known as the command runs, so the guard cannot check what is added; write it out in full' }
   if (name === undefined || target === undefined) return { kind: 'unreadable', label, reason: 'it names no server, or no command or address to add' }
-  if (!MCP_NAME.test(name)) return { kind: 'unreadable', label, reason: `"${safeLine(name)}" is not a server name the guard can keep` }
-  // An address given with no transport is checked as the remote server it names.
-  const kind = transport ?? (/^https?:\/\//i.test(target) ? 'http' : 'stdio')
-  if (!MCP_TRANSPORTS.has(kind)) return { kind: 'unreadable', label, reason: `the guard does not know the transport ${safeLine(kind)}` }
-  if (kind === 'stdio') {
-    if (Object.keys(headers).length > 0) return { kind: 'unreadable', label, reason: 'it gives headers to a server started as a command' }
-    const server = { command: target, args, ...(Object.keys(env).length === 0 ? {} : { env }) }
-    return { kind: 'install', request: { kind: 'mcp', name, ...(scope === undefined ? {} : { scope }), server }, label }
+  if (positionals.some(item => item.expands)) {
+    return { kind: 'unreadable', label, reason: 'its name, command, arguments or address is only known as the command runs, so the guard cannot check what is added; write it out in full' }
   }
-  if (args.length > 0) return { kind: 'unreadable', label, reason: 'it gives arguments to a server reached at an address' }
-  const server = { type: kind, url: target, ...(Object.keys(headers).length === 0 ? {} : { headers }), ...(Object.keys(env).length === 0 ? {} : { env }) }
-  return { kind: 'install', request: { kind: 'mcp', name, ...(scope === undefined ? {} : { scope }), server }, label }
+  const notSecret = filledValues.find(item => !SECRET_NAME.test(item))
+  if (notSecret !== undefined) {
+    return { kind: 'unreadable', label, reason: `the value of ${safeLine(notSecret)} is only known as the command runs, and only a secret's may be; write it out in full` }
+  }
+  // An address given with no transport is checked as the remote server it names.
+  const kind = transport ?? (/^https?:\/\//i.test(target.text) ? 'http' : 'stdio')
+  if (!MCP_TRANSPORTS.has(kind)) return { kind: 'unreadable', label, reason: `the guard does not know the transport ${safeLine(kind)}` }
+  if (kind === 'stdio' && Object.keys(headers).length > 0) return { kind: 'unreadable', label, reason: 'it gives headers to a server started as a command' }
+  if (kind !== 'stdio' && args.length > 0) return { kind: 'unreadable', label, reason: 'it gives arguments to a server reached at an address' }
+  const server =
+    kind === 'stdio'
+      ? { command: target.text, args: args.map(item => item.text), ...(Object.keys(env).length === 0 ? {} : { env }) }
+      : { type: kind, url: target.text, ...(Object.keys(headers).length === 0 ? {} : { headers }), ...(Object.keys(env).length === 0 ? {} : { env }) }
+  return mcpRequest(label, name.text, scope, server)
 }
 
 /** `claude mcp add-json [options] <name> '<json>'`: the server's configuration given whole. */
-function readMcpAddJson(words: readonly string[]): Reading {
+function readMcpAddJson(words: readonly string[], expands: (at: number) => boolean): Reading {
   const options = readOptions(words, new Set(['--scope', '-s']), new Set(['--client-secret']))
   const [name, json] = options.positionals
   const label = `claude mcp add-json${name === undefined ? '' : ` ${safeLine(name)}`}`
   if (options.unknown !== undefined) return { kind: 'unreadable', label, reason: `the guard does not know the option ${safeLine(options.unknown)}` }
-  // JSON's own brackets, braces and commas are not the shell's: in its argument only an expansion counts.
-  if ([name ?? '', options.values.get('--scope') ?? ''].some(isDynamic) || /[$`]/.test(json ?? '')) {
+  if (name === undefined || json === undefined || options.positionals.length > 2) return { kind: 'unreadable', label, reason: 'it needs a server name and its configuration as one JSON argument' }
+  if (words.some((word, at) => word !== '--' && expands(at))) {
     return { kind: 'unreadable', label, reason: 'part of the server it adds is only known as the command runs, so the guard cannot check what is added; write it out in full' }
   }
-  if (name === undefined || json === undefined || options.positionals.length > 2) return { kind: 'unreadable', label, reason: 'it needs a server name and its configuration as one JSON argument' }
-  if (!MCP_NAME.test(name)) return { kind: 'unreadable', label, reason: `"${safeLine(name)}" is not a server name the guard can keep` }
   let server: unknown
   try {
     server = JSON.parse(json)
@@ -545,8 +579,38 @@ function readMcpAddJson(words: readonly string[]): Reading {
     return { kind: 'unreadable', label, reason: 'its configuration is not valid JSON' }
   }
   if (typeof server !== 'object' || server === null || Array.isArray(server)) return { kind: 'unreadable', label, reason: 'its configuration is not a JSON object' }
-  const scope = options.values.get('--scope')
-  return { kind: 'install', request: { kind: 'mcp', name, ...(scope === undefined ? {} : { scope }), server: server as Record<string, unknown> }, label }
+  return mcpRequest(label, name, options.values.get('--scope'), server as Record<string, unknown>)
+}
+
+/** The keys of a server's configuration the guard's checks read, and so the only ones it approves. */
+const MCP_KEYS = new Set(['type', 'command', 'args', 'url', 'env', 'headers'])
+
+/**
+ * The request for one server, once its configuration holds only what the
+ * checks read, in the types they read: anything else would be approved by
+ * the hash without being checked. Text Claude Code fills in as it starts the
+ * server (`${VAR}`) is allowed in a secret's value only.
+ */
+function mcpRequest(label: string, name: string, scope: string | undefined, server: Record<string, unknown>): Reading {
+  const held = (reason: string): Reading => ({ kind: 'unreadable', label, reason })
+  if (!MCP_NAME.test(name)) return held(`"${safeLine(name)}" is not a server name the guard can keep`)
+  const extra = Object.keys(server).find(key => !MCP_KEYS.has(key))
+  if (extra !== undefined) return held(`its configuration has "${safeLine(extra)}", which the guard does not check`)
+  const text = (value: unknown): value is string => typeof value === 'string'
+  const table = (value: unknown): value is Record<string, string> => typeof value === 'object' && value !== null && !Array.isArray(value) && Object.values(value).every(text)
+  if (server.type !== undefined && !(text(server.type) && MCP_TRANSPORTS.has(server.type))) return held('its type is not stdio, http or sse')
+  if (server.command !== undefined && !text(server.command)) return held('its command is not text')
+  if (server.args !== undefined && !(Array.isArray(server.args) && server.args.every(text))) return held('its arguments are not a list of text')
+  if (server.url !== undefined && !text(server.url)) return held('its address is not text')
+  if (server.env !== undefined && !table(server.env)) return held('its environment is not a table of text')
+  if (server.headers !== undefined && !table(server.headers)) return held('its headers are not a table of text')
+  if (!text(server.command) && !text(server.url)) return held('it names no command to start and no address')
+  const fixedText = [server.command, server.url, ...((server.args as string[] | undefined) ?? [])].filter(text)
+  if (fixedText.some(item => FILLED_IN.test(item))) return held("its command, arguments or address hold ${…}, which Claude Code fills in as it starts the server; write them out in full")
+  for (const [key, value] of [...Object.entries((server.env as Record<string, string> | undefined) ?? {}), ...Object.entries((server.headers as Record<string, string> | undefined) ?? {})]) {
+    if (FILLED_IN.test(value) && !SECRET_NAME.test(key)) return held(`the value of ${safeLine(key)} holds \${…}, which Claude Code fills in as it starts the server, and only a secret's may; write it out in full`)
+  }
+  return { kind: 'install', request: { kind: 'mcp', name, ...(scope === undefined ? {} : { scope }), server }, label }
 }
 
 type Options = { positionals: string[]; values: Map<string, string>; flags: Set<string>; unknown?: string }
@@ -587,7 +651,14 @@ function readOptions(words: readonly string[], valued: ReadonlySet<string>, flag
  * feeds it; the bodies of its command substitutions, which run before it
  * does; and whether it writes to a file through a redirection.
  */
-export type ShellCommand = { words: string[]; input?: string; scripts?: string[]; writes?: boolean }
+export type ShellCommand = {
+  words: string[]
+  input?: string
+  scripts?: string[]
+  writes?: boolean
+  /** Which words the shell expands as the command runs: a variable, a substitution, or an unquoted pattern or brace list. */
+  expands?: number[]
+}
 
 /**
  * Splits shell text into simple commands of words, as a POSIX shell would
@@ -607,6 +678,9 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   let inWord = false
   /** Part of the word was quoted or escaped: a here-document marker so written keeps its body as it is. */
   let quoted = false
+  /** The shell expands part of this word as the command runs; `bare` is its unquoted text, for patterns. */
+  let expands = false
+  let bare = ''
   let dynamic = false
   /** What the next word is: a word, a redirection's target, a here-document's end marker, or a here-string. */
   let next: 'word' | 'target' | 'marker' | 'herestring' = 'word'
@@ -619,12 +693,18 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     if (!inWord) return
     if (next === 'marker') heredocs.push({ marker: word, stripTabs, quoted, command: current })
     else if (next === 'herestring') current.input = word
-    else if (next === 'word') current.words.push(word)
+    else if (next === 'word') {
+      // An unquoted pattern (`cl*`, `x?`, `[ab]`) or brace list (`{a,b}`) is expanded; `[` alone is the test command.
+      if (expands || (word !== '[' && (/[*?[]/.test(bare) || /\{[^}]*,[^}]*\}/.test(bare)))) (current.expands ??= []).push(current.words.length)
+      current.words.push(word)
+    }
     else if (writing && word !== '/dev/null' && !(duplicating && /^(?:\d+|-)$/.test(word))) current.writes = true
     next = 'word'
     word = ''
     inWord = false
     quoted = false
+    expands = false
+    bare = ''
   }
   const endCommand = (): void => {
     endWord()
@@ -644,6 +724,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       if (inner.length > 0) (current.scripts ??= []).push(...inner)
     } else (current.scripts ??= []).push(body)
     dynamic = true
+    expands = true
     word += text.slice(open - (isBackquote ? 0 : 1), Math.min(end + 1, text.length))
     inWord = true
     return end
@@ -678,7 +759,10 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
           index = substitution(index) + 1
           continue
         }
-        if (inner === '$') dynamic = true
+        if (inner === '$') {
+          dynamic = true
+          expands = true
+        }
         word += inner
         index += 1
       }
@@ -704,6 +788,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     }
     if (char === '$') {
       dynamic = true
+      expands = true
       word += char
       inWord = true
       continue
@@ -795,6 +880,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       continue
     }
     word += char
+    bare += char
     inWord = true
   }
   endCommand()

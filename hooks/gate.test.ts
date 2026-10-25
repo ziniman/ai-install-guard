@@ -807,8 +807,31 @@ describe('Claude adding an MCP server', () => {
     expect(read('claude --settings plugin plugin install notes@acme')).toMatchObject({ kind: 'install', request: { kind: 'plugin', plugin: 'notes' } })
   })
 
+  test('quoting decides what the shell expands: a quoted address or JSON is read as written', () => {
+    expect(read('claude mcp add --transport http docs "https://mcp.docs.example.net/mcp?team=1"')).toMatchObject({ kind: 'install', request: { server: { url: 'https://mcp.docs.example.net/mcp?team=1' } } })
+    expect(read('claude mcp add --transport http docs https://mcp.docs.example.net/mcp?team=1')).toMatchObject({ kind: 'unreadable' })
+    expect(read(`claude mcp add-json gh '{"command":"npx","args":["-y","@acme/gh@1.0.0"],"env":{"GITHUB_TOKEN":"\${GITHUB_TOKEN}"}}'`)).toMatchObject({ kind: 'install', request: { server: { env: { GITHUB_TOKEN: '\${GITHUB_TOKEN}' } } } })
+    expect(read(`claude mcp add-json gh "{\\"command\\":\\"$CMD\\"}"`)).toMatchObject({ kind: 'unreadable' })
+  })
+
+  test('only a secret may be filled in as the server starts; anything that changes what runs is held', () => {
+    expect(read('claude mcp add notes -e NODE_OPTIONS=$X -- node /srv/notes.js')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('NODE_OPTIONS') })
+    expect(read('claude mcp add --transport http docs https://mcp.docs.example.net/mcp -H "X-Team: $TEAM"')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('X-Team') })
+    expect(read('claude mcp add --transport http docs https://mcp.docs.example.net/mcp -H "Authorization: Bearer $PAT"')).toMatchObject({ kind: 'install' })
+    expect(read(`claude mcp add-json notes '{"command":"\${CMD}"}'`)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('fills in') })
+    expect(read(`claude mcp add-json notes '{"command":"node","args":["/srv/n.js"],"env":{"PATH":"\${P}"}}'`)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('PATH') })
+  })
+
+  test('a configuration holds only what the checks read', () => {
+    expect(read(`claude mcp add-json notes '{"type":"http","url":"https://x.example.net/mcp","headersHelper":"sh fetch-token.sh"}'`)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('headersHelper') })
+    expect(read(`claude mcp add-json notes '{"command":"npx","args":["-y",1]}'`)).toMatchObject({ kind: 'unreadable', reason: 'its arguments are not a list of text' })
+    expect(read(`claude mcp add-json notes '{"type":"ws","url":"wss://x.example.net"}'`)).toMatchObject({ kind: 'unreadable' })
+    expect(read(`claude mcp add-json notes '{"env":{"A":"1"}}'`)).toMatchObject({ kind: 'unreadable', reason: 'it names no command to start and no address' })
+  })
+
   test("Windows' launchers are claude too", () => {
     expect(read('claude.cmd mcp add notes -- npx -y pkg')).toMatchObject({ kind: 'install', request: { kind: 'mcp', name: 'notes' } })
+    expect(read('claude-code.exe mcp add notes -- npx -y pkg')).toMatchObject({ kind: 'install', request: { kind: 'mcp', name: 'notes' } })
     expect(read('claude.bat plugin install notes@acme')).toMatchObject({ kind: 'install', request: { kind: 'plugin', plugin: 'notes' } })
   })
 
@@ -834,6 +857,10 @@ describe('Claude adding an MCP server', () => {
     // Another configuration under the same name, or the same one kept for every project, is a new server to check.
     expect((await $.tool.call(bash('claude mcp add notes -- npx -y @acme/other-mcp'))).deny).toContain('held this install')
     expect((await $.tool.call(bash('claude mcp add -s user notes -- npx -y @acme/notes-mcp'))).deny).toContain('held this install')
+
+    // Its decisions are kept under its own name.
+    expect((await $.command.run(typed('guard', 'forget notes'))).text).toContain('forgot 1 decision about notes')
+    expect((await $.tool.call(bash(command))).deny).toContain('held this install')
   })
 
   test('a server that downloads code and runs it is Do not install; a remote one says where it connects', async ($, on) => {

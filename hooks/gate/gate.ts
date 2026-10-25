@@ -77,7 +77,11 @@ function nameOf(request: InstallRequest): string {
   return safeLine(request.marketplace === undefined ? request.plugin : `${request.plugin}@${request.marketplace}`)
 }
 
-/** Where the configuration of an MCP server being added is laid out to be scanned. */
+/**
+ * Where the configuration of an MCP server being added is laid out to be
+ * scanned: a folder named after the server, so its decisions are kept under
+ * its name and `/guard forget <name>` finds them.
+ */
 const MCP_ROOT = '/ai-install-guard/mcp-server'
 
 /**
@@ -98,7 +102,7 @@ function mcpCandidate(request: Extract<InstallRequest, { kind: 'mcp' }>): ScanHo
       [{ file: '.mcp.json', excerpt: note, status: 'info' }],
     ),
   ]
-  return { files: { '.mcp.json': `${config}\n` }, root: MCP_ROOT, notes, kind: 'MCP server' }
+  return { files: { '.mcp.json': `${config}\n` }, root: `${MCP_ROOT}/${request.name}`, notes, kind: 'MCP server' }
 }
 
 /** How a held install that could not be checked is described. */
