@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.6.0 &nbsp;·&nbsp; 2026-10-25
+
+**Claude's writes** - When Claude writes or edits a file with its Write or Edit tool in a place Claude Code loads from, the guard checks it as it would land. A skill (its whole folder with the new file in it), command or agent with no red flags goes on with a note; one worth a look or worse is refused until you approve that exact content. An MCP server added or changed in `.mcp.json` or `~/.claude.json` gets the same checks as `claude mcp add` and always waits for you. A change to an installed plugin's files is held as Could not verify. Any other file goes on at once, with nothing read
+
+---
+
 ## v0.5.0 &nbsp;·&nbsp; 2026-10-25
 
 **MCP servers** - When Claude runs `claude mcp add` or `claude mcp add-json`, the guard reads the server it would add (its command and arguments or its address, environment variables and headers), checks that configuration as it checks a plugin's MCP servers, and refuses the command until you approve that exact configuration in the pane. `claude mcp add-from-claude-desktop` is held as Could not verify. What would make the added server differ from the scanned one is held: a part the shell or Claude Code fills in as it runs (only a secret's value may be, quoted so it stays one value), and a configuration key the checks do not read. The server's own code is not read yet, only how it starts or where it connects
