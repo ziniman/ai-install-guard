@@ -2052,6 +2052,9 @@ describe('a badge pinned to content, so it is right in the commit that adds it',
     const one = await scanFiles({ ...fixture('clean-plugin'), 'README.md': bytes(0x80) })
     const other = await scanFiles({ ...fixture('clean-plugin'), 'README.md': bytes(0x81) })
     expect(one.badgeHash).not.toBe(other.badgeHash)
+    // A byte that would read as Unicode whitespace at either end still counts.
+    const edged = await scanFiles({ ...fixture('clean-plugin'), 'README.md': { base64: btoa(`\u00a0${atob(bytes(0x80).base64)}`) } })
+    expect(edged.badgeHash).not.toBe(one.badgeHash)
   })
 
   test('a badge claiming more than this version earns is still a warning, whatever it names', async () => {

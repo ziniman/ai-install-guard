@@ -105,7 +105,8 @@ const BADGE_CONSTRUCT = new RegExp(
  * edit does not. Only ASCII is touched, so it can read a README byte by byte.
  */
 export function withoutBadges(text: string): string {
-  return text.replace(BADGE_CONSTRUCT, ' ').replace(/[ \t\r\n\f\v]+/g, ' ').trim()
+  // Trimmed of the one ASCII space left at either end, never with trim(), which would also take U+00A0 (byte 0xA0).
+  return text.replace(BADGE_CONSTRUCT, ' ').replace(/[ \t\r\n\f\v]+/g, ' ').replace(/^ | $/g, '')
 }
 
 const README_NAME = /^readme(?:\.md|\.markdown|\.txt)?$/i
