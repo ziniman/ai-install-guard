@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.4.3 &nbsp;·&nbsp; 2026-10-25
+
+**`pane`** - When the report is taller than the pane, a dim "↓ scroll for the checks" sits beside the counts, so it is clear there is more below the buttons; it goes once the checks are in view
+
+---
+
 ## v0.4.2 &nbsp;·&nbsp; 2026-10-25
 
 **`pane`** - Install, Reject and the other buttons sit right under the verdict instead of after every check, so acting on a verdict never needs a scroll, and the button row wraps instead of running off a narrow pane's edge
