@@ -130,7 +130,7 @@ async function badge($: EngineInterface): Promise<string> {
     '',
     made.markdown,
     '',
-    'It names the exact version that was scanned. A change to your code needs a new scan and a new badge; the guard checks a badge against its own scan and never trusts it.',
+    "It names the content that was scanned, with the README read without its badge, so it stays right in the commit that adds it. Any other change needs a new scan and a new badge; the guard checks a badge against its own scan and never trusts it.",
   ].join('\n')
 }
 

@@ -527,6 +527,7 @@ describe('a row explains itself before it shows code', () => {
 describe('the README badge', () => {
   const SHA = 'a'.repeat(40)
   const TREE = `sha256:${'b'.repeat(64)}`
+  const CONTENT = `sha256:${'c'.repeat(64)}`
   const view = (kind: GuardView['verdict'] extends infer V ? (V extends { kind: infer K } ? K : never) : never, extra: Partial<GuardView> = {}): GuardView => ({
     target: 'acme/notes',
     action: 'approve',
@@ -537,16 +538,21 @@ describe('the README badge', () => {
     details: false,
     confirming: false,
     treeHash: TREE,
+    badgeHash: CONTENT,
     ...extra,
   })
 
-  test('names the verdict and the exact version, and links to how to check it', () => {
+  test('names the verdict and the content it covers, never a commit, and links to how to check it', () => {
     const made = badgeFor(view('safe', { sha: SHA }))
     expect('markdown' in made && made.markdown).toBe(
-      `[![AI Install Guard: No red flags at aaaaaaa](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_aaaaaaa-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned at commit ${SHA}, ${TREE}")`,
+      `[![AI Install Guard: No red flags at cccccccccccc](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_cccccccccccc-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content ${CONTENT}, read without this badge")`,
     )
     const local = badgeFor(view('caution'))
-    expect('markdown' in local && local.markdown).toContain('worth_a_look_%C2%B7_tree_bbbbbbbb-dbab09')
+    expect('markdown' in local && local.markdown).toContain('worth_a_look_%C2%B7_cccccccccccc-dbab09')
+  })
+
+  test('a scan with no content hash, as one stored by an older guard, gets no badge', () => {
+    expect('refusal' in badgeFor(view('safe', { badgeHash: undefined }))).toBe(true)
   })
 
   test('there is no badge for Do not install, Could not verify, or nothing scanned', () => {
@@ -562,7 +568,7 @@ describe('the README badge', () => {
     serveFixture(on, ROOT, fixture('clean-plugin'))
     await $.command.run(typed('guard', `scan ${ROOT}`))
     const answer = await $.command.run(typed('guard', 'badge'))
-    expect(answer.text).toContain('[![AI Install Guard: No red flags at tree ')
+    expect(answer.text).toMatch(/\[!\[AI Install Guard: No red flags at [0-9a-f]{12}\]/)
 
     const pane = await $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
     await pane.press({ key: 'badge' })
@@ -587,10 +593,10 @@ describe('the README badge, PR review round one', () => {
     const made = badgeFor({
       target: 'acme/notes', action: 'approve', stage: '', rows: [], expanded: [], details: false, confirming: false,
       verdict: { kind: 'safe', recommendation: 'No red flags', reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
-      sha: 'a'.repeat(40), subdir: 'plugins/a', treeHash: `sha256:${'b'.repeat(64)}`,
+      sha: 'a'.repeat(40), subdir: 'plugins/a', treeHash: `sha256:${'b'.repeat(64)}`, badgeHash: `sha256:${'c'.repeat(64)}`,
     })
-    expect('markdown' in made && made.markdown).toContain('No red flags at aaaaaaa in plugins/a')
-    expect('markdown' in made && made.markdown).toContain(`folder plugins/a, sha256:`)
+    expect('markdown' in made && made.markdown).toContain('No red flags at cccccccccccc in plugins/a')
+    expect('markdown' in made && made.markdown).toContain(`in folder plugins/a, read without this badge`)
   })
 
   test('Copy badge stays after a decision', async ($, on) => {
@@ -609,13 +615,13 @@ describe('the README badge, PR review round two', () => {
   const view = (subdir: string): GuardView => ({
     target: 'acme/notes', action: 'approve', stage: '', rows: [], expanded: [], details: false, confirming: false,
     verdict: { kind: 'safe', recommendation: 'No red flags', reasons: [], counts: { pass: 1, warn: 0, fail: 0, info: 0 } },
-    sha: 'a'.repeat(40), subdir: encodeFolder(subdir), treeHash: `sha256:${'b'.repeat(64)}`,
+    sha: 'a'.repeat(40), subdir: encodeFolder(subdir), treeHash: `sha256:${'b'.repeat(64)}`, badgeHash: `sha256:${'c'.repeat(64)}`,
   })
 
   test('a folder name with a space, quotes or an emoji is encoded whole, never dropped', () => {
     const made = badgeFor(view('packages/my skill "x" \u{1F680}'))
     expect('markdown' in made && made.markdown).toContain('in packages/my%20skill%20%22x%22%20%F0%9F%9A%80](')
-    expect('markdown' in made && made.markdown).toContain('folder packages/my%20skill%20%22x%22%20%F0%9F%9A%80, sha256:')
+    expect('markdown' in made && made.markdown).toContain('in folder packages/my%20skill%20%22x%22%20%F0%9F%9A%80, read without this badge')
   })
 
   test('a folder name too long to show gets no badge rather than a cut one', () => {

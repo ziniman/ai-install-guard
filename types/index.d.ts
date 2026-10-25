@@ -72,6 +72,8 @@ export type GuardView = {
   /** The folder inside the repository a remote scan covered, when it was one. */
   subdir?: string
   treeHash?: string
+  /** What a README badge for this scan names: the tree hash with the README read without its badges. */
+  badgeHash?: string
   /** Rows the person opened. */
   expanded: string[]
   /** Every row open. */

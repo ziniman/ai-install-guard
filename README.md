@@ -140,23 +140,23 @@ Claude runs the skill's `scripts/scan.js`: the same deterministic checks as `/gu
 
 To fetch a repository, the chat's code execution must be allowed to reach `github.com` (and `api.github.com` for the repository's details) in its network settings. Where it is not, Claude says so and asks for a zip instead (on GitHub: **Code > Download ZIP**).
 
-The same script runs anywhere with Node.js 18 or later: `node skill/ai-install-guard/scripts/scan.js --details <folder | zip | repository>`, with `--ref`, `--path`, `--json` and `--lookups`. Its exit status is the verdict: 0 No red flags, 1 Worth a look, 2 Do not install, 3 Could not verify.
+The same script runs anywhere with Node.js 18 or later: `node skill/ai-install-guard/scripts/scan.js --details <folder | zip | repository>`, with `--ref`, `--path`, `--json`, `--badge` and `--lookups`. Its exit status is the verdict: 0 No red flags, 1 Worth a look, 2 Do not install, 3 Could not verify.
 
 ## Review badge
 
-If you publish a plugin, mod, skill or MCP server, you can show that it was scanned. Scan your own repository, then run `/guard badge` or press **Copy badge** (`b`) in the pane, and paste the result near the top of your README:
+If you publish a plugin, mod, skill or MCP server, you can show that it was scanned. Scan your own repository, then run `/guard badge` or press **Copy badge** (`b`) in the pane (outside Claude Code, add `--badge` to the [command-line scanner](#use-it-in-claude-chat)), and paste the result near the top of your README:
 
 ```markdown
-[![AI Install Guard: No red flags at 4ac6edc](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_4ac6edc-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned at commit 4ac6edc…, sha256:…")
+[![AI Install Guard: No red flags at 56a8fc7e979d](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_56a8fc7e979d-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:56a8fc7e…, read without this badge")
 ```
 
-The badge says two things: the verdict (green for **No red flags**, yellow for **Worth a look**; badges made before 0.4.0 say Safe to install or Review what it can do, and still count as those) and the exact version that was scanned, the commit or, for a local folder, the tree hash. Hovering over it shows the full commit and tree hash. There is no badge for **Do not install** or **Could not verify**.
+The badge says two things: the verdict (green for **No red flags**, yellow for **Worth a look**) and the content that was scanned, a hash of every file with the README read without its AI Install Guard badge. That is why it names content and not a commit: committing the badge makes a new commit, so a badge naming a commit could never be right for the commit that holds it. Pasting the badge, moving it or replacing an older one leaves the hash as it was, so the badge is right in the commit that adds it, and any other change makes it a badge for an earlier version. Hovering over it shows the full hash. There is no badge for **Do not install** or **Could not verify**. Badges made before 0.4.4 name a commit or a tree hash, and badges made before 0.4.0 say Safe to install or Review what it can do; they still count as what they name.
 
 A badge is a picture anyone can paste, so the guard never trusts one:
 
-- **When you see one:** scan that version yourself with `/guard scan owner/repo --ref <commit>`, adding `--path <folder>` when the badge names a folder. Your own scan is what counts.
-- **When the guard meets one:** a README badge that claims a better verdict than the guard's own scan is a warning, saying the badge is outdated or was never earned. A badge that matches is only noted. It never lifts a verdict.
-- **When the code changes:** the badge still names the old commit. A new version needs a new scan and a new badge.
+- **When you see one:** scan the repository yourself with `/guard scan owner/repo`, adding `--path <folder>` when the badge names a folder. The report says whether the badge is for the version you scanned. Your own scan is what counts.
+- **When the guard meets one:** a README badge that claims a better verdict than the guard's own scan is a warning, saying the badge is outdated or, when it names this very version, was never earned. A badge that matches is only noted. It never lifts a verdict.
+- **When the code changes:** the badge still names the old content. A new version needs a new scan and a new badge.
 
 ## What the guard itself can do
 

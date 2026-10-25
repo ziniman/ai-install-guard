@@ -4,7 +4,7 @@ import { hookChecks } from './checks/hooks'
 import { mcpChecks } from './checks/mcp'
 import { modChecks } from './checks/mod'
 import { promptChecks } from './checks/prompts'
-import { badgeClaim, badgeRow, marketplacePinsCheck, type BadgeClaim } from './checks/provenance'
+import { badgeClaim, badgeHash, badgeRow, marketplacePinsCheck, type BadgeClaim } from './checks/provenance'
 import { licenseCheck, qualityChecks } from './checks/quality'
 import { secretChecks } from './checks/secrets'
 import { structureChecks } from './checks/structure'
@@ -30,6 +30,12 @@ export type ScanReport = {
   source?: PinnedSource
   /** What an AI Install Guard badge in the README claims, judged in `results`. */
   badgeClaim?: BadgeClaim
+  /**
+   * What a README badge for this scan names: the tree hash with the README
+   * counted without its badges, so the badge stays right in the commit that
+   * adds it. Never used to approve an install; `inventory.treeHash` is.
+   */
+  badgeHash?: string
 }
 
 export type ScanOptions = {
@@ -94,7 +100,8 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
       }
       // A listed plugin's own README badge is judged against its own rows.
       const nestedCtx = buildContext(nested)
-      const nestedResults = withBadgeClaim(await checksFor(host, nestedCtx, options), badgeClaim(nestedCtx.readme), { treeHash: nested.inventory.treeHash })
+      const nestedVersion = { treeHash: nested.inventory.treeHash, badgeHash: await badgeHash(nested.inventory.entries, nestedCtx.readme) }
+      const nestedResults = withBadgeClaim(await checksFor(host, nestedCtx, options), badgeClaim(nestedCtx.readme), nestedVersion)
       results = mergeResults(results, prefixed(nestedResults, source.path))
     }
   } catch (error) {
@@ -117,8 +124,9 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
     results = [...results, ...extra]
   }
   const claim = badgeClaim(ctx.readme)
-  results = withBadgeClaim(sortResults(results), claim, { treeHash: tree.inventory.treeHash })
-  return { target, kind: ctx.kind, inventory: tree.inventory, results, verdict: decide(results), ...(claim === undefined ? {} : { badgeClaim: claim }) }
+  const contentPin = await badgeHash(tree.inventory.entries, ctx.readme)
+  results = withBadgeClaim(sortResults(results), claim, { treeHash: tree.inventory.treeHash, badgeHash: contentPin })
+  return { target, kind: ctx.kind, inventory: tree.inventory, badgeHash: contentPin, results, verdict: decide(results), ...(claim === undefined ? {} : { badgeClaim: claim }) }
 }
 
 /**
@@ -126,7 +134,7 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
  * row is computed last, from the verdict the other rows give, so a badge can
  * add a warning and never lift a verdict.
  */
-export function withBadgeClaim(results: readonly CheckResult[], claim: BadgeClaim | undefined, version: { sha?: string; treeHash?: string }): CheckResult[] {
+export function withBadgeClaim(results: readonly CheckResult[], claim: BadgeClaim | undefined, version: { sha?: string; treeHash?: string; badgeHash?: string }): CheckResult[] {
   if (claim === undefined) return [...results]
   // Evidence about nested plugins' badges, merged in already, stays; this
   // README's own is judged again.
@@ -197,7 +205,7 @@ export async function scanRemote(host: Host, target: string, spec: RemoteSpec, o
       // ignored on purpose
     }
     const history = await githubProvenance(host, fetched.source)
-    const results = withBadgeClaim(sortResults([...fetched.results, ...history, ...report.results]), report.badgeClaim, { sha: fetched.source.sha, treeHash: report.inventory?.treeHash })
+    const results = withBadgeClaim(sortResults([...fetched.results, ...history, ...report.results]), report.badgeClaim, { sha: fetched.source.sha, treeHash: report.inventory?.treeHash, badgeHash: report.badgeHash })
     return { ...report, source: fetched.source, results, verdict: decide(results) }
   } finally {
     await fetched.cleanup().catch(() => undefined)
