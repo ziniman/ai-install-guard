@@ -11,7 +11,9 @@ import { formatReport } from '../scan/report'
 import { safeLine } from '../scan/safe-text'
 import type { CheckResult } from '../scan/checks/types'
 import { scanFolder, scanRemote, type ScanReport } from '../scan/scan'
+import { overlayHost } from '../scan/overlay-host'
 import { virtualHost } from '../scan/virtual-host'
+import type { Host } from '../scan/host'
 import { decisionFor, saveLastView, saveReport } from './decisions'
 import { ownVersion } from './version'
 import { PANE_ID, scanningView, viewOf } from './view'
@@ -23,13 +25,32 @@ const viewAtom = atom({ plugin: 'ai-install-guard', key: 'view' } as const, null
  * files the guard built in memory under `root` (an MCP server's configuration),
  * with `notes` added to its report.
  */
-export type ScanHow = { remote: RemoteSpec } | { folder: string } | { files: Record<string, string>; root: string; notes?: CheckResult[]; kind: string }
+export type ScanHow =
+  | { remote: RemoteSpec }
+  | { folder: string }
+  | { files: Record<string, string>; root: string; notes?: CheckResult[]; kind: string }
+  /** A real folder with the file at `rel` as a write is about to make it. */
+  | { overlay: { root: string; rel: string; content: string }; kind: string }
+
+/**
+ * Scans what `how` names, with no pane: the gate's first look at a write,
+ * which goes through without a pane when the scan finds nothing.
+ */
+export async function scanOnly(host: Host, target: string, how: ScanHow, options: { lookups: boolean; onStage?: (stage: string) => Promise<void> }): Promise<ScanReport> {
+  if ('remote' in how) return scanRemote(host, target, how.remote, options)
+  // Nothing to validate in a folder the guard built or overlaid; notes say what the scan could not read.
+  if ('files' in how) return scanFolder(virtualHost(how.root, how.files, host.fetch), target, how.root, { ...options, validate: false, extraResults: async () => how.notes ?? [] })
+  if ('overlay' in how) return scanFolder(overlayHost(host, how.overlay.root, how.overlay.rel, new TextEncoder().encode(how.overlay.content)), target, how.overlay.root, { ...options, validate: false })
+  return scanFolder(host, target, how.folder, options)
+}
 
 export type ShowOptions = {
   action: GuardAction
   /** The install the pane's Install button carries out, for a held install. */
   request?: GuardRequest
   lookups: boolean
+  /** A scan of the same thing already made, shown as it is rather than made again. */
+  report?: ScanReport
 }
 
 export type Shown =
@@ -65,19 +86,13 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
       onStage: (stage: string) => update($, viewAtom, current => (current === null || current.scanId !== scanId ? current : { ...current, stage: safeLine(stage) })).then(() => undefined),
     }
     const resolved = typeof how === 'function' ? await how() : how
-    const report =
-      'remote' in resolved
-        ? await scanRemote(host, target, resolved.remote, scanOptions)
-        : 'files' in resolved
-          ? // Nothing to validate in a folder the guard built; its notes say what the scan could not read.
-            await scanFolder(virtualHost(resolved.root, resolved.files, host.fetch), target, resolved.root, { ...scanOptions, validate: false, extraResults: async () => resolved.notes ?? [] })
-          : await scanFolder(host, target, resolved.folder, scanOptions)
+    const report = options.report ?? (await scanOnly(host, target, resolved, scanOptions))
     // A tree you already decided on shows that decision, not the buttons
     // again, unless it now judges worse than when you approved it.
     const earlier = report.inventory === undefined ? undefined : await decisionFor($, { treeHash: report.inventory.treeHash, sha: report.source?.sha }, report.verdict.kind).catch(() => undefined)
-    // Files the guard built are what is being added, named as such, and no project to badge.
-    const shownReport = 'files' in resolved ? { ...report, badgeHash: undefined } : report
-    const built = 'files' in resolved ? { kind: resolved.kind } : {}
+    // What a gate builds or overlays is what is being added, named as such, and no project to badge.
+    const built = 'files' in resolved || 'overlay' in resolved ? { kind: resolved.kind } : {}
+    const shownReport = 'kind' in built ? { ...report, badgeHash: undefined } : report
     const base = { ...withRequest(viewOf(shownReport, options.action), options.request), ...built, scanId }
     const view = earlier === undefined ? base : { ...base, decision: earlier.decision, decidedAt: earlier.decidedAt }
     const text = formatReport(report, { details: true, version: await ownVersion($) })

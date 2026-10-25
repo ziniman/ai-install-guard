@@ -614,32 +614,40 @@ function readMcpAddJson(words: readonly string[], expands: (at: number) => boole
 /** The keys of a server's configuration the guard's checks read, and so the only ones it approves. */
 const MCP_KEYS = new Set(['type', 'command', 'args', 'url', 'env', 'headers'])
 
-/**
- * The request for one server, once its configuration holds only what the
- * checks read, in the types they read: anything else would be approved by
- * the hash without being checked. Text Claude Code fills in as it starts the
- * server (`${VAR}`) is allowed in a secret's value only.
- */
+/** The request for one server, once its configuration passes `mcpServerProblem`. */
 function mcpRequest(label: string, name: string, scope: string | undefined, server: Record<string, unknown>): Reading {
-  const held = (reason: string): Reading => ({ kind: 'unreadable', label, reason })
-  if (!MCP_NAME.test(name)) return held(`"${safeLine(name)}" is not a server name the guard can keep`)
+  const problem = mcpServerProblem(name, server)
+  if (problem !== undefined) return { kind: 'unreadable', label, reason: problem }
+  return { kind: 'install', request: { kind: 'mcp', name, ...(scope === undefined ? {} : { scope }), server }, label }
+}
+
+/**
+ * Why one server's configuration cannot be approved as written, or
+ * undefined when it can: it must hold only what the checks read, in the
+ * types they read, since anything else would be approved by the hash without
+ * being checked; and text Claude Code fills in as it starts the server
+ * (`${VAR}`) is allowed in a secret's value only. The same for a server
+ * added by command and one written into a configuration file.
+ */
+export function mcpServerProblem(name: string, server: Record<string, unknown>): string | undefined {
+  if (!MCP_NAME.test(name)) return `"${safeLine(name)}" is not a server name the guard can keep`
   const extra = Object.keys(server).find(key => !MCP_KEYS.has(key))
-  if (extra !== undefined) return held(`its configuration has "${safeLine(extra)}", which the guard does not check`)
+  if (extra !== undefined) return `its configuration has "${safeLine(extra)}", which the guard does not check`
   const text = (value: unknown): value is string => typeof value === 'string'
   const table = (value: unknown): value is Record<string, string> => typeof value === 'object' && value !== null && !Array.isArray(value) && Object.values(value).every(text)
-  if (server.type !== undefined && !(text(server.type) && MCP_TRANSPORTS.has(server.type))) return held('its type is not stdio, http or sse')
-  if (server.command !== undefined && !text(server.command)) return held('its command is not text')
-  if (server.args !== undefined && !(Array.isArray(server.args) && server.args.every(text))) return held('its arguments are not a list of text')
-  if (server.url !== undefined && !text(server.url)) return held('its address is not text')
-  if (server.env !== undefined && !table(server.env)) return held('its environment is not a table of text')
-  if (server.headers !== undefined && !table(server.headers)) return held('its headers are not a table of text')
-  if (!text(server.command) && !text(server.url)) return held('it names no command to start and no address')
+  if (server.type !== undefined && !(text(server.type) && MCP_TRANSPORTS.has(server.type))) return 'its type is not stdio, http or sse'
+  if (server.command !== undefined && !text(server.command)) return 'its command is not text'
+  if (server.args !== undefined && !(Array.isArray(server.args) && server.args.every(text))) return 'its arguments are not a list of text'
+  if (server.url !== undefined && !text(server.url)) return 'its address is not text'
+  if (server.env !== undefined && !table(server.env)) return 'its environment is not a table of text'
+  if (server.headers !== undefined && !table(server.headers)) return 'its headers are not a table of text'
+  if (!text(server.command) && !text(server.url)) return 'it names no command to start and no address'
   const fixedText = [server.command, server.url, ...((server.args as string[] | undefined) ?? [])].filter(text)
-  if (fixedText.some(item => FILLED_IN.test(item))) return held("its command, arguments or address hold ${…}, which Claude Code fills in as it starts the server; write them out in full")
+  if (fixedText.some(item => FILLED_IN.test(item))) return "its command, arguments or address hold ${…}, which Claude Code fills in as it starts the server; write them out in full"
   for (const [key, value] of [...Object.entries((server.env as Record<string, string> | undefined) ?? {}), ...Object.entries((server.headers as Record<string, string> | undefined) ?? {})]) {
-    if (FILLED_IN.test(value) && !SECRET_NAME.test(key)) return held(`the value of ${safeLine(key)} holds \${…}, which Claude Code fills in as it starts the server, and only a secret's may; write it out in full`)
+    if (FILLED_IN.test(value) && !SECRET_NAME.test(key)) return `the value of ${safeLine(key)} holds \${…}, which Claude Code fills in as it starts the server, and only a secret's may; write it out in full`
   }
-  return { kind: 'install', request: { kind: 'mcp', name, ...(scope === undefined ? {} : { scope }), server }, label }
+  return undefined
 }
 
 type Options = { positionals: string[]; values: Map<string, string>; flags: Set<string>; unknown?: string }

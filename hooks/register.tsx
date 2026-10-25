@@ -1,8 +1,9 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
-import { BROWSE_NOTE, judge } from './gate/gate'
+import { BROWSE_NOTE, judge, judgeWrite } from './gate/gate'
 import { readPluginArgs, readShellCommand } from './gate/requests'
+import { normalizePath, readWrite, type WriteInput } from './gate/writes'
 import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
 import { forgetDecisions, loadDecisions, loadLastView, loadReport } from './guard/decisions'
@@ -10,6 +11,7 @@ import { drawPane } from './guard/pane'
 import { showScan } from './guard/run'
 import { PANE_ID } from './guard/view'
 import { modHost } from './mod-host'
+import { sha256Hex } from './scan/hash'
 import type { Host } from './scan/host'
 import { looksRemote, parseRemote, type RemoteSpec } from './scan/remote'
 import { safeLine } from './scan/safe-text'
@@ -86,7 +88,36 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => (next.called ? next(e) : { deny: 'AI Install Guard stopped this command: it may install a plugin or add a marketplace, and the guard failed before it could check it. Nothing was installed.' }))
 
+  // Gate C: Claude writing or editing a file where Claude Code loads skills,
+  // commands, agents, MCP servers and plugins from. Any other file goes on at
+  // once; one of these is scanned as it would be once written.
+  const writeRefused = { deny: 'AI Install Guard stopped this change: it writes where Claude Code loads skills, MCP servers or plugins from, and the guard failed before it could check it. Nothing was written.' }
+  on('tool.call', { tool: 'Write' }, async ($, e, next) => (await gateWrite($, { tool: 'Write', file_path: e.file_path, content: e.content }, lookups)) ?? next(e)).catch(($, e, next) =>
+    next.called ? next(e) : writeRefused,
+  )
+  on('tool.call', { tool: 'Edit' }, async ($, e, next) =>
+    (await gateWrite($, { tool: 'Edit', file_path: e.file_path, old_string: e.old_string, new_string: e.new_string, ...(e.replace_all === undefined ? {} : { replace_all: e.replace_all }) }, lookups)) ?? next(e),
+  ).catch(($, e, next) => (next.called ? next(e) : writeRefused))
+
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($, e) => drawPane($, e))
+}
+
+/**
+ * Gate C's judgement of one write: nothing for a file outside the places
+ * Claude Code loads from, else the refusal Claude reads, or nothing once it
+ * may go on.
+ */
+async function gateWrite($: EngineInterface, input: WriteInput, lookups: boolean): Promise<{ deny: string } | undefined> {
+  const reading = await readWrite(modHost($), input)
+  if (reading.kind === 'pass') return undefined
+  const path = safeLine(normalizePath(input.file_path))
+  // The same change, and only it, is what an approval or a one-time pass lets through.
+  const args = `${input.tool} ${path} ${await sha256Hex(JSON.stringify(input))}`
+  const display = `Claude asked to ${input.tool === 'Write' ? 'write' : 'edit'} ${path}`
+  const judged = await judgeWrite($, reading, { origin: 'tool', args, label: reading.label, subject: 'write', display }, lookups)
+  if (judged.kind === 'hold') return { deny: judged.text }
+  if (judged.note !== undefined) $.ui.toast(judged.note)
+  return undefined
 }
 
 /**

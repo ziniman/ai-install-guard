@@ -33,7 +33,7 @@ AI Install Guard works the other way round. It is a mod, so it lives inside Clau
 
 Everything you add to Claude Code runs with your permissions. A plugin can ship shell hooks that run every session, an MCP server can download and launch a package, a mod can read files or auto-approve tools, and a skill can carry hidden instructions the model will follow. The install prompt asks you to trust the author, and an update can change the files after you looked.
 
-> **Status: early development.** `/plugin install` and `/plugin marketplace add`, the same installs when Claude runs `claude plugin` itself, and MCP servers Claude adds with `claude mcp add`, are held until you approve the exact version the guard scanned. `/guard scan` checks a folder or a repository before you install it anywhere. The other gates are being built in stages; see [Where it steps in](#where-it-steps-in) and [Roadmap](#roadmap).
+> **Status: early development.** `/plugin install` and `/plugin marketplace add`, the same installs when Claude runs `claude plugin` itself, MCP servers Claude adds with `claude mcp add` or writes into a configuration, and skills, commands and agents Claude writes with a red flag, are held until you approve the exact version the guard scanned. `/guard scan` checks a folder or a repository before you install it anywhere. The other gates are being built in stages; see [Where it steps in](#where-it-steps-in) and [Roadmap](#roadmap).
 
 ## Who it is for
 
@@ -57,7 +57,8 @@ Approvals are remembered by commit and content hash, so the same version is neve
 | Slash command | `/plugin install <name>@<marketplace>`, `/plugin install <name> --marketplace <source>`, `/plugin marketplace add <source>` | Held until you press Install | Yes |
 | Claude's own commands | `claude plugin install`, `claude plugin update`, `claude plugin marketplace add`, also inside `sh -c`, `eval` or a here-document | Refused, with a note telling Claude the install waits for your decision | Yes |
 | Claude's own commands | `claude mcp add` and `claude mcp add-json` (`add-from-claude-desktop` is held as Could not verify) | Refused until you approve that exact server configuration | Yes |
-| Claude's own writes | Files written or copied into skill, command, agent and plugin folders, edits to `.mcp.json` or settings | Refused until scanned | Next stage |
+| Claude's own writes | Files Claude writes or edits in skill, command and agent folders, MCP servers in `.mcp.json` or `~/.claude.json`, any file of an installed plugin | Checked as they would land: a skill, command or agent with no red flags goes on with a note, anything else is refused until you approve | Yes |
+| Claude's own copies and settings | Files copied, cloned or downloaded into those folders with the shell, settings files | Refused until scanned | Next stage |
 | Mod loading | Any mod about to load, however it got there, including plugins picked from the `/plugin` menu | Refused if its files do not match what you approved | Later |
 | First use of a skill | Skills and commands, including ones copied in by hand | Blocked until scanned | Later |
 | Session start | Anything installed while the guard was not running | Scanned, with Keep or Uninstall | Later |
@@ -80,6 +81,12 @@ When Claude runs `claude plugin install` itself, the guard refuses the command a
 When Claude runs `claude mcp add` or `claude mcp add-json`, the guard reads the server it would add, its command and arguments or its address, with any environment variables and headers, and checks that configuration as it checks the MCP servers a plugin ships: a package started at whatever version is newest, a command that downloads code and runs it, a key sent to a host that is not its own service, the address Claude would connect to. The command is refused with the verdict until you approve, and the approval covers that exact configuration; the same name with another command is checked again. The server's own code is not read yet, only how Claude Code starts it or where it connects; with outside lookups on, a package it starts is checked against OSV.
 
 The server's arguments go after `--` (`claude mcp add notes -- npx -y @acme/notes-mcp`), as Claude Code's documentation writes them: an option after the command without `--` could belong to either, so it is held. What would differ from what was scanned is held too: a name, command, argument, address or scope the shell or Claude Code fills in as it runs (`$HOST`, `${CMD}`), a configuration key the checks do not read, and a value filled in that is not a secret's. Passing a secret that way is fine, quoted so the shell keeps it one value (`-e GITHUB_TOKEN="$GITHUB_TOKEN"`, `-H "Authorization: Bearer $PAT"`, or `${PAT}` in a configuration). An unquoted `~`, `{a..b}` or `$X` is expanded by the shell, so it is held too. `claude mcp add` you type in your own terminal is not held; only Claude's. `/guard forget <server name>` clears what you decided about a server.
+
+### Claude writing skills, MCP servers and plugin files
+
+When Claude writes or edits a file with its Write or Edit tool, the guard looks at the path first: any file outside the places Claude Code loads from goes on at once, with nothing read. A file in a `skills`, `commands` or `agents` folder (in the project's `.claude` or in `~/.claude`) is scanned as it would be once written: a skill as its whole folder with the new file in it, a command or agent as that file. When the scan finds nothing, the change goes on with a note; anything worth a look or worse is refused until you approve it in the pane, and the approval covers that exact content.
+
+An MCP server added or changed in `.mcp.json` or `~/.claude.json` is checked like one added with `claude mcp add`, and always waits for you. A change to the files of a plugin Claude Code installed (`~/.claude/plugins`) is held as Could not verify: it would change what runs outside any install. Paths are read with their `..` resolved and without regard to case, as a disk that ignores case reads them.
 
 ## Red flags, and what it can do
 
@@ -177,7 +184,7 @@ A security tool should be held to its own rules, so here is everything this mod 
 | `fs.read`, `fs.list`, `fs.stat` | Reads the candidate's files to scan them, and a marketplace's catalog in Claude Code's own copy of it. It writes no files itself; only `git` writes, into the guard's temporary folder. |
 | `command.run` (hook) | Intercepts `/plugin`, so `/plugin install` and `/plugin marketplace add` are scanned and held until you approve them. Every other `/plugin` command goes on untouched. |
 | `command.run` (call) | When you press Install, runs your own `/plugin` command again, after checking the version is still the one you approved. |
-| `tool.call` (hook) | Reads the text of each shell command Claude is about to run, to catch `claude plugin install`, `claude mcp add` and their kin, and refuses those until you approve. Every other command and every other tool goes on untouched; it never rewrites or answers one. |
+| `tool.call` (hook) | Reads the text of each shell command Claude is about to run, to catch `claude plugin install`, `claude mcp add` and their kin, and refuses those until you approve. Reads the path of each file Claude is about to write or edit, and, only for one in a skill, command, agent, plugin or MCP configuration, the content it would write. Every other command and every other tool goes on untouched; it never rewrites or answers one. |
 | `command.register` | Adds the `/guard` command. |
 | `store`, `state` | Remembers your decisions and the last report, holds what the pane shows, and keeps a one-time pass for an install you allowed anyway. |
 | `ui` | The verdict pane, its status line and toasts, and copying the report. |
@@ -251,10 +258,11 @@ If even that fails, set `"ai-install-guard@ai-install-guard": false` under `enab
 4. [x] Remote fetch pinned to a commit, repository provenance, MCP server checks, and optional lookups against OSV and the official plugin list
 5. [x] Gates on `/plugin install`, `/plugin marketplace add` and Claude's own `claude plugin` installs, with approvals pinned to a commit
 6. [x] Gate on Claude adding MCP servers with `claude mcp add`
-7. [ ] Gates on Claude writing into skill, command, agent, plugin and settings folders
-8. [ ] Module load gate with hash match, skill gate, session-start reconciliation
-9. [ ] Update diffs and the optional model review
-10. [ ] Full documentation
+7. [x] Gate on Claude writing skills, commands, agents, MCP configuration and installed plugins' files
+8. [ ] Gates on Claude's shell copies into those folders, and on settings
+9. [ ] Module load gate with hash match, skill gate, session-start reconciliation
+10. [ ] Update diffs and the optional model review
+11. [ ] Full documentation
 
 ## Contributing
 

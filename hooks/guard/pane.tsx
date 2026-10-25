@@ -379,6 +379,7 @@ async function closeOwn($: EngineInterface, view: GuardView): Promise<void> {
 
 /** What the held install is, in the person's or Claude's own words. */
 function requestLine(request: GuardRequest): string {
+  if (request.display !== undefined) return safeLine(request.display)
   return request.origin === 'tool' ? `Claude asked to run: ${safeLine(request.args)}` : `Held until you decide: /plugin ${safeLine(request.args)}`
 }
 
@@ -391,7 +392,7 @@ function requestLine(request: GuardRequest): string {
 async function carryOut($: EngineInterface, held: GuardRequest, view: GuardView): Promise<void> {
   await closeOwn($, view)
   if (held.origin === 'tool') {
-    $.ui.toast(`AI Install Guard: approved ${held.label}. Tell Claude to run the install again; it goes through now`)
+    $.ui.toast(held.subject === 'write' ? `AI Install Guard: approved ${held.label}. Tell Claude to make the change again; it goes through now` : `AI Install Guard: approved ${held.label}. Tell Claude to run the install again; it goes through now`)
     return
   }
   // The plugin's own command does not pass through its own gate, so the
