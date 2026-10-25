@@ -174,7 +174,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     const result = await $.ui.copy({ text: made.markdown, surface: e.surface })
     $.ui.toast(result.isCopied ? 'AI Install Guard: badge copied; paste it near the top of your README' : 'AI Install Guard: could not copy the badge here')
   }
-  const offersBadge = view.treeHash !== undefined && (view.verdict?.kind === 'safe' || view.verdict?.kind === 'caution')
+  const offersBadge = view.treeHash !== undefined && view.badgeHash !== undefined && (view.verdict?.kind === 'safe' || view.verdict?.kind === 'caution')
 
   const copy = async () => {
     // Only this scan's own report: never another scan's in its place.

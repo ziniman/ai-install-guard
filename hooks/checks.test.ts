@@ -10,7 +10,9 @@ import { formatReport, UNTRUSTED_NOTE } from './scan/report'
 import { scanFolder, type ScanReport } from './scan/scan'
 import { buildContext } from './scan/checks/context'
 import { takeInventory } from './scan/inventory'
-import { badgeRow } from './scan/checks/provenance'
+import { badgeRow, withoutBadges } from './scan/checks/provenance'
+import { badgeFor } from './guard/badge'
+import { viewOf } from './guard/view'
 import type { VerdictKind } from './scan/verdict'
 import { FIXTURES } from './test-support/fixtures.gen'
 import { memoryHost, type FixtureFiles } from './test-support/memfs'
@@ -1998,5 +2000,72 @@ describe('mentions are not instructions: the official marketplace benchmark', ()
     const manifest = JSON.stringify({ name: 'migrate', version: '1.0.0', description: 'Guided migration for legacy code, with a live progress pane.', license: 'MIT' })
     const report = await scanFiles({ ...fixture('mod-process-run'), 'README.md': b64(readme), '.claude-plugin/plugin.json': b64(manifest) })
     expect(status(report, 'mod.mismatch')).toBe('pass')
+  })
+})
+
+describe('a badge pinned to content, so it is right in the commit that adds it', () => {
+  const b64 = (text: string) => ({ base64: btoa(Array.from(new TextEncoder().encode(text), byte => String.fromCharCode(byte)).join('')) })
+  const scanFiles = (files: FixtureFiles) => scanFolder(memoryHost(ROOT, files), 'case', ROOT, { validate: false })
+  const badgeSummary = (report: ScanReport) => report.results.find(result => result.id === 'provenance.badge')?.summary?.[0] ?? ''
+  const readme = '# notes\n\nA helpful plugin.\n'
+
+  test('a README reads the same with or without the badge, wherever it sits and in any form', () => {
+    const linked = '[![AI Install Guard: No red flags at 0123456789ab](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_0123456789ab-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:0123")'
+    const html = '<a href="https://github.com/ziniman/ai-install-guard#review-badge"><img src="https://img.shields.io/badge/AI_Install_Guard-worth_a_look_%C2%B7_ffffffffffff-dbab09" alt="AI Install Guard"></a>'
+    const plain = withoutBadges(readme)
+    expect(withoutBadges(`# notes\n\n${linked}\n\nA helpful plugin.\n`)).toBe(plain)
+    expect(withoutBadges(`${linked}\n# notes\n\nA helpful plugin.\n\n\n`)).toBe(plain)
+    expect(withoutBadges(`# notes\n${html}\n\nA helpful plugin.\n`)).toBe(plain)
+    expect(withoutBadges(`# notes\n\n![guard][g]\n\n[g]: https://img.shields.io/badge/AI_Install_Guard-no_red_flags-2ea44f\n\nA helpful plugin.\n`)).not.toBe(plain)
+    expect(withoutBadges('# notes\n\nA harmful plugin.\n')).not.toBe(plain)
+  })
+
+  test('scan, paste the badge, scan again: the badge is for this version, until anything else changes', async () => {
+    const files = { ...fixture('clean-plugin'), 'README.md': b64(readme) }
+    const first = await scanFiles(files)
+    const made = badgeFor(viewOf(first, 'approve'))
+    if ('refusal' in made) throw new Error(made.refusal)
+    expect(made.pin).toBe(first.badgeHash?.slice(7, 19))
+
+    const badged = { ...files, 'README.md': b64(`# notes\n\n${made.markdown}\n\nA helpful plugin.\n`) }
+    const second = await scanFiles(badged)
+    expect(second.badgeHash).toBe(first.badgeHash)
+    expect(second.inventory?.treeHash).not.toBe(first.inventory?.treeHash)
+    expect(badgeSummary(second)).toContain('for this version')
+
+    const changed = await scanFiles({ ...badged, 'skills/greet/SKILL.md': b64('---\nname: greet\n---\nSay hello warmly.\n') })
+    expect(badgeSummary(changed)).toContain('for another version')
+  })
+
+  test('with no README yet, a README made to hold only the badge keeps it right', async () => {
+    const { 'README.md': _readme, ...files } = { ...fixture('clean-plugin') }
+    const first = await scanFiles(files)
+    const made = badgeFor(viewOf(first, 'approve'))
+    if ('refusal' in made) throw new Error(made.refusal)
+    const second = await scanFiles({ ...files, 'README.md': b64(`${made.markdown}\n`) })
+    expect(second.badgeHash).toBe(first.badgeHash)
+    expect(badgeSummary(second)).toContain('for this version')
+  })
+
+  test('every byte of the README counts, even bytes that are not valid UTF-8', async () => {
+    const bytes = (last: number) => ({ base64: btoa(String.fromCharCode(...new TextEncoder().encode('# notes\n\nHello '), last, 0x0a)) })
+    const one = await scanFiles({ ...fixture('clean-plugin'), 'README.md': bytes(0x80) })
+    const other = await scanFiles({ ...fixture('clean-plugin'), 'README.md': bytes(0x81) })
+    expect(one.badgeHash).not.toBe(other.badgeHash)
+    // A byte that would read as Unicode whitespace at either end still counts.
+    const edged = await scanFiles({ ...fixture('clean-plugin'), 'README.md': { base64: btoa(`\u00a0${atob(bytes(0x80).base64)}`) } })
+    expect(edged.badgeHash).not.toBe(one.badgeHash)
+  })
+
+  test('a badge claiming more than this version earns is still a warning, whatever it names', async () => {
+    const files = { ...fixture('obfuscated-blob') }
+    const report = await scanFiles(files)
+    const pin = report.badgeHash?.slice(7, 19) ?? ''
+    const overclaim = `[![AI Install Guard: No red flags at ${pin}](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_${pin}-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge)`
+    const readmeText = new TextDecoder().decode(Uint8Array.from(atob((files['README.md'] as { base64: string }).base64), c => c.charCodeAt(0)))
+    const badged = await scanFiles({ ...files, 'README.md': b64(`${overclaim}\n\n${readmeText}`) })
+    expect(badged.results.find(result => result.id === 'provenance.badge')?.status).toBe('warn')
+    const summary = badged.results.find(result => result.id === 'provenance.badge')?.summary ?? []
+    expect(summary[1]).toBe(`The badge is for this version (${pin}), so it was never earned`)
   })
 })

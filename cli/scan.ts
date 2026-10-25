@@ -9,6 +9,7 @@ import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, isAbsolute, join, relative } from 'node:path'
 
+import { badgeFor } from '../hooks/guard/badge'
 import { viewOf } from '../hooks/guard/view'
 import type { Host } from '../hooks/scan/host'
 import { formatReport, UNTRUSTED_NOTE } from '../hooks/scan/report'
@@ -40,6 +41,7 @@ const USAGE = [
   '  --path <folder>             A folder inside the folder, zip or repository',
   '  --details                   Every finding with its evidence and advice',
   '  --json                      The report as JSON',
+  '  --badge                     Also the README badge for this scan, for No red flags or Worth a look',
   '  --lookups                   Also check packages against OSV and the name against the official',
   '                              plugin list; this sends package and plugin names to those services',
   '',
@@ -63,7 +65,7 @@ const CANDIDATE_FOLDERS = ['skills', 'commands', 'agents', 'output-styles']
 /** What a macOS archive adds beside the folder it packed. */
 const ARCHIVE_LITTER = new Set(['__MACOSX', '.DS_Store'])
 
-type Args = { target: string; ref?: string; path?: string; details: boolean; json: boolean; lookups: boolean }
+type Args = { target: string; ref?: string; path?: string; details: boolean; json: boolean; lookups: boolean; badge: boolean }
 
 class UsageError extends Error {}
 
@@ -74,6 +76,7 @@ function parseArgs(argv: readonly string[]): Args | 'help' | 'version' {
   let details = false
   let json = false
   let lookups = false
+  let badge = false
   let onlyTargets = false
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index] as string
@@ -85,6 +88,7 @@ function parseArgs(argv: readonly string[]): Args | 'help' | 'version' {
       else if (flag === '--details') details = true
       else if (flag === '--json') json = true
       else if (flag === '--lookups') lookups = true
+      else if (flag === '--badge') badge = true
       else if (flag === '--ref' || flag === '--path') {
         const value = inline ?? argv[(index += 1)]
         if (value === undefined || value === '' || (inline === undefined && value.startsWith('--'))) throw new UsageError(`${flag} needs a value`)
@@ -97,7 +101,7 @@ function parseArgs(argv: readonly string[]): Args | 'help' | 'version' {
     target = arg
   }
   if (target === undefined || target.trim() === '') throw new UsageError('name a folder, zip or repository to scan')
-  return { target, ref, path, details, json, lookups }
+  return { target, ref, path, details, json, lookups, badge }
 }
 
 /** Scans what `args` names. Every failure is a "Could not verify" report, never a pass. */
@@ -231,8 +235,22 @@ function unverified(target: string, reason: string): ScanReport {
 }
 
 /** The report as JSON: the pane's compact view, every quoted text made safe. */
-function jsonReport(report: ScanReport): string {
+/** The README badge for a scan, or why there is none: what /guard badge gives in Claude Code. */
+function badgeText(report: ScanReport): string {
+  const made = badgeFor(viewOf(report, 'approve'))
+  if ('refusal' in made) return `No badge: ${made.refusal}`
+  return [
+    `README badge (content ${made.pin}). Paste it near the top of your README:`,
+    '',
+    made.markdown,
+    '',
+    'It names the content that was scanned, with the README read without its badge, so it stays right in the commit that adds it. Any other change needs a new scan and a new badge.',
+  ].join('\n')
+}
+
+function jsonReport(report: ScanReport, withBadge = false): string {
   const view = viewOf(report, 'approve')
+  const made = withBadge ? badgeFor(view) : undefined
   const { source, inventory } = report
   return JSON.stringify(
     {
@@ -247,6 +265,8 @@ function jsonReport(report: ScanReport): string {
         : { source: { url: safeLine(source.url), ref: source.ref === undefined ? undefined : safeLine(source.ref), refKind: source.refKind, sha: source.sha, subdir: view.subdir } }),
       root: view.root,
       treeHash: view.treeHash,
+      badgeHash: view.badgeHash,
+      ...(made === undefined ? {} : { badge: 'refusal' in made ? { refusal: made.refusal } : made }),
       files: inventory?.entries.filter(entry => entry.kind === 'file').length,
       bytes: inventory?.totalBytes,
       results: view.rows,
@@ -276,7 +296,8 @@ async function main(argv: readonly string[], out: (text: string) => void, err: (
   // Node 18 keeps Web Crypto off the global object; the tree hash needs it.
   if (globalThis.crypto === undefined) Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true })
   const report = await scanTarget(nodeHost(), args)
-  out(args.json ? jsonReport(report) : formatReport(report, { details: args.details, version: VERSION }))
+  out(args.json ? jsonReport(report, args.badge) : formatReport(report, { details: args.details, version: VERSION }))
+  if (args.badge && !args.json) out(`\n${badgeText(report)}`)
   return EXIT[report.verdict.kind]
 }
 

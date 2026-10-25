@@ -21,13 +21,16 @@ export async function sha256Hex(data: Uint8Array | string): Promise<string> {
  * A link counts by its stored target, not where it lands on this machine, so
  * the same tree hashes the same everywhere. Changing this format changes every
  * stored approval.
+ *
+ * `replaced` counts some files by another hash: the README badge hash counts
+ * the README without its badge. An approval never passes it.
  */
-export async function treeHash(entries: readonly InventoryEntry[]): Promise<string> {
+export async function treeHash(entries: readonly InventoryEntry[], replaced?: ReadonlyMap<string, string>): Promise<string> {
   const sorted = [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
   let records = ''
   for (const entry of sorted) {
     if (entry.kind === 'file') {
-      records += `file ${entry.sha256} ${entry.path}\0`
+      records += `file ${replaced?.get(entry.path) ?? entry.sha256} ${entry.path}\0`
     } else if (entry.kind === 'link') {
       records += `link ${await sha256Hex(entry.target)} ${entry.path}\0`
     } else {

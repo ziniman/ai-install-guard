@@ -43,6 +43,7 @@ export function viewOf(report: ScanReport, action: GuardAction): GuardView {
     sha: report.source?.sha,
     ...(report.source?.subdir === undefined ? {} : { subdir: encodeFolder(report.source.subdir) }),
     treeHash: report.inventory?.treeHash,
+    ...(report.badgeHash === undefined ? {} : { badgeHash: report.badgeHash }),
     expanded: [],
     details: false,
     confirming: false,

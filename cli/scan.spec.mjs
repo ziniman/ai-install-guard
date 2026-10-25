@@ -333,3 +333,32 @@ describe('the Node host reads only what it listed', () => {
     await assert.rejects(host.readBytes(path.join(root, 'docs', 'notes.md')), /no longer inside the folder that was listed/)
   })
 })
+
+describe('the README badge from the command line', () => {
+  test('--badge gives a badge that is for this version once it is in the README', () => {
+    const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-badge-'))
+    try {
+      fs.cpSync(path.join(FIXTURES, 'clean-plugin'), copy, { recursive: true })
+      const { report } = scanJson('--badge', copy)
+      assert.match(report.badgeHash, /^sha256:[0-9a-f]{64}$/)
+      assert.equal(report.badge.pin, report.badgeHash.slice(7, 19))
+
+      const readme = path.join(copy, 'README.md')
+      fs.writeFileSync(readme, `${report.badge.markdown}\n\n${fs.readFileSync(readme, 'utf8')}`)
+      const again = scanJson(copy).report
+      assert.equal(again.badgeHash, report.badgeHash)
+      const row = again.results.find(result => result.id === 'provenance.badge')
+      assert.match(row.summary[0], /for this version/)
+
+      const text = run('--badge', copy).stdout
+      assert.match(text, /README badge \(content [0-9a-f]{12}\)/)
+    } finally {
+      fs.rmSync(copy, { recursive: true, force: true })
+    }
+  })
+
+  test('no badge for Do not install', () => {
+    const { report } = scanJson('--badge', path.join(FIXTURES, 'cred-exfil'))
+    assert.equal(report.badge.refusal, 'There is no badge for Do not install.')
+  })
+})

@@ -1,4 +1,6 @@
 import { isRecord, parseJson, type ScanContext } from './context'
+import { sha256Hex, treeHash } from '../hash'
+import type { InventoryEntry } from '../inventory'
 import { joinPath } from './text'
 import { RECOMMENDATION } from '../verdict'
 import { capEvidence, row, type CheckResult, type Evidence } from './types'
@@ -77,12 +79,72 @@ function judgeSource(source: unknown): { what: string; status: 'pass' | 'info' |
   return { what: `${where} follows its default branch`, status: 'info' }
 }
 
+/** An AI Install Guard badge's image address, whatever it says. */
+const BADGE_URL = String.raw`https?:\/\/img\.shields\.io\/badge\/AI(?:_|%20| )Install(?:_|%20| )Guard-[^) \t\r\n"'<>]{0,400}`
+
+/**
+ * Every way a README carries the badge: a linked image (what /guard badge
+ * gives), a bare image, an HTML image with or without its link, or the
+ * definition line of a reference-style image.
+ */
+const BADGE_CONSTRUCT = new RegExp(
+  [
+    String.raw`\[[ \t\r\n]*!\[[^\]\n]{0,500}\]\([ \t]*${BADGE_URL}[^)\n]{0,600}\)[ \t\r\n]*\]\([^)\n]{0,1000}\)`,
+    String.raw`!\[[^\]\n]{0,500}\]\([ \t]*${BADGE_URL}[^)\n]{0,600}\)`,
+    String.raw`<a\b[^>]{0,1000}>[ \t\r\n]*<img\b[^>]{0,1000}?${BADGE_URL}[^>]{0,1000}>[ \t\r\n]*<\/a[ \t\r\n]*>`,
+    String.raw`<img\b[^>]{0,1000}?${BADGE_URL}[^>]{0,1000}>`,
+    String.raw`^[ \t]{0,3}\[[^\]\n]{1,200}\]:[ \t]*${BADGE_URL}[^\n]{0,600}$`,
+  ].join('|'),
+  'gim',
+)
+
+/**
+ * A README as the badge hash reads it: every AI Install Guard badge taken
+ * out, then every run of ASCII whitespace made one space. Adding a badge,
+ * moving it or swapping it for a newer one leaves this unchanged; any other
+ * edit does not. Only ASCII is touched, so it can read a README byte by byte.
+ */
+export function withoutBadges(text: string): string {
+  // Trimmed of the one ASCII space left at either end, never with trim(), which would also take U+00A0 (byte 0xA0).
+  return text.replace(BADGE_CONSTRUCT, ' ').replace(/[ \t\r\n\f\v]+/g, ' ').replace(/^ | $/g, '')
+}
+
+const README_NAME = /^readme(?:\.md|\.markdown|\.txt)?$/i
+
+/**
+ * The hash a README badge names: the tree hash, with the README counted
+ * without its badges. A badge naming a commit can never match the commit that
+ * adds it; this one names the content and stays right in that commit, until
+ * anything else changes.
+ *
+ * The README is read from its bytes, one character each, so every byte still
+ * counts (a lossy UTF-8 reading would not). A folder with no README counts as
+ * one with an empty README.md, so a README made to hold only the badge keeps it right.
+ */
+export async function badgeHash(entries: readonly InventoryEntry[], readme: { path: string; bytes: Uint8Array } | undefined): Promise<string> {
+  if (readme !== undefined) return treeHash(entries, new Map([[readme.path, await sha256Hex(withoutBadges(byteString(readme.bytes)))]]))
+  if (entries.some(entry => !entry.path.includes('/') && README_NAME.test(entry.path))) return treeHash(entries)
+  const empty: InventoryEntry = { kind: 'file', path: 'README.md', size: 0, sha256: await sha256Hex(''), isText: true }
+  return treeHash([...entries, empty])
+}
+
+/** Bytes as a string of one character each (U+0000 to U+00FF): nothing merged, nothing lost. */
+function byteString(bytes: Uint8Array): string {
+  let out = ''
+  for (let start = 0; start < bytes.length; start += 8192) out += String.fromCharCode(...bytes.subarray(start, start + 8192))
+  return out
+}
+
 /** What a README's AI Install Guard badge claims, read from its shields.io image. */
 export type BadgeClaim = {
   file: string
   line: number
   claimed: 'safe' | 'caution' | 'reject' | 'unverified'
-  /** The version the badge names: a short commit or `tree <hash>`, when it names one. */
+  /**
+   * The version the badge names, when it names one: its content (twelve hex,
+   * the badge hash), or, on badges made before 0.4.4, a short commit or
+   * `tree <hash>`.
+   */
   pin?: string
   text: string
 }
@@ -165,6 +227,16 @@ export function badgeClaim(readme: { path: string; text: string } | undefined): 
 }
 
 const VERDICT_RANK = { safe: 0, caution: 1, unverified: 2, reject: 3 } as const
+
+/**
+ * Whether a badge's pin names the version scanned now: its content (the badge
+ * hash, twelve hex or more), or, on older badges, its commit or `tree` hash.
+ */
+function namesVersion(pin: string, version: { sha?: string; treeHash?: string; badgeHash?: string }): boolean {
+  if (pin.startsWith('tree ')) return version.treeHash?.slice(7).startsWith(pin.slice(5)) === true
+  if (pin.length >= 12 && version.badgeHash?.slice(7).startsWith(pin) === true) return true
+  return version.sha?.startsWith(pin) === true
+}
 const VERDICT_WORDS = RECOMMENDATION
 
 /**
@@ -172,14 +244,16 @@ const VERDICT_WORDS = RECOMMENDATION
  * badge never improves a verdict: one that claims better than the scan finds
  * is a warning, one that matches is only noted.
  */
-export function badgeRow(claim: BadgeClaim, actual: keyof typeof VERDICT_RANK, version: { sha?: string; treeHash?: string } = {}): CheckResult {
+export function badgeRow(claim: BadgeClaim, actual: keyof typeof VERDICT_RANK, version: { sha?: string; treeHash?: string; badgeHash?: string } = {}): CheckResult {
   const overclaims = VERDICT_RANK[claim.claimed] < VERDICT_RANK[actual]
-  // Which version the badge names, against the one scanned now.
-  const scanned = version.sha !== undefined ? version.sha.slice(0, 7) : version.treeHash !== undefined ? `tree ${version.treeHash.slice(7, 15)}` : undefined
-  const sameVersion = claim.pin !== undefined && scanned !== undefined && (claim.pin.startsWith('tree ') ? version.treeHash?.slice(7).startsWith(claim.pin.slice(5)) === true : version.sha?.startsWith(claim.pin) === true)
+  const sameVersion = claim.pin !== undefined && namesVersion(claim.pin, version)
   const named = claim.pin === undefined ? 'names no version' : sameVersion ? `is for this version (${claim.pin})` : `is for another version (${claim.pin})`
   const summary = overclaims
-    ? [`The README's badge says ${VERDICT_WORDS[claim.claimed]}, but this version scans as ${VERDICT_WORDS[actual]}`, `The badge ${named}: it is outdated or was never earned`]
+    ? [
+        `The README's badge says ${VERDICT_WORDS[claim.claimed]}, but this version scans as ${VERDICT_WORDS[actual]}`,
+        // A badge for this very version that claims more was never earned; one for another may only be outdated.
+        sameVersion ? `The badge ${named}, so it was never earned` : `The badge ${named}: it is outdated or was never earned`,
+      ]
     : sameVersion && claim.claimed === actual
       ? [`The README shows an AI Install Guard badge for this version (${VERDICT_WORDS[claim.claimed]}); this scan agrees`]
       : [`The README's badge says ${VERDICT_WORDS[claim.claimed]} and ${named}; this version scans as ${VERDICT_WORDS[actual]}`]
