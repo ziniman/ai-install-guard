@@ -642,3 +642,27 @@ describe('the decision first', () => {
     })
   }
 })
+
+describe('more below', () => {
+  test('the counts say when the checks lie below the pane, and stop once they are in view', async ($, on) => {
+    mock.store(on)
+    serveUi(on)
+    serveFixture(on, ROOT, fixture('clean-plugin'))
+    await $.command.run(typed('guard', `scan ${ROOT}`))
+    const mount = (scroll: { offset: number; bodyRows: number }) =>
+      $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps(100, scroll) })
+
+    const short = await mount({ offset: 0, bodyRows: 12 })
+    expect(await short.find({ type: 'Text', text: /^↓ scroll for the checks$/ })).toBeDefined()
+    await short.unmount()
+
+    const tall = await mount({ offset: 0, bodyRows: 200 })
+    expect(await tall.find({ type: 'Text', text: /scroll for the checks/ })).toBeUndefined()
+    await tall.unmount()
+
+    // Scrolled to the end, nothing is left below.
+    const scrolled = await mount({ offset: 188, bodyRows: 12 })
+    expect(await scrolled.find({ type: 'Text', text: /scroll for the checks/ })).toBeUndefined()
+    await scrolled.unmount()
+  })
+})

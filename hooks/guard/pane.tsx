@@ -186,6 +186,12 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
   const verdict = view.verdict
   // The version of the guard that is running, so a screenshot or a shared report says which one judged.
   const version = await ownVersion($)
+  // The engine marks nothing when a pane's tree is taller than its window, so
+  // the counts say when more lies below it. The rows are counted without
+  // wrapping, so the note may go a row early, never stay when nothing is left.
+  const shownGroups = GROUPS.filter(group => rowsOf(group.id).length > 0)
+  const leastRows = verdict === undefined ? 0 : treeRows(view, header !== '', shownGroups.map(group => rowsOf(group.id).length))
+  const moreBelow = leastRows > e.props.scroll.offset + e.props.scroll.bodyRows
   // The decision sits right under the verdict, above the counts and the
   // rows, so a long report never pushes Install and Reject out of sight.
   return (
@@ -266,7 +272,14 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
 
       {verdict !== undefined && (
         <Box key="counts" flexDirection="column" marginTop={1}>
-          <Text>{countsText(verdict.counts)}</Text>
+          <Box flexDirection="row" columnGap={2}>
+            <Text>{countsText(verdict.counts)}</Text>
+            {moreBelow && (
+              <Text dimColor wrap="truncate-end">
+                ↓ scroll for the checks
+              </Text>
+            )}
+          </Box>
           {view.rows.length > 0 && (
             <Text dimColor wrap="wrap">
               Quoted text comes from the scanned files and is untrusted.
@@ -275,7 +288,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
         </Box>
       )}
 
-      {GROUPS.filter(group => rowsOf(group.id).length > 0).map(group => (
+      {shownGroups.map(group => (
         <Box key={`group-${group.id}`} flexDirection="column" marginTop={1}>
           <Text bold>{group.title}</Text>
           {rowsOf(group.id).map(row => {
@@ -328,6 +341,23 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
 
     </Box>
   )
+}
+
+/**
+ * The fewest rows the pane's tree takes once there is a verdict, each line
+ * counted as one row: the title, header and held command, the verdict box,
+ * the buttons, the counts and their note, and each group of check rows.
+ */
+function treeRows(view: GuardView, hasHeader: boolean, groupSizes: readonly number[]): number {
+  const verdict = view.verdict
+  if (verdict === undefined) return 0
+  const top = 1 + (hasHeader ? 1 : 0) + (view.request === undefined ? 0 : 1)
+  // A margin, the border's two rows, the verdict, its reasons and the It can line.
+  const box = 1 + 2 + 1 + verdict.reasons.length + ((verdict.access ?? []).length > 0 ? 1 : 0)
+  const decision = view.decision !== undefined ? 1 : view.confirming ? 3 : view.deciding === true ? 0 : 2
+  const counts = 1 + 1 + (view.rows.length > 0 ? 1 : 0)
+  const groups = groupSizes.reduce((sum, size) => sum + 2 + size, 0)
+  return top + box + decision + counts + groups
 }
 
 /**

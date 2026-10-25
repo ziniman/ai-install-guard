@@ -245,13 +245,13 @@ export function serveUi(on: On, options: { placed?: boolean } = {}): UiRecord {
 }
 
 /** The props a surface hands a pane's draw. */
-export function paneProps(bodyColumns = 100) {
+export function paneProps(bodyColumns = 100, scroll: { offset: number; bodyRows: number } = { offset: 0, bodyRows: 40 }) {
   return {
     title: 'AI Install Guard',
     isFocused: true,
     bodyColumns,
     placement: 'dock' as const,
-    scroll: { offset: 0, bodyRows: 40 },
+    scroll,
     view: {},
   }
 }
