@@ -6,7 +6,7 @@
 
 **A Claude Code mod that runs in the background. Install it once, and every `/plugin install` and marketplace you add, yours or Claude's, is scanned before anything installs: nothing to run, nothing to remember.**
 
-[![AI Install Guard: No red flags at 589f9e52c774](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_589f9e52c774-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:589f9e52c774195d2a9aad8bbe2b7845acabfbf427773f50c1669c43c62753f1, read without this badge")
+[![AI Install Guard: No red flags at 6b4108a486c5](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_6b4108a486c5-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:6b4108a486c555746b7b9ff79f9edc65d1d03e8a55d30038d229464df238ca9a, read without this badge")
 
 [![npm version](https://img.shields.io/npm/v/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
 [![npm downloads](https://img.shields.io/npm/dm/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
@@ -86,7 +86,7 @@ The server's arguments go after `--` (`claude mcp add notes -- npx -y @acme/note
 
 When Claude writes or edits a file with its Write or Edit tool, the guard looks at the path first: any file outside the places Claude Code loads from goes on at once, with nothing read. A file in a `skills`, `commands` or `agents` folder (in the project's `.claude` or in `~/.claude`) is scanned as it would be once written: a skill as its whole folder with the new file in it, a command or agent as that file. When the scan finds nothing, the change goes on with a note; anything worth a look or worse is refused until you approve it in the pane, and the approval covers that exact content.
 
-An MCP server added or changed in `.mcp.json` or `~/.claude.json` is checked like one added with `claude mcp add`, and always waits for you. A change to the files of a plugin Claude Code installed (`~/.claude/plugins`) is held as Could not verify: it would change what runs outside any install. Paths are read with their `..` resolved and without regard to case, as a disk that ignores case reads them.
+An MCP server added or changed in `.mcp.json` or `~/.claude.json` is checked like one added with `claude mcp add`, and always waits for you. A change to the files of a plugin Claude Code installed (`~/.claude/plugins`) is held as Could not verify: it would change what runs outside any install. Output styles count as prompts too. Where a path lands is found as the system finds it, links followed before a `..` after them, and without regard to case, as a disk that ignores case reads it. What the guard cannot read for certain in those places is held rather than passed: a relative path, a write through a link, a file it cannot read, an edit it cannot replay exactly (write the whole file instead). Two changes to one skill at once are taken one at a time.
 
 ## Red flags, and what it can do
 

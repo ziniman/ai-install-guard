@@ -6,7 +6,9 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ## v0.6.0 &nbsp;·&nbsp; 2026-10-25
 
-**Claude's writes** - When Claude writes or edits a file with its Write or Edit tool in a place Claude Code loads from, the guard checks it as it would land. A skill (its whole folder with the new file in it), command or agent with no red flags goes on with a note; one worth a look or worse is refused until you approve that exact content. An MCP server added or changed in `.mcp.json` or `~/.claude.json` gets the same checks as `claude mcp add` and always waits for you. A change to an installed plugin's files is held as Could not verify. Any other file goes on at once, with nothing read
+**Claude's writes** - When Claude writes or edits a file with its Write or Edit tool in a place Claude Code loads from, the guard checks it as it would land. A skill (its whole folder with the new file in it), command or agent with no red flags goes on with a note; one worth a look or worse is refused until you approve that exact content. An MCP server added or changed in `.mcp.json` or `~/.claude.json` gets the same checks as `claude mcp add` and always waits for you. A change to an installed plugin's files is held as Could not verify. Any other file goes on at once, with nothing read. What cannot be read for certain in those places (a relative path, a write through a link, an edit the guard cannot replay) is held, and two changes to one skill at once are taken one at a time
+
+**scanner** - A plain-text file a prompt names counts as a prompt, and a `skill.md` in any case makes a skill, as a disk that ignores case loads it
 
 ---
 

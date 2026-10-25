@@ -3,7 +3,7 @@ import { atom, update } from 'claude-code'
 
 import { BROWSE_NOTE, judge, judgeWrite } from './gate/gate'
 import { readPluginArgs, readShellCommand } from './gate/requests'
-import { normalizePath, readWrite, type WriteInput } from './gate/writes'
+import { normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
 import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
 import { forgetDecisions, loadDecisions, loadLastView, loadReport } from './guard/decisions'
@@ -92,25 +92,67 @@ export const register: Register = (on, options) => {
   // commands, agents, MCP servers and plugins from. Any other file goes on at
   // once; one of these is scanned as it would be once written.
   const writeRefused = { deny: 'AI Install Guard stopped this change: it writes where Claude Code loads skills, MCP servers or plugins from, and the guard failed before it could check it. Nothing was written.' }
-  on('tool.call', { tool: 'Write' }, async ($, e, next) => (await gateWrite($, { tool: 'Write', file_path: e.file_path, content: e.content }, lookups)) ?? next(e)).catch(($, e, next) =>
-    next.called ? next(e) : writeRefused,
-  )
-  on('tool.call', { tool: 'Edit' }, async ($, e, next) =>
-    (await gateWrite($, { tool: 'Edit', file_path: e.file_path, old_string: e.old_string, new_string: e.new_string, ...(e.replace_all === undefined ? {} : { replace_all: e.replace_all }) }, lookups)) ?? next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : writeRefused))
+  // A change that goes on keeps its place claimed until it is written, so a second change there waits its turn.
+  on('tool.call', { tool: 'Write' }, async ($, e, next) => {
+    const gate = await gateWrite($, { tool: 'Write', file_path: e.file_path, content: e.content }, lookups)
+    if ('deny' in gate) return { deny: gate.deny }
+    try {
+      return await next(e)
+    } finally {
+      gate.release()
+    }
+  }).catch(($, e, next) => (next.called ? next(e) : writeRefused))
+  on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
+    const gate = await gateWrite($, { tool: 'Edit', file_path: e.file_path, old_string: e.old_string, new_string: e.new_string, ...(e.replace_all === undefined ? {} : { replace_all: e.replace_all }) }, lookups)
+    if ('deny' in gate) return { deny: gate.deny }
+    try {
+      return await next(e)
+    } finally {
+      gate.release()
+    }
+  }).catch(($, e, next) => (next.called ? next(e) : writeRefused))
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($, e) => drawPane($, e))
 }
 
 /**
- * Gate C's judgement of one write: nothing for a file outside the places
- * Claude Code loads from, else the refusal Claude reads, or nothing once it
- * may go on.
+ * Where a change is being judged or made right now: a skill's folder, or the
+ * file. Two changes to one skill at once would each be judged without the
+ * other, so the second is held until the first is written.
  */
-async function gateWrite($: EngineInterface, input: WriteInput, lookups: boolean): Promise<{ deny: string } | undefined> {
+const changing = new Set<string>()
+
+/**
+ * Gate C's judgement of one write: the refusal Claude reads, or a release to
+ * call once the write is done. A file outside the places Claude Code loads
+ * from claims nothing.
+ */
+async function gateWrite($: EngineInterface, input: WriteInput, lookups: boolean): Promise<{ deny: string } | { release: () => void }> {
+  const free = { release: () => undefined }
   const reading = await readWrite(modHost($), input)
-  if (reading.kind === 'pass') return undefined
+  if (reading.kind === 'pass') return free
   const path = safeLine(normalizePath(input.file_path))
+  const place = (reading.kind === 'prompt' ? reading.folder : undefined) ?? path
+  if (changing.has(place)) return { deny: `AI Install Guard held this change: another change to ${reading.label} is being checked or written. Nothing was written. Make one change at a time, then make this one again.` }
+  changing.add(place)
+  const release = () => {
+    changing.delete(place)
+  }
+  try {
+    const judged = await judgeOne($, input, reading, path, lookups)
+    if (judged !== undefined) {
+      release()
+      return judged
+    }
+    return { release }
+  } catch (error) {
+    release()
+    throw error
+  }
+}
+
+/** The judgement of a write already read and claimed: its refusal, or undefined when it may go on. */
+async function judgeOne($: EngineInterface, input: WriteInput, reading: Exclude<WriteReading, { kind: 'pass' }>, path: string, lookups: boolean): Promise<{ deny: string } | undefined> {
   // The same change, and only it, is what an approval or a one-time pass lets through.
   const args = `${input.tool} ${path} ${await sha256Hex(JSON.stringify(input))}`
   const display = `Claude asked to ${input.tool === 'Write' ? 'write' : 'edit'} ${path}`

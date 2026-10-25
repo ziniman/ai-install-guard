@@ -10,7 +10,7 @@ import { decisionFor, pinnedDecision } from '../guard/decisions'
 import { takePass } from '../guard/passes'
 import { scanOnly, showScan, showUnverified, type ScanHow, type Shown } from '../guard/run'
 import type { Host } from '../scan/host'
-import type { WriteReading } from './writes'
+import { landsAt, type WriteReading } from './writes'
 import { row, type CheckResult } from '../scan/checks/types'
 import { sourceRoot } from '../guard/view'
 import { modHost } from '../mod-host'
@@ -98,25 +98,9 @@ export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReadi
 
 /** Where a prompt Claude writes is scanned: a skill as its real folder once the write lands, a command or agent as the one file. */
 async function promptCandidate(host: Host, reading: Extract<WriteReading, { kind: 'prompt' }>): Promise<ScanHow> {
-  if (reading.folder !== undefined) return { overlay: { root: await realFolder(host, reading.folder), rel: reading.rel, content: reading.content }, kind: 'skill' }
+  // The scan reads the folder where it really is, links followed (on macOS /tmp is /private/tmp).
+  if (reading.folder !== undefined) return { overlay: { root: await landsAt(host, reading.folder), rel: reading.rel, content: reading.content }, kind: 'skill' }
   return { files: { [reading.rel]: reading.content }, root: `/ai-install-guard/${reading.what}/${reading.rel.slice(reading.rel.lastIndexOf('/') + 1)}`, kind: reading.what }
-}
-
-/**
- * A folder with every link on the way followed, as the scan reads it: on
- * macOS /tmp is /private/tmp. A folder not made yet is its nearest parent's,
- * followed, with the rest of the way after it.
- */
-async function realFolder(host: Host, folder: string): Promise<string> {
-  let base = folder
-  let rest = ''
-  while (base.length > 1) {
-    const real = (await host.stat(base, { resolve: true }).catch(() => undefined))?.realPath
-    if (real !== undefined) return `${real.replace(/\/+$/, '')}${rest}`
-    rest = `${base.slice(base.lastIndexOf('/'))}${rest}`
-    base = base.slice(0, base.lastIndexOf('/')) || '/'
-  }
-  return folder
 }
 
 /** What the plugins menu cannot promise yet. */
@@ -180,7 +164,6 @@ function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement
   return hold(request, shown.report.verdict, where, shown.placed, { report: shown.text })
 }
 
-/** Another scan took the pane before this one finished: nothing to press, so nothing installs. */
 /** The words an answer uses for what was held: an install, or a write. */
 function wordsFor(request: GuardRequest): { thing: string; done: string; doing: string; again: string } {
   return request.subject === 'write'
@@ -188,6 +171,7 @@ function wordsFor(request: GuardRequest): { thing: string; done: string; doing: 
     : { thing: 'install', done: 'Nothing was installed', doing: 'installing it', again: 'run the same command again' }
 }
 
+/** Another scan took the pane before this one finished: nothing to press, so nothing installs. */
 function superseded(request: GuardRequest): Judgement {
   const text = `AI Install Guard: another scan took the pane before the one for ${request.label} finished, so ${wordsFor(request).done.toLowerCase()}.`
   return { kind: 'hold', text: request.origin === 'tool' ? `${text} Do not retry it now; tell the person, and run it again once they ask.` : `${text} Run it again to review it.` }

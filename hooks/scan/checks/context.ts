@@ -220,7 +220,8 @@ export function buildContext(tree: ScannedTree): ScanContext {
     realOf('hooks/hooks.json') !== undefined ||
     realOf('.mcp.json') !== undefined ||
     files.some(file => PROMPT_DIRS.some(dir => file.path.startsWith(`${dir}/`)))
-  const kind: CandidateKind = realOf('SKILL.md') !== undefined
+  // A disk that ignores case loads skill.md as SKILL.md, so either makes a skill.
+  const kind: CandidateKind = realOf('SKILL.md') !== undefined || [...paths].some(path => !path.includes('/') && /^skill\.md$/i.test(path))
     ? 'skill'
     : hasPluginLayout
       ? 'plugin'
