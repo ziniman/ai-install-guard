@@ -299,12 +299,14 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
 }
 
 /**
- * The options an interpreter takes code inline with: `-c` (Python, shells),
- * `-e` and `-E` (Node, Perl, Ruby, Lua, osascript, also bundled as `-pe` or
- * `-lne`), `-p` and `--eval`/`--print` (Node, Bun), `-r` (PHP), `-Command`
- * (PowerShell).
+ * The options an interpreter takes code inline with, alone or with the code
+ * attached (`-c'…'`): `-c` (Python, shells), `-e` and `-E` (Node, Perl,
+ * Ruby, Lua, osascript, also bundled as `-pe` or `-lne`), `-p` and
+ * `--eval`/`--print` (Node, Bun), `-r` (PHP), `-Command` (PowerShell). Any
+ * short option holding one of those letters counts, so code attached to one
+ * is never read as a script's name.
  */
-const INLINE_CODE = /^(?:-c|-[A-Za-z]*[eE]|-p|-r|--eval(?:=.*)?|--print(?:=.*)?|-Command|-command)$/
+const INLINE_CODE = /^(?:-(?!-)[^\s]*[ceEpr]|--eval(?:=.*)?|--print(?:=.*)?|-Command|-command)/
 
 /**
  * What a program the guard does not read may write: anywhere among the paths
@@ -660,9 +662,30 @@ function readArchive(program: string, args: readonly string[], unknown: (at: num
   writes({ kind: 'unknown', to: named(folder), what: `the files ${program} unpacks`, deep: true })
 }
 
+/** sed's scripts: given with `-e` (apart, attached as `-e'…'` or bundled as `-ne'…'`), `--expression`, or as the first plain word. */
+function sedScripts(args: readonly string[]): string[] {
+  const scripts: string[] = []
+  let given = false
+  for (let at = 0; at < args.length; at += 1) {
+    const arg = args[at] as string
+    const attached = /^-[A-Za-z]*e(.+)$/s.exec(arg)?.[1] ?? (arg.startsWith('--expression=') ? arg.slice('--expression='.length) : undefined)
+    if (attached !== undefined) {
+      scripts.push(attached)
+      given = true
+    } else if (/^-[A-Za-z]*e$/.test(arg) || arg === '--expression') {
+      scripts.push(args[at + 1] ?? '')
+      given = true
+      at += 1
+    }
+  }
+  const first = args.find((arg, at) => !arg.startsWith('-') && !/^-[A-Za-z]*e$|^--expression$/.test(args[at - 1] ?? ''))
+  if (!given && first !== undefined) scripts.push(first)
+  return scripts
+}
+
 /** `sed -i`: each file it edits in place; and a script whose `w` command writes a file, or whose `e` runs one. */
 function readSedInPlace(args: readonly string[], unknown: (at: number) => boolean, named: (path: string) => Named, writes: Writes, dynamicPath: () => void, out: ShellWrites, ownText: string): void {
-  if (args.some(arg => !arg.startsWith('-') && /(?:^|[/;}\d$])\s*[wWe](?:\s+\S|$)/m.test(arg)) || args.some(arg => arg === '-f' || arg.startsWith('--file'))) {
+  if (sedScripts(args).some(script => /(?:^|[/;}\d$])\s*[wWe](?:\s+\S|$)/m.test(script)) || args.some(arg => /^-[A-Za-z]*f/.test(arg) || arg.startsWith('--file'))) {
     out.unseen.push({ reason: 'sed runs a script that may write files', text: ownText })
   }
   const inPlace = args.findIndex(arg => /^-[A-Za-z]*i/.test(arg) || arg.startsWith('--in-place'))
