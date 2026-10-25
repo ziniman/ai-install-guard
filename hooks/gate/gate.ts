@@ -91,7 +91,7 @@ export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReadi
   if (reading.kind === 'mcp') return afterScan(request, reading.label, await showScan($, reading.label, mcpCandidate(reading.servers), options))
   // A settings change that widens what Claude may do always waits, judged by what it widens.
   if (reading.kind === 'settings') {
-    const how: ScanHow = { files: {}, root: SETTINGS_ROOT, kind: 'settings change' }
+    const how: ScanHow = { files: {}, root: reading.path, kind: 'settings change' }
     return afterScan(request, reading.label, await showScan($, reading.label, how, { ...options, report: await settingsReport(reading) }))
   }
   const host = modHost($)
@@ -104,9 +104,6 @@ export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReadi
   }
   return afterScan(request, reading.label, await showScan($, reading.label, how, { ...options, ...(first === undefined ? {} : { report: first }) }))
 }
-
-/** Where a settings change is shown as scanned: it has no folder of its own. */
-const SETTINGS_ROOT = '/ai-install-guard/settings'
 
 /**
  * A settings change as a report: one row of what it widens and narrows,
@@ -127,7 +124,8 @@ async function settingsReport(reading: Extract<WriteReading, { kind: 'settings' 
       reading.evidence,
     ),
   ]
-  return { target: reading.label, inventory: { root: SETTINGS_ROOT, entries, totalBytes: bytes.length, treeHash: await treeHash(entries), skipped: [] }, results, verdict: decide(results) }
+  // Kept under the file's own path, so /guard forget <path> finds this file's decisions and no other's.
+  return { target: reading.label, inventory: { root: reading.path, entries, totalBytes: bytes.length, treeHash: await treeHash(entries), skipped: [] }, results, verdict: decide(results) }
 }
 
 /** Where a prompt Claude writes is scanned: a skill as its real folder once the write lands, a command or agent as the one file. */

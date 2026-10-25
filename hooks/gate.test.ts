@@ -1148,6 +1148,33 @@ describe('Claude changing settings', () => {
     expect(judge({ apiKeyHelper: '/usr/local/bin/key' }, {})).toEqual(['info: no longer runs a command to make the API key'])
   })
 
+  test('the second review: hooks taken away or turned off, runners, and exact names', () => {
+    const guard = { type: 'command', command: '/usr/local/bin/check-bash' }
+    // A hook that guarded tool calls, taken away, or every hook turned off.
+    expect(judge({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } }, { hooks: {} })).toEqual(['warn: no longer runs /usr/local/bin/check-bash on PreToolUse'])
+    expect(judge({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } }, {})).toEqual(['warn: no longer runs /usr/local/bin/check-bash on PreToolUse'])
+    expect(judge({}, { disableAllHooks: true })).toEqual(['warn: turns every hook off, any that guard tool calls included'])
+    expect(judge({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } }, { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } })).toEqual([])
+    // A runner held to one word still runs anything; a package manager's run needs its script named.
+    for (const rule of ['Bash(sudo rm:*)', 'Bash(env FOO=1:*)', 'Bash(xargs rm:*)', 'Bash(time make:*)', 'Bash(npx cowsay:*)', 'Bash(npm run:*)', 'Bash(pnpm exec:*)', 'Bash(uv run:*)']) {
+      expect(judge({}, { permissions: { allow: [rule] } })[0]).toMatch(/^fail: /)
+    }
+    expect(judge({}, { permissions: { allow: ['Bash(npm run lint)'] } })).toEqual(['warn: allows Bash(npm run lint) without asking'])
+    expect(judge({}, { permissions: { allow: ['Bash(git status:*)'] } })).toEqual(['warn: allows Bash(git status:*) without asking'])
+    // A status line taken away, or left with no command, runs nothing.
+    expect(judge({ statusLine: { type: 'command', command: 'ccline' } }, { statusLine: { type: 'static' } })).toEqual(['info: no longer runs a command for the status line'])
+    expect(judge({ statusLine: { type: 'command', command: 'ccline' } }, {})).toEqual(['info: no longer runs a command for the status line'])
+    // A key is the setting only when it is that name exactly.
+    expect(judge({}, { 'enableAllProjectMcpServers\n': true })).toEqual(['warn: changes enableAllProjectMcpServers<U+000A>, a setting the guard does not judge'])
+  })
+
+  test('settings in a plugin or skill folder are that plugin\'s or skill\'s', () => {
+    expect(writePlace(`${HOME}/.claude/plugins/cache/acme/notes/.claude/settings.json`)?.kind).toBe('plugins')
+    expect(writePlace(`${HOME}/.claude/plugins/cache/acme/notes/managed-settings.json`)?.kind).toBe('plugins')
+    expect(writePlace(`${HOME}/.claude/plugins/cache/acme/notes/.mcp.json`)?.kind).toBe('plugins')
+    expect(writePlace(`${HOME}/.claude/skills/notes/.mcp.json`)?.kind).toBe('skill')
+  })
+
   test('a change that widens what Claude may do waits for you; one that does not goes on', async ($, on) => {
     seededStore(on)
     const ui = serveUi(on)
@@ -1171,5 +1198,47 @@ describe('Claude changing settings', () => {
     expect((await $.tool.call(write(path, JSON.stringify({ theme: 'light' })))).deny).toBeUndefined()
     expect((await $.tool.call(write(path, JSON.stringify({ theme: 'dark', permissions: { deny: ['WebFetch'] } })))).deny).toBeUndefined()
     expect(written).toEqual([path, path, path])
+  })
+
+  test("each settings file's approval is its own", async ($, on) => {
+    seededStore(on)
+    serveUi(on)
+    const written: string[] = []
+    serveFixture(on, HOME, { 'proj/.claude/settings.json': { base64: btoa('{}') } })
+    on('tool.call', { tool: 'Write' }, ($, e) => {
+      written.push(e.file_path)
+      return { result: { type: 'update', filePath: e.file_path, content: e.content, structuredPatch: [], originalFile: null } } as never
+    })
+    const widened = JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } })
+    for (const file of ['settings.json', 'settings.local.json']) {
+      expect((await $.tool.call(write(`${PROJECT}/.claude/${file}`, widened))).deny).toContain('held this change')
+      const pane = await mountPane($)
+      await pane.press({ key: 'install' })
+      await pane.unmount()
+    }
+    // Forgetting one file's approval leaves the other's.
+    expect((await $.command.run(typed('guard', `forget ${PROJECT}/.claude/settings.json`))).text).toContain('forgot 1 decision')
+    expect((await $.tool.call(write(`${PROJECT}/.claude/settings.json`, widened))).deny).toContain('held this change')
+    expect((await $.tool.call(write(`${PROJECT}/.claude/settings.local.json`, widened))).deny).toBeUndefined()
+  })
+
+  test('one settings file is changed once at a time, under any name a link gives it', async ($, on) => {
+    seededStore(on)
+    serveUi(on)
+    serveFixture(on, HOME, { 'proj/.claude/settings.json': { base64: btoa('{}') }, 'proj/cfg': { link: '.claude' } })
+    const widened = JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } })
+    const written: string[] = []
+    on('tool.call', { tool: 'Write' }, ($, e) => {
+      written.push(e.file_path)
+      return { result: { type: 'update', filePath: e.file_path, content: e.content, structuredPatch: [], originalFile: null } } as never
+    })
+    expect((await $.tool.call(write(`${PROJECT}/.claude/settings.json`, widened))).deny).toContain('held this change')
+    const pane = await mountPane($)
+    await pane.press({ key: 'install' })
+    await pane.unmount()
+    // The approved change, made at once under the file's own name and a link's: one is written, the other held.
+    const both = await Promise.all([$.tool.call(write(`${PROJECT}/.claude/settings.json`, widened)), $.tool.call(write(`${PROJECT}/cfg/settings.json`, widened))])
+    expect(both.filter(result => result.deny?.includes('another change to the settings')).length).toBe(1)
+    expect(written).toHaveLength(1)
   })
 })

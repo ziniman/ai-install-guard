@@ -23,6 +23,24 @@ const PLAIN = new Set([
  */
 const NARROWED = /^Bash\(\s*[^\s:()*;&|<>$`]+\s+[^\s:()*;&|<>$`-][^:()*;&|<>$`\n]*(?::\s*\*)?\s*\)$/i
 
+/** Programs that run the command they are given: held to one word, they are still free to run anything. */
+const RUNNERS = new Set(['sudo', 'doas', 'su', 'env', 'eval', 'exec', 'command', 'builtin', 'time', 'timeout', 'nice', 'nohup', 'xargs', 'watch', 'npx', 'bunx', 'pnpx', 'uvx', 'pipx', 'stdbuf', 'setsid', 'chroot', 'flock'])
+
+/**
+ * Why a shell rule lets any command run, or undefined when it is held to one:
+ * a program that runs whatever it is given, a package manager's `run` or
+ * `exec` with no script named, or what the scan holds of any rule not held
+ * to one program and a fixed next word.
+ */
+function shellReach(rule: string): string | undefined {
+  const words = (/^Bash\s*\(([\s\S]*)\)$/i.exec(rule.trim())?.[1] ?? '').replace(/:\s*\*\s*$/, '').trim().split(/\s+/)
+  const program = (words[0] ?? '').split('/').pop()?.toLowerCase() ?? ''
+  if (RUNNERS.has(program)) return 'a program that runs the command it is given: any command through it'
+  if (/^(?:npm|pnpm|yarn|bun|uv)$/.test(program) && /^(?:run|run-script|exec|x|dlx)$/.test(words[1] ?? '') && words.length < 3) return 'a package manager running any script or package'
+  // A program held to one subcommand (`npm test`, `npm run lint`) is narrowed; one free to take any is not.
+  return NARROWED.test(rule) ? undefined : wideShellGrant(rule)
+}
+
 /** Settings that run a command: the command they run. */
 const HELPERS: Record<string, string> = {
   apiKeyHelper: 'to make the API key',
@@ -55,10 +73,10 @@ export function settingsChange(before: Record<string, unknown>, after: Record<st
     else if (key === 'env') env(record(was), record(now), note)
     // A helper taken away runs nothing more.
     else if (Object.hasOwn(HELPERS, key)) now === undefined ? note(`no longer runs a command ${HELPERS[key]}`, 'info') : command(now, `runs ${typeof now === 'string' ? now : '(not text)'} ${HELPERS[key]}`, note)
-    else if (key === 'statusLine') now === undefined ? note('no longer runs a command for the status line', 'info') : command(record(now).command, `runs ${String(record(now).command ?? '(nothing)')} for the status line`, note)
+    else if (key === 'statusLine') record(now).command === undefined ? note('no longer runs a command for the status line', 'info') : command(record(now).command, `runs ${String(record(now).command)} for the status line`, note)
     // The names are matched as escaped patterns, which the guard's own scan reads as inert, not as settings changed.
-    else if (/^enableAllProjectMcpServers\b$/.test(key)) note(now === true ? 'approves every MCP server a project names, without asking' : 'asks again before a project MCP server starts', now === true ? 'fail' : 'info')
-    else if (/^enabledMcpjsonServers\b$/.test(key)) for (const name of added(list(was), list(now))) note(`approves the project MCP server ${name} without asking`, 'warn')
+    else if (/^enableAllProjectMcpServers(?![\s\S])/.test(key)) note(now === true ? 'approves every MCP server a project names, without asking' : 'asks again before a project MCP server starts', now === true ? 'fail' : 'info')
+    else if (/^enabledMcpjsonServers(?![\s\S])/.test(key)) for (const name of added(list(was), list(now))) note(`approves the project MCP server ${name} without asking`, 'warn')
     else if (key === 'disabledMcpjsonServers') for (const name of added(list(now), list(was))) note(`no longer turns off the project MCP server ${name}`, 'warn')
     else if (key === 'enabledPlugins') {
       for (const [name, on] of Object.entries(record(now))) if (on === true && record(was)[name] !== true) note(`turns on the plugin ${name} without /plugin install, so the guard did not scan it`, 'warn')
@@ -69,7 +87,8 @@ export function settingsChange(before: Record<string, unknown>, after: Record<st
         else if (stable(record(was)[name]) !== stable(source)) note(`changes where the marketplace ${name} comes from`, 'warn')
       }
     }
-    else if (key === 'disableAllHooks') note(now === true ? 'turns every hook off' : 'turns hooks back on', now === true ? 'info' : 'warn')
+    // Hooks can guard as well as act: turning them all off can take a guard away.
+    else if (key === 'disableAllHooks') note(now === true ? 'turns every hook off, any that guard tool calls included' : 'turns hooks back on', 'warn')
     else note(`changes ${key}, a setting the guard does not judge`, now === undefined ? 'info' : 'warn')
   }
   return out
@@ -79,8 +98,7 @@ type Note = (excerpt: string, status: Status) => void
 
 function permissions(was: Record<string, unknown>, now: Record<string, unknown>, note: Note): void {
   for (const rule of added(list(was.allow), list(now.allow))) {
-    // A program held to one subcommand (`npm test`, `npm run lint`) is narrowed; one free to take any is not.
-    const wide = NARROWED.test(rule) ? undefined : wideShellGrant(rule)
+    const wide = shellReach(rule)
     if (wide !== undefined) note(`allows ${rule} without asking: ${wide}`, 'fail')
     else note(`allows ${rule} without asking`, 'warn')
   }
@@ -104,8 +122,16 @@ function permissions(was: Record<string, unknown>, now: Record<string, unknown>,
   }
 }
 
-/** Every hook added or changed, judged by what it runs; the same hook under another matcher runs for more, so it counts. */
+/** Every hook added, changed or taken away, judged by what it runs; the same hook under another matcher runs for more, so it counts. */
 function hooks(was: Record<string, unknown>, now: Record<string, unknown>, note: Note): void {
+  // A hook taken away may have been one that guarded tool calls. One moved to
+  // another matcher still runs, and is judged below as the hook it now is.
+  for (const [event, groups] of Object.entries(was)) {
+    const after = new Set(hookItems(now[event]).map(entry => stable(entry.hook)))
+    for (const entry of hookItems(groups)) {
+      if (!after.has(stable(entry.hook))) note(`no longer runs ${String(entry.hook.command ?? entry.hook.url ?? entry.hook.prompt ?? 'a hook')} on ${event}`, 'warn')
+    }
+  }
   for (const [event, groups] of Object.entries(now)) {
     const before = new Set(hookItems(was[event]).map(entry => stable(entry)))
     for (const entry of hookItems(groups)) {

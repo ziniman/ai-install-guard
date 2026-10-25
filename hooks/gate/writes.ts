@@ -71,12 +71,15 @@ export function writePlace(rawPath: string): Place | undefined {
   const path = normalizePath(rawPath)
   const lower = path.toLowerCase()
   const name = lower.slice(lower.lastIndexOf('/') + 1)
-  if (name === '.mcp.json') return { kind: 'mcp-project' }
-  if (name === '.claude.json') return { kind: 'mcp-user' }
-  // A project's or the user's settings, beside .claude's other files, and an organization's.
-  if (/(?:^|\/)\.claude\/settings(?:\.local)?\.json$/.test(lower) || name === 'managed-settings.json') return { kind: 'settings' }
+  // A file in a plugin or a skill folder is that plugin's or skill's, whatever it is named.
   const found = /(?:^|\/)\.claude\/(skills|commands|agents|output-styles|plugins)\//.exec(lower)
-  if (found === null) return undefined
+  if (found === null) {
+    if (name === '.mcp.json') return { kind: 'mcp-project' }
+    if (name === '.claude.json') return { kind: 'mcp-user' }
+    // A project's or the user's settings, beside .claude's other files, and an organization's.
+    if (/(?:^|\/)\.claude\/settings(?:\.local)?\.json$/.test(lower) || name === 'managed-settings.json') return { kind: 'settings' }
+    return undefined
+  }
   const area = found[1] as 'skills' | 'commands' | 'agents' | 'output-styles' | 'plugins'
   if (area === 'plugins') return { kind: 'plugins' }
   const start = (found.index ?? 0) + found[0].length
@@ -111,14 +114,16 @@ export async function readWrite(host: Host, input: WriteInput): Promise<WriteRea
   if ((await host.stat(raw).catch(() => undefined))?.isLink === true) return held('it writes through a link, and the guard reads files, not where links lead; write the file the link points to')
   // The file as it is now is read only when it is needed: for an edit, or to compare a configuration's servers.
   const config = place.kind === 'mcp-project' || place.kind === 'mcp-user' || place.kind === 'settings'
-  const current = input.tool === 'Edit' || config ? await readText(host, raw, config ? MAX_CONFIG_BYTES : MAX_PROMPT_BYTES) : { text: undefined }
+  // Read where it lands, the same file under every name a link gives it.
+  const current = input.tool === 'Edit' || config ? await readText(host, landed, config ? MAX_CONFIG_BYTES : MAX_PROMPT_BYTES) : { text: undefined }
   if ('tooLarge' in current) return held(`the file is ${current.tooLarge} bytes, more than the guard reads`)
   if ('unreadable' in current) return held('the guard could not read the file as it is now, so it cannot tell what the change makes')
   const before = current.text
   const after = input.tool === 'Write' ? input.content : edited(before, input)
   // Claude Code matches an edit more loosely than the guard can replay it, so one the guard cannot replay may still apply.
   if (after === undefined) return held('the guard could not make this edit to the file as it is now, so it cannot check what it makes; write the whole file instead')
-  if (place.kind === 'settings') return settingsWrite(shown, path, before, after)
+  // A settings file is kept under where it really is, so a link to it is the same file.
+  if (place.kind === 'settings') return settingsWrite(safeLine(normalizePath(landed)), normalizePath(landed), before, after)
   if (config) return mcpWrite(place.kind, shown, before, after, path.slice(0, path.lastIndexOf('/')) || '/')
   const what = place.kind
   const label = what === 'skill' ? `the skill ${safeLine(place.name)}` : `the ${what} ${safeLine(place.rel.slice(place.rel.indexOf('/') + 1))}`

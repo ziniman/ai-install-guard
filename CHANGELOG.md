@@ -6,7 +6,7 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ## v0.7.0 &nbsp;·&nbsp; 2026-10-25
 
-**Settings** - When Claude writes or edits `settings.json` or `settings.local.json` (the project's, yours or an organization's), the guard compares the file before and after. A change that widens what Claude may do or run waits for you, judged by what it widens: an allow rule for any shell command, `bypassPermissions`, a hook or helper that reaches out, a redirected `ANTHROPIC_BASE_URL` or proxy, or approving every project MCP server is a red flag; any other allow rule, hook or helper, a removed deny rule, or a plugin turned on outside `/plugin install` is worth a look. A change that only narrows what runs, or touches nothing that runs, goes on
+**Settings** - When Claude writes or edits `settings.json` or `settings.local.json` (the project's, yours or an organization's), the guard compares the file before and after. A change that widens what Claude may do or run waits for you, judged by what it widens: an allow rule for any shell command, `bypassPermissions`, a hook or helper that reaches out, a redirected `ANTHROPIC_BASE_URL` or proxy, or approving every project MCP server is a red flag; any other allow rule, hook or helper, a removed deny rule or hook, every hook turned off, or a plugin turned on outside `/plugin install` is worth a look. An allow rule for a program that runs whatever it is given (`sudo`, `env`, `xargs`, `npx`, or `npm run` with no script named) counts as any shell command. A change that only narrows what runs, or touches nothing that runs, goes on. Each settings file's approvals are its own, a file is found under the name a link gives it, and a settings file inside a plugin or skill folder is that plugin's or skill's
 
 ---
 

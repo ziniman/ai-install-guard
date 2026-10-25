@@ -3,7 +3,7 @@ import { atom, update } from 'claude-code'
 
 import { BROWSE_NOTE, judge, judgeWrite } from './gate/gate'
 import { readPluginArgs, readShellCommand } from './gate/requests'
-import { normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
+import { landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
 import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
 import { forgetDecisions, loadDecisions, loadLastView, loadReport } from './guard/decisions'
@@ -132,7 +132,9 @@ async function gateWrite($: EngineInterface, input: WriteInput, lookups: boolean
   const reading = await readWrite(modHost($), input)
   if (reading.kind === 'pass') return free
   const path = safeLine(normalizePath(input.file_path))
-  const place = (reading.kind === 'prompt' ? reading.folder : undefined) ?? path
+  // Claimed where the change really lands, so a link to the same skill or file is the same place,
+  // and without regard to case, since a disk that ignores case has one file under both names.
+  const place = normalizePath(await landsAt(modHost($), (reading.kind === 'prompt' ? reading.folder : undefined) ?? input.file_path.replace(/\\/g, '/'))).toLowerCase()
   if (changing.has(place)) return { deny: `AI Install Guard held this change: another change to ${reading.label} is being checked or written. Nothing was written. Make one change at a time, then make this one again.` }
   changing.add(place)
   const release = () => {
