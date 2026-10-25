@@ -825,6 +825,16 @@ describe('Claude adding an MCP server', () => {
     expect(read('claude mcp add n -- node "x{1..3}.js"')).toMatchObject({ kind: 'install' })
     expect(splitShell('a ~/x b=~/y "~/z" c:~/w d~e').commands[0]?.expands).toEqual([1, 2, 4])
     expect(splitShell('a $X "$Y" b=$(z) "$(w)"').commands[0]?.splits).toEqual([1, 3])
+    // A list, a range, a pattern and "$@" each give several words.
+    expect(splitShell('a {x,y} {1..3} *.js "$@" "${l[@]}" "$*"').commands[0]?.splits).toEqual([1, 2, 3, 4, 5])
+  })
+
+  test('a secret is filled in by a plain variable only, quoted', () => {
+    for (const command of [`sh -c 'claude mcp add github -e TOKEN="$@" -- npx pkg' _ A=1 B=2`, 'claude mcp add github -e TOKEN={A..B}=1 -- npx pkg', 'claude mcp add github -e TOKEN="${L[@]}" -- npx pkg', 'claude mcp add github -e TOKEN=x* -- npx pkg']) {
+      expect(read(command)).toMatchObject({ kind: 'unreadable' })
+    }
+    expect(read('claude mcp add github -e GITHUB_TOKEN="${GITHUB_TOKEN}" -- npx pkg')).toMatchObject({ kind: 'install' })
+    expect(read('claude mcp add --transport http docs https://mcp.docs.example.net/mcp -H "Authorization: Bearer $PAT"')).toMatchObject({ kind: 'install' })
   })
 
   test('only a secret may be filled in as the server starts; anything that changes what runs is held', () => {

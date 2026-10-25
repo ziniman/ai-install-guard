@@ -451,6 +451,12 @@ const MCP_TRANSPORTS = new Set(['stdio', 'http', 'sse'])
  */
 const SECRET_NAME = /token|key|secret|passw|pat$|auth|credential|cookie|session|bearer/i
 
+/**
+ * A value whose every `$` is a plain variable (`$NAME`, `${NAME}`) or a
+ * substitution (`$(…)`): one word, as long as it is quoted.
+ */
+const PLAIN_FILL = /^(?:[^$]|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\}|\$\([^)]*\))*$/
+
 /** Text Claude Code fills in when it starts the server: `${VAR}` or `${VAR:-default}`. */
 const FILLED_IN = /\$\{[^}]*\}/
 
@@ -562,6 +568,11 @@ function readMcpAdd(words: readonly string[], { expands, splits }: Expansion): R
   const notSecret = filledValues.find(item => !SECRET_NAME.test(item))
   if (notSecret !== undefined) {
     return { kind: 'unreadable', label, reason: `the value of ${safeLine(notSecret)} is only known as the command runs, and only a secret's may be; write it out in full` }
+  }
+  // Only a plain variable or a substitution may fill one in: `$@`, `${list[@]}` and the like give several words.
+  const fancy = Object.entries({ ...env, ...headers }).find(([key, value]) => filledValues.includes(key) && !PLAIN_FILL.test(value))
+  if (fancy !== undefined) {
+    return { kind: 'unreadable', label, reason: `the value of ${safeLine(fancy[0])} is filled in by more than a plain variable; give it as -e ${safeLine(fancy[0])}="$NAME"` }
   }
   // Unquoted, what the shell fills in may split into more words: more settings than the one scanned.
   const unquoted = splitValues[0]
@@ -717,8 +728,10 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     else if (next === 'herestring') current.input = word
     else if (next === 'word') {
       // An unquoted pattern (`cl*`, `x?`, `[ab]`) or brace list (`{a,b}`) is expanded; `[` alone is the test command.
-      if (expands || (word !== '[' && (/[*?[]/.test(bare) || BRACES.test(bare)))) (current.expands ??= []).push(current.words.length)
-      if (splits) (current.splits ??= []).push(current.words.length)
+      // A pattern or a brace list or range also becomes several words.
+      const multiplies = word !== '[' && (/[*?[]/.test(bare) || BRACES.test(bare))
+      if (expands || multiplies) (current.expands ??= []).push(current.words.length)
+      if (splits || multiplies) (current.splits ??= []).push(current.words.length)
       current.words.push(word)
     }
     else if (writing && word !== '/dev/null' && !(duplicating && /^(?:\d+|-)$/.test(word))) current.writes = true
@@ -787,6 +800,9 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
         if (inner === '$') {
           dynamic = true
           expands = true
+          // Even quoted, "$@" and "${list[@]}" give one word per item.
+          const rest = text.slice(index + 1, index + 200)
+          if (rest.startsWith('@') || /^\{[^}]*@/.test(rest)) splits = true
         }
         word += inner
         index += 1
