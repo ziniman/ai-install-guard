@@ -18,6 +18,7 @@ These are product requirements, not style preferences. A change that breaks one 
 
 ## Layout
 
+- `README.md` stays short: what the guard does, how to install it, the short version of using it, the capabilities it uses, uninstalling, and contributing. Everything else goes in `docs/`, indexed by `docs/README.md`; `CONTRIBUTING.md` is the short guide for contributors. Two things in the README are load-bearing: the `## Review badge` heading, which every badge the guard makes links to (`BADGE_PAGE`), and the capability table, since the guard's own scan holds a mod to explaining each capability in its README.
 - `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`: the plugin and its one-entry marketplace (source `./`).
 - `hooks/hooks.json` names the one hooks module, `hooks/register.tsx`, which wires events and commands.
 - `hooks/mod-host.ts` adapts `$` to the scanner's `Host` interface.
