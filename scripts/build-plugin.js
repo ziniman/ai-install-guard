@@ -86,9 +86,11 @@ function release(commit) {
   const tree = treeOf(shippedEntries(commit));
   let parent;
   try {
-    git(['fetch', '--quiet', 'origin', `refs/heads/${BRANCH}`]);
+    // Quiet: on the first release there is no branch to fetch yet, which is no error.
+    git(['fetch', '--quiet', 'origin', `refs/heads/${BRANCH}`], { stdio: ['ignore', 'pipe', 'ignore'] });
     parent = git(['rev-parse', 'FETCH_HEAD']).trim();
   } catch {
+    console.log(`There is no ${BRANCH} branch yet; this release starts it.`);
     parent = undefined;
   }
   if (parent !== undefined && versionAt(parent) === version) {
