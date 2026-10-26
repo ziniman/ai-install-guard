@@ -82,17 +82,28 @@ function writeOut(commit, out) {
   console.log(`Wrote the plugin as it ships at ${commit.slice(0, 12)} to ${out}`);
 }
 
+/** Whether origin has the release branch: `git ls-remote --exit-code` exits 2 when it has no such ref, and any other failure is an error. */
+function branchExists() {
+  try {
+    git(['ls-remote', '--exit-code', '--heads', 'origin', `refs/heads/${BRANCH}`], { stdio: ['ignore', 'pipe', 'pipe'] });
+    return true;
+  } catch (error) {
+    if (error.status === 2) return false;
+    throw new Error(`could not ask origin for the ${BRANCH} branch: ${String(error.stderr || error.message).trim()}`);
+  }
+}
+
 function release(commit) {
   const version = versionAt(commit);
   const tree = treeOf(shippedEntries(commit));
+  // Only a branch the remote says is not there starts anew; any other failure
+  // stops the release, so a commit is never built without the branch it extends.
   let parent;
-  try {
-    // Quiet: on the first release there is no branch to fetch yet, which is no error.
-    git(['fetch', '--quiet', 'origin', `refs/heads/${BRANCH}`], { stdio: ['ignore', 'pipe', 'ignore'] });
+  if (branchExists()) {
+    git(['fetch', '--quiet', 'origin', `refs/heads/${BRANCH}`]);
     parent = git(['rev-parse', 'FETCH_HEAD']).trim();
-  } catch {
+  } else {
     console.log(`There is no ${BRANCH} branch yet; this release starts it.`);
-    parent = undefined;
   }
   if (parent !== undefined && versionAt(parent) === version) {
     console.log(`The ${BRANCH} branch already holds ${version}.`);
