@@ -4,6 +4,14 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.1 &nbsp;·&nbsp; 2026-10-26
+
+**Install** - Installing the guard now copies only the mod (its manifest, hooks, types and README) from a `release` branch CI builds at each version, not the whole repository: no test samples, and no build tools installed or install scripts run
+
+**Review badge** - A README badge whose verdict matches the scan now says so first; that it was made for other content is a second line, not a warning
+
+---
+
 ## v0.8.0 &nbsp;·&nbsp; 2026-10-25
 
 **Claude's shell commands** - The guard now reads every shell command Claude runs for the files it writes, without running it, and holds a change where Claude Code loads from as it holds a Write. Text the command holds (a here-document, `echo`, `printf`, `tee`) is checked as a Write of that text; a file or folder copied, moved or synced in is scanned and always waits for you; a repository cloned in is scanned at the commit it would clone; a download, an archive unpacked, a `sed -i` edit, a link, a checkout there, or a program given one of those paths is Could not verify. A command that makes more than one such change, or runs code the guard does not read while naming Claude's folder, is held. Relative paths are read from the session's current folder, which the guard follows as it changes

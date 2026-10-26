@@ -348,7 +348,7 @@ describe('the README badge from the command line', () => {
       const again = scanJson(copy).report
       assert.equal(again.badgeHash, report.badgeHash)
       const row = again.results.find(result => result.id === 'provenance.badge')
-      assert.match(row.summary[0], /for this version/)
+      assert.match(row.summary[0], /for exactly these files/)
 
       const text = run('--badge', copy).stdout
       assert.match(text, /README badge \(content [0-9a-f]{12}\)/)
