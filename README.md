@@ -4,7 +4,7 @@
 
 # AI Install Guard
 
-**A Claude Code mod that runs in the background. Install it once, and every plugin, marketplace, MCP server, skill or settings change, yours or Claude's, is scanned before it lands: nothing to run, nothing to remember.**
+**A Claude Code mod that runs in the background. Install it once, and every `/plugin install`, marketplace and MCP server, yours or Claude's, and every skill or settings change Claude makes, is checked before it lands: nothing to run, nothing to remember.**
 
 [![AI Install Guard: No red flags at 736c48cea6ed](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_736c48cea6ed-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:736c48cea6ed9fc0736dabd530233c7dbfbe5b6f83b06d1ed0bb4aa919ca8425, read without this badge")
 
@@ -27,7 +27,7 @@ Everything you add to Claude Code runs with your permissions: a plugin's hooks r
 AI Install Guard lives inside Claude Code instead. When something new is about to be added, it fetches the exact version, reads every file without running any of it, and holds it until you press **Install** or **Reject**.
 
 - **Automatic.** No command to run first: from the moment it is installed, it is in the way of every install.
-- **It catches Claude too.** What Claude adds on its own waits for you, the same as what you type.
+- **It catches Claude too.** What Claude adds on its own is checked like what you type, and waits for you unless it is something Claude wrote itself with no red flags.
 - **Pinned.** A verdict belongs to one commit and content hash, and only that version installs.
 - **Local and open.** No account or server, and every check is in this repository.
 

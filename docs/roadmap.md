@@ -11,6 +11,6 @@
 9. [x] Gate on Claude's shell writes, copies, clones and downloads into skill, plugin and configuration folders
 10. [ ] Module load gate with hash match, skill gate, session-start reconciliation
 11. [ ] Update diffs and the optional model review
-12. [ ] Full documentation
+12. [x] Documentation
 
 [Back to the documentation](README.md)
