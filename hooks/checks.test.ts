@@ -1438,6 +1438,9 @@ describe('badge claims, PR review round one', () => {
     expect(row(report)?.summary).toEqual(['The badge says No red flags, and this scan agrees', 'It was made for other content (aaaaaaa), not these exact files'])
     const same = badgeRow({ file: 'README.md', line: 1, claimed: 'safe', pin: 'abcdef1', text: '' }, 'safe', { sha: `abcdef1${'0'.repeat(33)}` })
     expect(same.summary).toEqual(['The badge says No red flags for exactly these files, and this scan agrees'])
+    // A badge more cautious than the scan still says which files it was made for.
+    const cautious = badgeRow({ file: 'README.md', line: 1, claimed: 'caution', pin: 'abcdef1', text: '' }, 'safe', { sha: `abcdef1${'0'.repeat(33)}` })
+    expect(cautious.summary).toEqual(['The badge says Worth a look; this scan finds No red flags', 'It was made for exactly these files'])
   })
 
   test("a listed plugin's own badge is judged in a marketplace scan", async () => {

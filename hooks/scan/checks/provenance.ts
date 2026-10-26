@@ -258,7 +258,7 @@ export function badgeRow(claim: BadgeClaim, actual: keyof typeof VERDICT_RANK, v
       ]
     : claim.claimed === actual
       ? [`${says}${madeFor === undefined ? ' for exactly these files' : ''}, and this scan agrees`, ...(madeFor === undefined ? [] : [madeFor])]
-      : [`${says}; this scan finds ${VERDICT_WORDS[actual]}`, ...(madeFor === undefined ? [] : [madeFor])]
+      : [`${says}; this scan finds ${VERDICT_WORDS[actual]}`, madeFor ?? 'It was made for exactly these files']
   return row(
     {
       id: 'provenance.badge',

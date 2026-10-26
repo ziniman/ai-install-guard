@@ -31,7 +31,10 @@
     "hooks/",
     "!hooks/**/*.test.ts",
     "!hooks/test-support/",
+    "types/",
     "README.md",
+    "docs/",
+    "CONTRIBUTING.md",
     "assets/",
     "CHANGELOG.md",
     "LICENSE"

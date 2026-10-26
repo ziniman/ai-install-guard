@@ -4,7 +4,8 @@
 
 // Builds the plugin as it ships: only the files the mod runs with (its
 // manifest, its hooks without their tests, its types) and what a person reads
-// beside them (README, CHANGELOG, LICENSE and the README's image). No
+// beside them (README and the pages it links to, CHANGELOG, LICENSE and the
+// README's image). No
 // package.json, so installing it installs no packages and runs no install
 // script; no fixtures, tests, scripts or CI files.
 //
@@ -25,7 +26,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const BRANCH = 'release';
 
 /** What ships: these files, and everything under these folders, except what LEFT_OUT names. */
-const SHIPS = ['.claude-plugin/plugin.json', 'hooks/', 'types/', 'assets/', 'README.md', 'CHANGELOG.md', 'LICENSE'];
+const SHIPS = ['.claude-plugin/plugin.json', 'hooks/', 'types/', 'assets/', 'docs/', 'README.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'LICENSE'];
 const LEFT_OUT = [/^hooks\/.*\.test\.ts$/, /^hooks\/test-support\//];
 
 function git(args, options = {}) {

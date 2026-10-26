@@ -2,7 +2,7 @@
 
 A security tool should be held to its own rules, so here is everything this mod uses, as `claude plugin validate .` lists it.
 
-Installing it runs nothing either. The plugin installs from a `release` branch that holds only the files the mod runs with: its manifest, its hooks, its types, the README, CHANGELOG and LICENSE. There is no `package.json`, so Claude Code installs no packages and runs no install script, and none of the repository's tests, sample plugins or scripts are copied to your machine.
+Installing it runs nothing either. The plugin installs from a `release` branch that holds only the files the mod runs with: its manifest, its hooks, its types, and the README with the pages it links to, the CHANGELOG and the LICENSE. There is no `package.json`, so Claude Code installs no packages and runs no install script, and none of the repository's tests, sample plugins or scripts are copied to your machine.
 
 | Capability | Why |
 |------------|-----|
