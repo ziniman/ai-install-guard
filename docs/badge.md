@@ -12,6 +12,6 @@ A badge is a picture anyone can paste, so the guard never trusts one:
 
 - **When you see one:** scan the repository yourself with `/guard scan owner/repo`, adding `--path <folder>` when the badge names a folder. The report says whether the badge is for the version you scanned. Your own scan is what counts.
 - **When the guard meets one:** a README badge that claims a better verdict than the guard's own scan is a warning, saying the badge is outdated or, when it names this very version, was never earned. A badge whose verdict the scan agrees with is only noted, with a second line when it was made for other content (an earlier version, or the whole repository when only part of it is installed). It never lifts a verdict.
-- **When the code changes:** the badge still names the old content. A new version needs a new scan and a new badge. To keep yours current, make the badge the last step of each change; this repository does it in every pull request with [`scripts/badge.js`](../scripts/badge.js), and its CI fails when the badge is not for the pull request's own files.
+- **When the code changes:** the badge still names the old content. A new version needs a new scan and a new badge. To keep yours current, make the badge the last step of each change; this repository does it in every pull request with [`scripts/badge.js`](https://github.com/ziniman/ai-install-guard/blob/main/scripts/badge.js), and its CI fails when the badge is not for the pull request's own files.
 
 [Back to the documentation](README.md)

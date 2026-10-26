@@ -48,4 +48,4 @@ Branch from `main`, commit in focused steps, and run `npm run check` before you 
 
 An install of the guard gets only the files the mod runs with, from a `release` branch CI builds at each version (`scripts/build-plugin.js`): no `package.json`, tests, fixtures or scripts. A merge reaches users when its pull request bumps the version.
 
-[.claude/CLAUDE.md](.claude/CLAUDE.md) has the full picture: how the code is laid out, how the gates and checks fit together, and how releases are published.
+[.claude/CLAUDE.md](https://github.com/ziniman/ai-install-guard/blob/main/.claude/CLAUDE.md) has the full picture: how the code is laid out, how the gates and checks fit together, and how releases are published.
