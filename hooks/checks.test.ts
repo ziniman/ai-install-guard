@@ -1401,7 +1401,7 @@ describe('badge claims, review round one', () => {
   test('a badge that says less than the scan finds is not called agreement', async () => {
     const report = await scanWith('clean-plugin', badge('do_not_install'))
     expect(row(report)?.status).toBe('info')
-    expect(row(report)?.summary?.[0]).toBe("The README's badge says Do not install and names no version; this version scans as No red flags")
+    expect(row(report)?.summary).toEqual(['The badge says Do not install; this scan finds No red flags', 'It names no version'])
   })
 })
 
@@ -1435,9 +1435,9 @@ describe('badge claims, PR review round one', () => {
   test('a badge for another version is not agreement', async () => {
     const report = await scanWith('clean-plugin', badge('safe_to_install_%C2%B7_aaaaaaa'))
     expect(row(report)?.status).toBe('info')
-    expect(row(report)?.summary?.[0]).toBe("The README's badge says No red flags and is for another version (aaaaaaa); this version scans as No red flags")
+    expect(row(report)?.summary).toEqual(['The badge says No red flags, and this scan agrees', 'It was made for other content (aaaaaaa), not these exact files'])
     const same = badgeRow({ file: 'README.md', line: 1, claimed: 'safe', pin: 'abcdef1', text: '' }, 'safe', { sha: `abcdef1${'0'.repeat(33)}` })
-    expect(same.summary?.[0]).toBe('The README shows an AI Install Guard badge for this version (No red flags); this scan agrees')
+    expect(same.summary).toEqual(['The badge says No red flags for exactly these files, and this scan agrees'])
   })
 
   test("a listed plugin's own badge is judged in a marketplace scan", async () => {
@@ -2031,10 +2031,10 @@ describe('a badge pinned to content, so it is right in the commit that adds it',
     const second = await scanFiles(badged)
     expect(second.badgeHash).toBe(first.badgeHash)
     expect(second.inventory?.treeHash).not.toBe(first.inventory?.treeHash)
-    expect(badgeSummary(second)).toContain('for this version')
+    expect(badgeSummary(second)).toContain('for exactly these files')
 
     const changed = await scanFiles({ ...badged, 'skills/greet/SKILL.md': b64('---\nname: greet\n---\nSay hello warmly.\n') })
-    expect(badgeSummary(changed)).toContain('for another version')
+    expect(changed.results.find(result => result.id === 'provenance.badge')?.summary?.[1]).toContain('made for other content')
   })
 
   test('with no README yet, a README made to hold only the badge keeps it right', async () => {
@@ -2044,7 +2044,7 @@ describe('a badge pinned to content, so it is right in the commit that adds it',
     if ('refusal' in made) throw new Error(made.refusal)
     const second = await scanFiles({ ...files, 'README.md': b64(`${made.markdown}\n`) })
     expect(second.badgeHash).toBe(first.badgeHash)
-    expect(badgeSummary(second)).toContain('for this version')
+    expect(badgeSummary(second)).toContain('for exactly these files')
   })
 
   test('every byte of the README counts, even bytes that are not valid UTF-8', async () => {
@@ -2066,6 +2066,6 @@ describe('a badge pinned to content, so it is right in the commit that adds it',
     const badged = await scanFiles({ ...files, 'README.md': b64(`${overclaim}\n\n${readmeText}`) })
     expect(badged.results.find(result => result.id === 'provenance.badge')?.status).toBe('warn')
     const summary = badged.results.find(result => result.id === 'provenance.badge')?.summary ?? []
-    expect(summary[1]).toBe(`The badge is for this version (${pin}), so it was never earned`)
+    expect(summary).toEqual(['The badge says No red flags, but this scan finds Worth a look', 'It was made for exactly these files, so it was never earned'])
   })
 })

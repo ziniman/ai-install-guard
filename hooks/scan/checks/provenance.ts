@@ -247,16 +247,18 @@ const VERDICT_WORDS = RECOMMENDATION
 export function badgeRow(claim: BadgeClaim, actual: keyof typeof VERDICT_RANK, version: { sha?: string; treeHash?: string; badgeHash?: string } = {}): CheckResult {
   const overclaims = VERDICT_RANK[claim.claimed] < VERDICT_RANK[actual]
   const sameVersion = claim.pin !== undefined && namesVersion(claim.pin, version)
-  const named = claim.pin === undefined ? 'names no version' : sameVersion ? `is for this version (${claim.pin})` : `is for another version (${claim.pin})`
+  const says = `The badge says ${VERDICT_WORDS[claim.claimed]}`
+  // Which files the badge was made for, when not these: an earlier commit, or the whole repository where only part of it is installed.
+  const madeFor = claim.pin === undefined ? 'It names no version' : sameVersion ? undefined : `It was made for other content (${claim.pin}), not these exact files`
   const summary = overclaims
     ? [
-        `The README's badge says ${VERDICT_WORDS[claim.claimed]}, but this version scans as ${VERDICT_WORDS[actual]}`,
+        `${says}, but this scan finds ${VERDICT_WORDS[actual]}`,
         // A badge for this very version that claims more was never earned; one for another may only be outdated.
-        sameVersion ? `The badge ${named}, so it was never earned` : `The badge ${named}: it is outdated or was never earned`,
+        madeFor === undefined ? 'It was made for exactly these files, so it was never earned' : `${madeFor}: it is outdated or was never earned`,
       ]
-    : sameVersion && claim.claimed === actual
-      ? [`The README shows an AI Install Guard badge for this version (${VERDICT_WORDS[claim.claimed]}); this scan agrees`]
-      : [`The README's badge says ${VERDICT_WORDS[claim.claimed]} and ${named}; this version scans as ${VERDICT_WORDS[actual]}`]
+    : claim.claimed === actual
+      ? [`${says}${madeFor === undefined ? ' for exactly these files' : ''}, and this scan agrees`, ...(madeFor === undefined ? [] : [madeFor])]
+      : [`${says}; this scan finds ${VERDICT_WORDS[actual]}`, ...(madeFor === undefined ? [] : [madeFor])]
   return row(
     {
       id: 'provenance.badge',
