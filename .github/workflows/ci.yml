@@ -67,6 +67,18 @@ jobs:
       - name: Build and test the chat skill
         run: npm run test:skill
 
+      # What an install gets: the files build-plugin.js ships from this commit,
+      # as the release workflow will put them on the release branch. It must
+      # load and pass the guard's own scan on its own, without the rest of the repo.
+      - name: The plugin as it ships
+        run: |
+          node scripts/build-plugin.js --out "$RUNNER_TEMP/plugin"
+          claude plugin validate --strict "$RUNNER_TEMP/plugin"
+          node skill/ai-install-guard/scripts/scan.js "$RUNNER_TEMP/plugin" || {
+            echo "::error::The plugin as it ships does not scan as No red flags (exit $?). Run 'node scripts/build-plugin.js --out <folder>' and scan that folder."
+            exit 1
+          }
+
       # The README badge names the content it was scanned at, so a PR that
       # changes anything refreshes it with `npm run badge`. This scans the
       # merged result with the scanner it builds.

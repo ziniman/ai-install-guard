@@ -105,3 +105,14 @@ jobs:
             gh release create "$TAG" "${TARGET[@]}" --title "$TITLE" --generate-notes
           fi
           echo "Created release $TAG at ${RELEASE_SHA:0:7}." >> "$GITHUB_STEP_SUMMARY"
+
+      # The marketplace installs the plugin from the release branch, which holds
+      # only the files the mod runs with: no package.json, so an install puts
+      # no packages on anyone's machine and runs no install script, and no
+      # fixtures, tests or scripts. Runs on every release run, so a re-run
+      # repairs a release whose branch was not updated; a version already
+      # there is left as it is.
+      - name: Publish the plugin to the release branch
+        if: steps.check.outputs.release == 'true'
+        run: |
+          node scripts/build-plugin.js --release "${{ steps.check.outputs.sha }}" | tee -a "$GITHUB_STEP_SUMMARY"
