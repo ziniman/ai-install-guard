@@ -1,0 +1,31 @@
+{
+  "name": "ai-install-guard",
+  "version": "0.8.1",
+  "description": "A Claude Code mod that runs in the background: every /plugin install and marketplace you add, yours or Claude's, is scanned before it happens, without running any of it, and nothing installs until you approve.",
+  "author": {
+    "name": "Boaz Ziniman",
+    "email": "ziniman@gmail.com",
+    "url": "https://github.com/ziniman"
+  },
+  "homepage": "https://github.com/ziniman/ai-install-guard",
+  "repository": "https://github.com/ziniman/ai-install-guard",
+  "license": "Apache-2.0",
+  "types": "./types/index.d.ts",
+  "keywords": [
+    "security",
+    "supply-chain",
+    "static-analysis",
+    "plugins",
+    "skills",
+    "mcp",
+    "mods"
+  ],
+  "userConfig": {
+    "outsideLookups": {
+      "type": "boolean",
+      "title": "Outside lookups",
+      "description": "Check the packages a plugin uses against OSV, and its name against Anthropic's official plugins. Sends package and plugin names to those services. Off by default.",
+      "default": false
+    }
+  }
+}
