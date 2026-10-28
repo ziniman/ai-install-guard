@@ -75,8 +75,13 @@ async function judgeRemote($: EngineInterface, name: string, wanted: RemoteSpec,
     const decided = await pinnedDecision($, { root: sourceRoot(wanted.url, pin.subdir), sha: pin.sha }).catch(() => undefined)
     if (decided?.decision === 'rejected') return rejected(request, name, ` at commit ${pin.sha.slice(0, 12)}`, decided.decidedAt)
   }
-  // The scan fetches exactly the commit just looked up, so the verdict is about what arrives.
-  const spec = pin === undefined ? wanted : { url: wanted.url, ref: pin.sha, ...(pin.subdir === undefined ? {} : { subdir: pin.subdir }) }
+  // The scan fetches exactly the commit just looked up, so the verdict is about what arrives. It is
+  // named by the branch or tag it was looked up through, so a release branch's commit is not taken
+  // for one a fork could have put there.
+  const spec: RemoteSpec =
+    pin === undefined
+      ? wanted
+      : { url: wanted.url, ref: pin.sha, ...(pin.subdir === undefined ? {} : { subdir: pin.subdir }), ...(pin.foundAs === undefined ? {} : { foundAs: pin.foundAs }) }
   return afterScan(request, name, await showScan($, name, { remote: spec }, options))
 }
 

@@ -10,6 +10,14 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.2 &nbsp;·&nbsp; 2026-10-28
+
+**Install gate** - A plugin whose marketplace names a branch or tag other than the default is scanned as that branch's commit, so it is no longer warned as a commit a fork could have put there. The guard's own update from its release branch was held as Worth a look for this
+
+**Release** - The release branch's commits are made through GitHub's API, so GitHub signs them and a scan of an install shows them verified
+
+---
+
 ## v0.8.1 &nbsp;·&nbsp; 2026-10-26
 
 **Install** - Installing the guard now copies only the mod (its manifest, hooks, types and README) from a `release` branch CI builds at each version, not the whole repository: no test samples, and no build tools installed or install scripts run
