@@ -292,11 +292,16 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `node -e "require('fs').promises.rm('/home/tester/.claude/skills/x', { recursive: true })"`,
       `python3 -c "$CODE" ~/.claude/settings.json`,
       `python3 <<EOF\nopen("$TARGET")\nEOF\n# ~/.claude`,
+      `node -e "require('fs').readFileSync('/home/tester/.claude/settings.json', {flag:'w'})"`,
+      `node -e "const fs = require('fs'); fs.closeSync(fs.openSync('/home/tester/.claude/settings.json', fs.constants.O_TRUNC))"`,
     ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
-    // Reading through os and fs stays a read.
+    // Reading through os and fs stays a read, and data passed beside fixed code is no code.
     for (const command of [
       `python3 -c "import os; print(os.listdir(os.path.expanduser('~/.claude/skills')))"`,
       `node -e "console.log(require('fs').readdirSync('/home/tester/.claude/skills'))"`,
+      `node -e "console.log(require('fs').readFileSync('/home/tester/.claude/settings.json', {flag: 'r'}).length)"`,
+      `python3 -c 'import sys; print(sys.argv[1])' "$DATA" ~/.claude/settings.json`,
+      `python3 -c 'import sys; print(sys.stdin.read())' <<< "$X" # ~/.claude`,
     ]) expect(await change(command)).toEqual({ kind: 'pass' })
   })
 })

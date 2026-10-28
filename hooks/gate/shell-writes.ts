@@ -220,8 +220,10 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       // Code piped in from elsewhere is unknown. Code in the command counts when it may change
       // something, so one that only reads a file under ~/.claude and prints it goes on.
       const known = inline || command.input !== undefined
-      // Code the shell fills in as it runs (`-c "$CODE"`, an unquoted here-document with `$`) is not the text read here.
-      const filledIn = args.some((_, at) => unknown(at)) || command.feedsExpand === true
+      // Code the shell fills in as it runs (`-c "$CODE"`, an unquoted here-document with `$`) is not the
+      // text read here. Only the code counts: data passed beside fixed code (`-c '…' "$DATA"`) does not.
+      const codeAt = inlineCodeAt(program, args)
+      const filledIn = codeAt.length > 0 ? codeAt.some(at => at < args.length && unknown(at)) : command.feedsExpand === true
       if (!known) out.unseen.push({ reason: `${program} runs code from its input, which the guard does not read`, text: ownText })
       else if (filledIn) out.unseen.push({ reason: `${program} runs code only known as it runs` })
       else if (mayChange(program, args, ownText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text: ownText })
@@ -318,6 +320,22 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
 const INLINE_CODE = /^(?:-(?!-)[^\s]*[ceEpr]|--eval(?:=.*)?|--print(?:=.*)?|-Command|-command)/
 
 /**
+ * Where the code an interpreter is given inline sits among its arguments:
+ * the word after an option that stands alone (`-c`, `-pe`, `--eval`), or the
+ * option's own word when the code is attached to it (`-c'…'`, `--eval=…`),
+ * and the word after `deno eval`.
+ */
+function inlineCodeAt(program: string, args: readonly string[]): number[] {
+  const at: number[] = []
+  args.forEach((arg, index) => {
+    if (!INLINE_CODE.test(arg)) return
+    at.push(/^(?:-(?!-)[A-Za-z]*[ceEpr]|--eval|--print|-Command|-command)$/.test(arg) ? index + 1 : index)
+  })
+  if (program === 'deno' && args[0] === 'eval') at.push(1)
+  return at
+}
+
+/**
  * What inline code does that may change something, in the languages run
  * inline: writing, appending, copying, moving, deleting or making files;
  * opening one for writing; running another program; and hiding what it does
@@ -337,6 +355,8 @@ const MAY_CHANGE: readonly RegExp[] = [
   // os.open with write flags change files as surely as the names above.
   /\bos\.(?!path\b|environ\b|getcwdb?\b|listdir\b|scandir\b|stat\b|lstat\b|walk\b|getenv\b|sep\b|linesep\b|name\b|getpid\b|cpu_count\b|curdir\b|pardir\b|devnull\b|fspath\b|fsencode\b|fsdecode\b|access\b|uname\b|getlogin\b|getuid\b|getgid\b|geteuid\b|isatty\b|readlink\b|get_terminal_size\b|extsep\b|altsep\b|pathsep\b)\w+/,
   /\bfs\.(?!(?:readFile|readdir|stat|lstat|exists|access|realpath|readlink|opendir)(?:Sync)?\b|createReadStream\b|constants\b|promises\.(?:readFile|readdir|stat|lstat|access|realpath|readlink|opendir)\b)\w+/,
+  // A read call can still open for writing: Node's flag option (`{ flag: 'w' }`), or the open flags themselves.
+  /\bflags?\s*[:=]\s*['"][^'"]*[wax+]|\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b/i,
   // A path object's own changes (Path(…).replace), and deleting or moving by name.
   /\bPath\b[\s\S]*\.(?:replace|rename|unlink|rmdir|touch|symlink_to|hardlink_to|link_to|chmod|lchmod)\s*\(|\bdelete\b|\bmove\s*\(/i,
 ]
