@@ -10,8 +10,8 @@
     {
       "name": "ai-install-guard",
       "source": {
-        "source": "github",
-        "repo": "ziniman/ai-install-guard",
+        "source": "url",
+        "url": "https://github.com/ziniman/ai-install-guard.git",
         "ref": "release"
       },
       "version": "0.8.1",

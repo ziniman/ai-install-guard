@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## Unreleased
+
+**Install** - The marketplace names the plugin by its `https://` address, so installing or updating the guard works without a GitHub SSH key. 0.8.1 named it as a `github` source, which Claude Code clones over SSH when a key looks configured, and an update inside a session does not fall back to HTTPS
+
+---
+
 ## v0.8.1 &nbsp;·&nbsp; 2026-10-26
 
 **Install** - Installing the guard now copies only the mod (its manifest, hooks, types and README) from a `release` branch CI builds at each version, not the whole repository: no test samples, and no build tools installed or install scripts run
