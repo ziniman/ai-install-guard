@@ -254,8 +254,10 @@ type World = { core: string[]; ran: string[][]; listing: Listing; served: Fixtur
  * listing, git fetches whatever commit is asked for, and `core` records each
  * /plugin command and shell command that got past the guard.
  */
-function world(on: On, files: { work?: FixtureFiles; market?: FixtureFiles } = {}): World {
+function world(on: On, files: { work?: FixtureFiles; market?: FixtureFiles } = {}, branches: Record<string, string> = {}): World {
   const state: World = { core: [], ran: [], listing: listing(), served: {} }
+  // Branches besides main, by name: the commit each points at.
+  const more = Object.entries(branches).map(([name, sha]) => `${sha}\trefs/heads/${name}\n`).join('')
   let fetched = SHA
   const ok = (stdout = ''): RunResult => ({ exitCode: 0, stdout, stderr: '' })
   const run = (argv: readonly string[]): RunResult | undefined => {
@@ -270,7 +272,7 @@ function world(on: On, files: { work?: FixtureFiles; market?: FixtureFiles } = {
     if (argv[0] === 'rm') return ok()
     if (argv[0] === 'sh') return { exitCode: 1, stdout: '', stderr: 'no shell in this test' }
     if (argv[0] !== 'git') return undefined
-    if (argv.includes('ls-remote')) return ok(`ref: refs/heads/main\tHEAD\n${fetched}\tHEAD\n${fetched}\trefs/heads/main\n`)
+    if (argv.includes('ls-remote')) return ok(`ref: refs/heads/main\tHEAD\n${fetched}\tHEAD\n${fetched}\trefs/heads/main\n${more}`)
     if (argv.includes('fetch')) fetched = argv[argv.length - 1] as string
     if (argv.includes('rev-parse')) return ok(`${fetched}\n`)
     if (argv.includes('count-objects')) return ok('size: 0\nsize-pack: 12\n')
@@ -325,6 +327,19 @@ describe('gate A: /plugin install', () => {
     expect(fetches(state)).toBe(1)
     expect(ui.toasts).toContain('AI Install Guard: approved; installing /plugin install notes@acme')
     await pane.unmount()
+  })
+
+  test("a plugin on a branch other than the default is scanned as that branch's commit, not one named by its id", async ($, on) => {
+    seededStore(on)
+    serveUi(on, { placed: false })
+    const release = 'c'.repeat(40)
+    const state = world(on, { work: fixture('clean-plugin') }, { release })
+    state.listing.available.push({ pluginId: 'guard@acme', name: 'guard', marketplaceName: 'acme', source: { source: 'url', url: 'https://github.com/acme/guard.git', ref: 'release' } })
+    const answer = await $.command.run(typed('plugin', 'install guard@acme'))
+    // The gate looked the branch up, fetched its commit by id, and still names it by the branch.
+    expect(state.ran.find(argv => argv.includes('fetch'))?.at(-1)).toBe(release)
+    expect(answer.text).toContain(`https://github.com/acme/guard.git at ${release}: branch release`)
+    expect(answer.text).toContain('No red flags')
   })
 
   test('a version you approved before installs without asking again, after a new scan finds it no worse', async ($, on) => {

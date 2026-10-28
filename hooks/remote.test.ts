@@ -161,6 +161,22 @@ describe('remote sources: fetching and checking one commit', () => {
     expect(host.envs.find((env, index) => host.ran[index]?.[0] === 'git')?.GIT_TERMINAL_PROMPT).toBe('0')
   })
 
+  test('a commit looked up through a branch is named by that branch while it still points there', async () => {
+    const lsRemote = `ref: refs/heads/main\tHEAD\n${OTHER}\tHEAD\n${OTHER}\trefs/heads/main\n${SHA}\trefs/heads/release\n`
+    const throughBranch = await scanRemote(gitHost(fixture('clean-plugin'), { lsRemote }), 'acme/notes', { url: URL_, ref: SHA, foundAs: { ref: 'release' } }, { validate: false })
+    expect(throughBranch.source).toMatchObject({ sha: SHA, ref: 'release', refKind: 'branch' })
+    expect(formatReport(throughBranch)).toContain('branch release (a branch moves; this scan holds the commit)')
+    // The branch moved on since it was looked up: the commit is only named by its id.
+    const moved = `ref: refs/heads/main\tHEAD\n${OTHER}\tHEAD\n${OTHER}\trefs/heads/main\n${OTHER}\trefs/heads/release\n`
+    const named = await scanRemote(gitHost(fixture('clean-plugin'), { lsRemote: moved }), 'acme/notes', { url: URL_, ref: SHA, foundAs: { ref: 'release' } }, { validate: false })
+    expect(named.source).toMatchObject({ sha: SHA, refKind: 'commit' })
+    // Looked up through the default branch, and a commit named by its id with no lookup at all.
+    const viaDefault = await scanRemote(gitHost(fixture('clean-plugin')), 'acme/notes', { url: URL_, ref: SHA, foundAs: {} }, { validate: false })
+    expect(viaDefault.source).toMatchObject({ sha: SHA, refKind: 'default' })
+    const byId = await scanRemote(gitHost(fixture('clean-plugin')), 'acme/notes', { url: URL_, ref: SHA }, { validate: false })
+    expect(byId.source).toMatchObject({ sha: SHA, refKind: 'commit' })
+  })
+
   test('a checkout that lands elsewhere is Could not verify', async () => {
     const host = gitHost(fixture('clean-plugin'), { head: OTHER })
     const report = await scanRemote(host, 'acme/notes', { url: URL_ }, { validate: false })
