@@ -112,7 +112,12 @@ jobs:
       # fixtures, tests or scripts. Runs on every release run, so a re-run
       # repairs a release whose branch was not updated; a version already
       # there is left as it is.
+      # The commit is made through GitHub's API, so GitHub signs it.
       - name: Publish the plugin to the release branch
         if: steps.check.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          # Without pipefail a failed release would pass through tee and leave the step green.
+          set -o pipefail
           node scripts/build-plugin.js --release "${{ steps.check.outputs.sha }}" | tee -a "$GITHUB_STEP_SUMMARY"
