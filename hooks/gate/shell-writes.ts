@@ -210,12 +210,18 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     return
   }
   if (INTERPRETERS.has(program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1'))) {
-    // Code given inline, or read from input, is not read; it counts when it names Claude's folder.
-    const inline = args.some(arg => INLINE_CODE.test(arg))
-    const file = args.findIndex(arg => !arg.startsWith('-'))
+    // Code given inline (`deno eval` too), or read from input, is not read.
+    const inline = args.some(arg => INLINE_CODE.test(arg)) || (program === 'deno' && args[0] === 'eval')
+    // A lone `-` in a script's place reads the script from input, as no script at all does.
+    const file = args.findIndex(arg => arg === '-' || !arg.startsWith('-'))
     const module = args.findIndex(arg => arg === '-m')
-    if (inline || command.input !== undefined || (file === -1 && module === -1)) {
-      out.unseen.push({ reason: `${program} runs code the guard does not read`, text: ownText })
+    const fromInput = module === -1 && (file === -1 || args[file] === '-')
+    if (inline || command.input !== undefined || fromInput) {
+      // Code piped in from elsewhere is unknown. Code in the command counts when it may change
+      // something, so one that only reads a file under ~/.claude and prints it goes on.
+      const known = inline || command.input !== undefined
+      if (!known) out.unseen.push({ reason: `${program} runs code from its input, which the guard does not read`, text: ownText })
+      else if (mayChange(program, args, ownText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text: ownText })
       return
     }
     // A script file or a module (`python3 -m pip …`) is code already on disk: judged by the paths it is given, not by where it is.
@@ -307,6 +313,36 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
  * is never read as a script's name.
  */
 const INLINE_CODE = /^(?:-(?!-)[^\s]*[ceEpr]|--eval(?:=.*)?|--print(?:=.*)?|-Command|-command)/
+
+/**
+ * What inline code does that may change something, in the languages run
+ * inline: writing, appending, copying, moving, deleting or making files;
+ * opening one for writing; running another program; and hiding what it does
+ * (eval, imports by name, decoding, escapes). A shell redirection or a
+ * backquote inside the code counts too; an arrow (`=>`, `->`) does not.
+ * Printing to the screen (`sys.stdout.write`) is no write. Written as
+ * escaped patterns, which the guard's own scan reads as patterns, not as the
+ * guard running these.
+ */
+const MAY_CHANGE: readonly RegExp[] = [
+  /(?<!std(?:out|err)\.)writ(?:e|ing)|append|\bdump\s*\(|copyfile|copytree|copy2|\bcopy\s*\(|cpSync|\bcp\s*\(|\brename|\bremove|\bunlink|rmtree|rmdir|\brmSync|\brm\s*\(|mkdir|makedirs|mkdtemp|symlink|hardlink|chmod|chown|\btouch|truncate|utime|extractall|urlretrieve|download|shutil|FileUtils|file_put_contents|fopen|fputs/i,
+  /\bopen\s*\([^,)]*,\s*(?:mode\s*=\s*)?['"][^'"]*[wax+]/i,
+  /\bsub\x70rocess|\bchild_\x70rocess|\bs\x70awn|\bexe\x63|\bsyste\x6d\b|\x70open|\bfork\s*\(|\bOpen3|\bProcessBuilder|\bgetRuntime|\bshell_exe\x63|\bpassthru|\bproc_open|\bdo shell s\x63ript|\bDeno\.(?:run|Command)|\bStart-Process|\bInvoke-|\biex\b|\bSet-Content|\bAdd-Content|\bOut-File|\bNew-Item|\bRemove-Item|\bCopy-Item|\bMove-Item|\bRename-Item/i,
+  /\beva\x6c\b|\bFunction\s*\(|__im\x70ort__|\bim\x70ortlib|\bgetattr|\bsetattr|\bglobals\s*\(|\bcom\x70ile\s*\(|\bmarshal|\bpickle|\bbase64|\bb\d\ddecode|\ba85decode|\bunhexlify|\bfromhex|\bcodecs|\\x[0-9a-fA-F]{2}|\bchr\s*\(|\bfromCharCode|\batob\b/i,
+  /(?<![=-])>|\x60/,
+]
+
+/**
+ * Whether code an interpreter runs from the command may change something:
+ * any of MAY_CHANGE in its text, or Perl or Ruby told to edit files in place
+ * (`-i`). Read over the code and its arguments together, so a path that
+ * merely looks like one of those words holds it too: a needless hold is the
+ * safer way to be wrong.
+ */
+function mayChange(program: string, args: readonly string[], text: string): boolean {
+  if (/^(?:perl|ruby)$/.test(program) && args.some(arg => /^-(?!-)[A-Za-z]*i/.test(arg))) return true
+  return MAY_CHANGE.some(pattern => pattern.test(text))
+}
 
 /**
  * What a program the guard does not read may write: anywhere among the paths
