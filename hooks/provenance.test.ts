@@ -95,6 +95,13 @@ describe('repository history from GitHub', () => {
     expect(status(await githubProvenance(netHost(github({ repoDays: 900, ownerDays: 3000, stars: 5, people: 2, commitStatus: 422 })), byId, NOW), 'provenance.commit')).toBe('warn')
   })
 
+  test("a branch's commit off the default branch, such as a release branch's, is no fork's", async () => {
+    const release = { ...SOURCE, ref: 'release', refKind: 'branch' as const }
+    const results = await githubProvenance(netHost(github({ repoDays: 900, ownerDays: 3000, stars: 5, people: 2, compare: 'diverged' })), release, NOW)
+    expect(status(results, 'provenance.commit')).toBe('info')
+    expect(results.find(result => result.id === 'provenance.commit')?.evidence.map(item => item.excerpt).join(' ')).not.toContain('fork')
+  })
+
   test('a rate limit or no network is noted, never a failure', async () => {
     const limited = await githubProvenance(netHost(() => json({ message: 'API rate limit exceeded' }, 403, { 'x-ratelimit-remaining': '0' })), SOURCE, NOW)
     expect(limited.map(result => result.status)).toEqual(['info'])

@@ -18,7 +18,16 @@ export type RemoteSpec = {
    * slashes, then a folder. Split once the repository's refs are known.
    */
   treePath?: string
+  /**
+   * For a `ref` that is a commit id the gate looked up itself: the branch or
+   * tag it was looked up through (none for the default branch). The scan
+   * names the commit by that ref while the ref still points at it.
+   */
+  foundAs?: FoundAs
 }
+
+/** The ref a commit was looked up through, from the repository's own branches and tags; no ref is its default branch. */
+export type FoundAs = { ref?: string }
 
 /** What was actually scanned: one commit, named however it was asked for. */
 export type PinnedSource = {
@@ -209,6 +218,22 @@ export function resolveRef(listed: RemoteRefs, ref: string | undefined): Pick<Pi
 }
 
 /**
+ * A commit given by its id, but looked up through a branch or tag of this
+ * repository: named by that ref when the same listing still points it at
+ * this commit, since a commit a branch or tag of the repository's own holds
+ * cannot be a fork's. Otherwise it stays a commit named by its id.
+ */
+function foundThrough(pinned: Pick<PinnedSource, 'sha' | 'refKind' | 'ref'>, foundAs: FoundAs | undefined, listed: RemoteRefs): Pick<PinnedSource, 'sha' | 'refKind' | 'ref'> {
+  if (pinned.refKind !== 'commit' || foundAs === undefined) return pinned
+  try {
+    const again = resolveRef(listed, foundAs.ref)
+    return again.sha === pinned.sha ? again : pinned
+  } catch {
+    return pinned
+  }
+}
+
+/**
  * Fetches exactly one commit into a new folder of the guard's own and checks
  * it out, with no hooks, no submodules, no LFS downloads and no filters. The
  * checkout is asserted to sit on the pinned commit: a branch named like the
@@ -219,7 +244,7 @@ export async function fetchPinned(host: Host, spec: RemoteSpec, onStage?: (stage
   const listed = await listRefs(host, spec.url)
   const fromLink = spec.treePath !== undefined && spec.ref === undefined ? splitTreePath(listed, spec.treePath) : undefined
   const subdir = spec.subdir ?? fromLink?.subdir
-  const pinned = resolveRef(listed, spec.ref ?? fromLink?.ref)
+  const pinned = foundThrough(resolveRef(listed, spec.ref ?? fromLink?.ref), spec.foundAs, listed)
   const dir = await makeTempDir(host)
   const cleanup = () => removeTempDir(host, dir)
   try {
@@ -283,15 +308,16 @@ export async function fetchPinned(host: Host, spec: RemoteSpec, onStage?: (stage
  * anything: what a later fetch of the same spec would pin, so a decision made
  * on that commit can be found before a scan.
  */
-export async function resolvePin(host: Host, spec: RemoteSpec): Promise<{ sha: string; subdir?: string }> {
-  // A full commit id needs no listing: it already is the pin.
+export async function resolvePin(host: Host, spec: RemoteSpec): Promise<{ sha: string; subdir?: string; foundAs?: FoundAs }> {
+  // A full commit id needs no listing: it already is the pin, named by its id.
   if (spec.ref !== undefined && spec.treePath === undefined && FULL_SHA.test(spec.ref.toLowerCase())) {
     return { sha: spec.ref.toLowerCase(), ...(spec.subdir === undefined ? {} : { subdir: spec.subdir }) }
   }
   const listed = await listRefs(host, spec.url)
   const fromLink = spec.treePath !== undefined && spec.ref === undefined ? splitTreePath(listed, spec.treePath) : undefined
   const subdir = spec.subdir ?? fromLink?.subdir
-  return { sha: resolveRef(listed, spec.ref ?? fromLink?.ref).sha, ...(subdir === undefined ? {} : { subdir }) }
+  const ref = spec.ref ?? fromLink?.ref
+  return { sha: resolveRef(listed, ref).sha, ...(subdir === undefined ? {} : { subdir }), foundAs: ref === undefined ? {} : { ref } }
 }
 
 /** The repository's branches and tags, as `git ls-remote` lists them. */

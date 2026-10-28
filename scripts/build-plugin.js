@@ -16,7 +16,8 @@
 //       write the plugin's files from a commit (HEAD by default) into a new folder
 //   node scripts/build-plugin.js --release <sha>
 //       commit them onto the `release` branch, which the marketplace installs
-//       from, and push it (the release workflow); a version already there is left as it is
+//       from, through GitHub's API so GitHub signs the commit (the release
+//       workflow, with GH_TOKEN); a version already there is left as it is
 
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -95,7 +96,8 @@ function branchExists() {
 
 function release(commit) {
   const version = versionAt(commit);
-  const tree = treeOf(shippedEntries(commit));
+  const entries = shippedEntries(commit);
+  const tree = treeOf(entries);
   // Only a branch the remote says is not there starts anew; any other failure
   // stops the release, so a commit is never built without the branch it extends.
   let parent;
@@ -109,12 +111,32 @@ function release(commit) {
     console.log(`The ${BRANCH} branch already holds ${version}.`);
     return;
   }
-  const bot = { GIT_AUTHOR_NAME: 'github-actions[bot]', GIT_AUTHOR_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com' };
-  const env = { ...process.env, ...bot, GIT_COMMITTER_NAME: bot.GIT_AUTHOR_NAME, GIT_COMMITTER_EMAIL: bot.GIT_AUTHOR_EMAIL };
   const message = `Release v${version}\n\nThe plugin as it ships, built from ${commit}: the files the mod runs with, and nothing else.\n`;
-  const made = git(['commit-tree', tree, ...(parent === undefined ? [] : ['-p', parent]), '-F', '-'], { env, input: message }).trim();
-  git(['push', 'origin', `${made}:refs/heads/${BRANCH}`]);
-  console.log(`Pushed ${version} to the ${BRANCH} branch as ${made.slice(0, 12)}.`);
+  // Made through GitHub's API rather than pushed, so GitHub signs the commit
+  // and an install's scan shows it verified. Every file is one of main's own
+  // blobs, so GitHub already holds them; the tree it builds must be the one
+  // git builds here from the same files.
+  const built = api('POST', 'git/trees', { tree: entries.map(entry => ({ path: entry.file, mode: entry.mode, type: 'blob', sha: entry.id })) });
+  if (built.sha !== tree) throw new Error(`GitHub built the tree ${built.sha} for these files, not ${tree}`);
+  const made = api('POST', 'git/commits', { message, tree, parents: parent === undefined ? [] : [parent] });
+  if (made.verification?.verified !== true) console.log(`GitHub did not verify ${made.sha}: ${made.verification?.reason ?? 'it gave no reason'}`);
+  // The branch only moves forward: an update that is not one fails rather than overwrite it.
+  if (parent === undefined) api('POST', 'git/refs', { ref: `refs/heads/${BRANCH}`, sha: made.sha });
+  else api('PATCH', `git/refs/heads/${BRANCH}`, { sha: made.sha, force: false });
+  console.log(`Added ${version} to the ${BRANCH} branch as ${made.sha.slice(0, 12)}${made.verification?.verified === true ? ', signed by GitHub' : ''}.`);
+}
+
+/** GitHub's REST API on this repository through `gh`, with a JSON body; the release workflow gives it its token. */
+function api(method, route, body) {
+  const repo = process.env.GITHUB_REPOSITORY;
+  if (repo === undefined || repo === '') throw new Error('GITHUB_REPOSITORY is not set: --release runs in the release workflow');
+  const out = execFileSync('gh', ['api', '--method', method, `repos/${repo}/${route}`, '--input', '-'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    input: JSON.stringify(body),
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return JSON.parse(out);
 }
 
 function main() {
