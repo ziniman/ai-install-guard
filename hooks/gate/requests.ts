@@ -62,7 +62,7 @@ export function readShellCommand(command: string): Reading {
 
 function readShell(command: string): Reading {
   const found: Reading[] = []
-  const { unseen, opaque, others } = collectInstalls(command, found, 0, true)
+  const { unseen, opaque, others, texts } = collectInstalls(command, found, 0, true)
   const installs = found.filter(reading => reading.kind !== 'pass')
   if (installs.length > 1) return { kind: 'unreadable', label: 'several installs', reason: 'the command installs more than one thing; run each install as a command of its own' }
   const [only] = installs
@@ -87,7 +87,10 @@ function readShell(command: string): Reading {
   if (opaque) {
     return { kind: 'unreadable', label: 'a command built as it runs', reason: 'it runs a command only known as it runs (as in bash -c "$CMD" or eval "$X"), so the guard cannot tell whether it installs anything; run the command itself instead' }
   }
-  if (unseen && (MAY_INSTALL.test(command) || (CLAUDE_WORD.test(command) && /\b(?:plugins?|mcp)\b/i.test(command)))) {
+  // An unseen part may run an install whose words show elsewhere in the command (a variable it reads, code
+  // in another language); a claude command read whole and found to install nothing is no such sign.
+  const rest = texts.join('\n')
+  if (unseen && (MAY_INSTALL.test(rest) || (CLAUDE_WORD.test(rest) && /\b(?:plugins?|mcp)\b/i.test(rest)))) {
     return { kind: 'unreadable', label: 'a claude command', reason: 'part of the command is only known as it runs, so the guard cannot tell what it installs; run claude plugin install or claude mcp add as a plain command' }
   }
   return PASS
@@ -95,9 +98,10 @@ function readShell(command: string): Reading {
 
 /**
  * The words of a plugin install however they are joined: by spaces, quotes or
- * the commas of a list in another language (`['plugin', 'install']`).
+ * the commas of a list in another language (`['plugin', 'install']`). A path
+ * separator never joins them, so `.claude-plugin/marketplace.json` is a path.
  */
-const MAY_INSTALL = /\bplugins?\b[^\w\n]{1,8}(?:install|i|update|marketplace)\b|\bmcp\b[^\w\n]{1,8}add(?:-json|-from-claude-desktop)?\b/i
+const MAY_INSTALL = /\bplugins?\b[^\w\n/\\]{1,8}(?:install|i|update|marketplace)\b|\bmcp\b[^\w\n/\\]{1,8}add(?:-json|-from-claude-desktop)?\b/i
 
 /** The `claude` command's names as words of their own, not part of a path such as `~/.claude/`. */
 const CLAUDE_WORD = /(?<![\w./-])claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?(?![\w./-])/i
@@ -216,6 +220,12 @@ type Collected = {
   opaque: boolean
   /** Simple commands that run something other than an install, a quiet program or a shell the guard read into. */
   others: number
+  /**
+   * The text of each simple command, with its input, but for a `claude`
+   * command read whole and found to install nothing: where an install's words
+   * would show when part of the command is unseen.
+   */
+  texts: string[]
 }
 
 /**
@@ -304,17 +314,19 @@ function claudePlugin(words: readonly string[], index: number, expands: Readonly
  * program, read only for installs it may run, cannot be opaque.
  */
 function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean): Collected {
-  const out: Collected = { unseen: false, opaque: false, others: 0 }
-  if (depth > MAX_DEPTH) return { unseen: true, opaque: asScript, others: 0 }
+  const out: Collected = { unseen: false, opaque: false, others: 0, texts: [] }
+  if (depth > MAX_DEPTH) return { unseen: true, opaque: asScript, others: 0, texts: [command] }
   const merge = (inner: Collected, counts: boolean): void => {
     out.unseen ||= inner.unseen
     out.opaque ||= inner.opaque
     if (counts) out.others += inner.others
+    out.texts.push(...inner.texts)
   }
   const nested = (script: string): void => merge(collectInstalls(script, found, depth + 1, true), true)
   for (const { words, input, scripts: substitutions, writes, expands, splits } of splitShell(command).commands) {
     // What its substitutions run comes first, and is read as commands too.
     substitutions?.forEach(nested)
+    const own = out.texts.push([...words, input ?? ''].join(' ')) - 1
     // A write to a file is more than an install, whatever program makes it.
     if (writes === true) out.others += 1
     const { index, scripts, fromInput } = programAt(words)
@@ -340,7 +352,11 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       const split = new Set(splits ?? [])
       const reading = places.map(at => claudePlugin(words, at - 1, expanded, split)).find(item => item !== undefined)
       if (reading !== undefined) found.push(reading)
-      else out.others += 1
+      else {
+        out.others += 1
+        // Read whole and found to install nothing (`claude plugin test .`): its words are no sign of an install elsewhere.
+        out.texts[own] = ''
+      }
       continue
     }
     // A program only known as it runs; inside a script a shell runs, nothing can be told about it.
