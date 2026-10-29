@@ -1,7 +1,7 @@
-import type { On } from 'claude-code'
+import type { EngineInterface, On, PluginRegisterInput } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Plugin } from 'claude-code/testing'
 
-import { heldToast, release, remember, type HeldMod } from './gate/load'
+import { failedLoad, heldReport, heldToast, judgeLoad, release, remember, toReview, type HeldMod } from './gate/load'
 import { takeInventory } from './scan/inventory'
 import { FIXTURES } from './test-support/fixtures.gen'
 import { memoryHost, serveFixture, typed, type FixtureFiles } from './test-support/memfs'
@@ -44,6 +44,26 @@ async function treeOf(files: FixtureFiles): Promise<string> {
 
 function decision(treeHash: string, decision: 'approved' | 'rejected', target = LABEL) {
   return { target, root: ROOT, treeHash, verdict: 'No red flags', verdictKind: 'safe', decision, overridden: false, decidedAt: Date.UTC(2026, 9, 20) }
+}
+
+/** What the engine hands the load gate for the mod at ROOT. */
+const LOADING: PluginRegisterInput = { name: 'notes', tier: 'user', root: ROOT, provenance: LABEL, uses: { events: ['prompt.submit'], calls: [] } }
+
+/**
+ * The little of `$` the load gate reads, for calling it directly: the test
+ * engine's own `$` has no store. `files` are at ROOT, `decisions` are stored.
+ */
+function fakeGuard(files: FixtureFiles, decisions: unknown[]): EngineInterface {
+  const host = memoryHost(ROOT, files)
+  const toBase64 = (bytes: Uint8Array): string => btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(''))
+  return {
+    fs: {
+      list: (path: string) => host.list(path),
+      stat: (path: string, options?: { resolve: boolean }) => host.stat(path, options),
+      read: async (path: string) => ({ base64: toBase64(await host.readBytes(path)) }),
+    },
+    store: { get: async (key: string) => (key === 'decisions' ? decisions : null) },
+  } as unknown as EngineInterface
 }
 
 /**
@@ -130,13 +150,14 @@ describe('the mod load gate', () => {
     expect(reason[0]).toContain(`kept ${LABEL} from loading: its folder could not be read`)
   })
 
-  test('when the guard itself fails, the mod stays out', { plugins: [NOTES] }, async ($, on) => {
+  test('when the guard itself fails, the mod stays out, and the refusal says what failed', { plugins: [NOTES] }, async ($, on) => {
     world(on, MOD)
     on('store.get', () => ({ deny: 'the store is gone' }))
     const reason: string[] = []
 
     expect(await loaded($, reason)).toBe(false)
-    expect(reason).toEqual(['AI Install Guard kept this mod from loading: the guard failed before it could check it.'])
+    expect(reason[0]).toStartWith(`AI Install Guard kept ${LABEL} from loading: the guard failed while checking it (`)
+    expect(reason[0]).toContain('the store is gone')
   })
 
   test("an administrator's managed mod loads as it is", { plugins: [{ ...NOTES, tier: 'append' }] }, async ($, on) => {
@@ -157,12 +178,42 @@ describe('the mods held in a session', () => {
     remember(held, { label: 'tally@acme', root: '/plugins/tally', why: 'its folder could not be read (gone)' })
 
     expect(held.map(mod => mod.treeHash)).toEqual(['sha256:b', undefined])
-    expect(heldToast(held.slice(0, 1))).toBe(`AI Install Guard kept 1 mod from loading: ${LABEL}. Review it in the pane (/guard held), then run /reload-plugins.`)
-    expect(heldToast(held)).toBe(`AI Install Guard kept 2 mods from loading: ${LABEL}, tally@acme. Review each in the pane (/guard held), then run /reload-plugins.`)
+    expect(heldToast(held)).toBe(`AI Install Guard kept 2 mods from loading: ${LABEL}, tally@acme. The pane shows the first to review: approve it, then run /reload-plugins. /guard held lists them all.`)
     // A mod that loads at a reload, approved since, leaves the list; another folder is left alone.
     release(held, '/plugins/other')
     release(held, ROOT)
     expect(held.map(mod => mod.label)).toEqual(['tally@acme'])
+  })
+
+  test('a rejected mod is named, never opened for review', () => {
+    const rejected: HeldMod = { label: LABEL, root: ROOT, treeHash: 'sha256:a', why: 'you rejected these files on 2026-10-20', rejected: true }
+    const open: HeldMod = { label: 'tally@acme', root: '/plugins/tally', treeHash: 'sha256:b', why: 'you have not approved these files' }
+
+    expect(heldToast([rejected])).toBe(`AI Install Guard kept 1 mod from loading: ${LABEL}. You rejected its files; /guard held lists it.`)
+    expect(toReview([rejected])).toBeUndefined()
+    expect(toReview([rejected, open])).toBe(open)
+  })
+
+  test('a rejected mod is held, and /guard held says where each stands', async () => {
+    const tree = await treeOf(MOD)
+    const rejected = await judgeLoad(fakeGuard(MOD, [decision(tree, 'rejected')]), LOADING)
+    if (rejected.kind !== 'refuse' || rejected.held === undefined) throw new Error('not held')
+    expect(rejected.held).toEqual({ label: LABEL, root: ROOT, treeHash: tree, why: 'you rejected these files on 2026-10-20', rejected: true })
+
+    const approved: HeldMod = { label: 'tally@acme', root: '/plugins/tally', treeHash: 'sha256:b', why: 'you have not approved these files' }
+    const text = await heldReport(fakeGuard(MOD, [decision(tree, 'rejected'), decision('sha256:b', 'approved', 'tally@acme')]), [rejected.held, approved], false)
+    expect(text).toBe(
+      [
+        'AI Install Guard kept 2 mods from loading in this session, and each is decided:',
+        `  ${LABEL}: you rejected these files on 2026-10-20; /guard forget ${LABEL} judges them again`,
+        '  tally@acme: approved; run /reload-plugins to load it',
+      ].join('\n'),
+    )
+  })
+
+  test('a failure in the guard names what failed', () => {
+    expect(failedLoad(LOADING, { kind: 'timeout' })).toEqual({ label: LABEL, root: ROOT, why: 'the guard failed while checking it (it ran out of time)', reason: `AI Install Guard kept ${LABEL} from loading: the guard failed while checking it (it ran out of time).` })
+    expect(failedLoad(LOADING, { kind: 'throw', message: 'bad\u202eline' }).why).toBe('the guard failed while checking it (bad<U+202E>line)')
   })
 
   test('with nothing held, /guard held says so', async ($, on) => {

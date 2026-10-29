@@ -21,6 +21,8 @@ export type HeldMod = {
   treeHash?: string
   /** Why it was kept out, in the guard's own words. */
   why: string
+  /** You rejected these files: it is named, never opened in the pane again. */
+  rejected?: true
 }
 
 export type LoadJudgement = { kind: 'allow' } | { kind: 'refuse'; reason: string; held?: HeldMod }
@@ -46,7 +48,8 @@ export async function judgeLoad($: EngineInterface, e: PluginRegisterInput): Pro
   const decided = decisions.find(item => item.treeHash === tree.treeHash)
   if (decided?.decision === 'approved') return { kind: 'allow' }
   if (decided?.decision === 'rejected') {
-    return { kind: 'refuse', reason: `AI Install Guard kept ${label} from loading: you rejected these files on ${day(decided.decidedAt)}. /guard forget ${label} judges them again.` }
+    const why = `you rejected these files on ${day(decided.decidedAt)}`
+    return { kind: 'refuse', reason: `AI Install Guard kept ${label} from loading: ${why}. /guard forget ${label} judges them again.`, held: { label, root: e.root, treeHash: tree.treeHash, why, rejected: true } }
   }
   const earlier = decisions.find(item => item.decision === 'approved' && sameMod(item, e))
   const why = earlier === undefined ? 'you have not approved these files' : `its files changed since you approved it on ${day(earlier.decidedAt)}`
@@ -87,29 +90,49 @@ export async function reviewHeld($: EngineInterface, mod: HeldMod, lookups: bool
 }
 
 /**
- * The mods still kept out in this session, those decided since left out. A
- * mod approved since loads after /reload-plugins; one rejected stays out.
+ * What `/guard held` answers: each mod kept out in this session and where it
+ * stands, and the first one still undecided opened in the pane. A mod
+ * approved since loads after /reload-plugins; one rejected stays out.
  */
-export async function undecided($: EngineInterface, held: readonly HeldMod[]): Promise<HeldMod[]> {
-  const decisions = await loadDecisions($)
-  return held.filter(mod => mod.treeHash === undefined || !decisions.some(item => item.treeHash === mod.treeHash))
-}
-
-/** What `/guard held` answers, and the first mod it opens in the pane. */
 export async function heldReport($: EngineInterface, held: readonly HeldMod[], lookups: boolean): Promise<string> {
   if (held.length === 0) return 'AI Install Guard: no mod was kept from loading in this session.'
-  const open = await undecided($, held)
-  const lines = held.map(mod => `  ${mod.label}: ${open.includes(mod) ? mod.why : 'decided; run /reload-plugins to load it if you approved it'}`)
-  const next = open[0]
+  const decisions = await loadDecisions($)
+  const decisionOf = (mod: HeldMod): Decision | undefined => (mod.treeHash === undefined ? undefined : decisions.find(item => item.treeHash === mod.treeHash))
+  const lines = held.map(mod => {
+    const decided = decisionOf(mod)
+    if (decided === undefined) return `  ${mod.label}: ${mod.why}`
+    if (decided.decision === 'approved') return `  ${mod.label}: approved; run /reload-plugins to load it`
+    return `  ${mod.label}: you rejected these files on ${day(decided.decidedAt)}; /guard forget ${mod.label} judges them again`
+  })
+  const next = held.find(mod => decisionOf(mod) === undefined)
   if (next === undefined) return `AI Install Guard kept ${count(held.length)} from loading in this session, and each is decided:\n${lines.join('\n')}`
   await reviewHeld($, next, lookups)
   return `AI Install Guard kept ${count(held.length)} from loading in this session:\n${lines.join('\n')}\n\n${next.label} is in the guard's pane. Approve it there, then run /reload-plugins to load it. Run /guard held again for the next one.`
 }
 
-/** The toast at the start of a session that kept mods out. */
+/** The toast at the start of a session that kept mods out: each named, and what to do about those still undecided. */
 export function heldToast(held: readonly HeldMod[]): string {
   const names = held.map(mod => mod.label).join(', ')
-  return `AI Install Guard kept ${count(held.length)} from loading: ${names}. Review ${held.length === 1 ? 'it' : 'each'} in the pane (/guard held), then run /reload-plugins.`
+  const after = held.some(mod => mod.rejected !== true)
+    ? 'The pane shows the first to review: approve it, then run /reload-plugins. /guard held lists them all.'
+    : `You rejected ${held.length === 1 ? 'its' : 'their'} files; /guard held lists ${held.length === 1 ? 'it' : 'them'}.`
+  return `AI Install Guard kept ${count(held.length)} from loading: ${names}. ${after}`
+}
+
+/** The first held mod the pane should open: one you have not rejected. */
+export function toReview(held: readonly HeldMod[]): HeldMod | undefined {
+  return held.find(mod => mod.rejected !== true)
+}
+
+/**
+ * A mod kept out because the guard itself failed while checking it: named in
+ * the refusal with what failed, and held as Could not verify.
+ */
+export function failedLoad(e: PluginRegisterInput, failure: { kind: string; message?: string }): HeldMod & { reason: string } {
+  const label = safeLine(e.provenance)
+  const what = failure.kind === 'timeout' ? 'it ran out of time' : safeLine(failure.message ?? 'an error')
+  const why = `the guard failed while checking it (${what})`
+  return { label, root: e.root, why, reason: `AI Install Guard kept ${label} from loading: ${why}.` }
 }
 
 function count(n: number): string {

@@ -2,7 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
-import { heldReport, heldToast, judgeLoad, release, remember, reviewHeld, type HeldMod } from './gate/load'
+import { failedLoad, heldReport, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
 import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
 import { readPluginArgs, readShellCommand } from './gate/requests'
 import { claudeConfigDir, keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
@@ -57,14 +57,12 @@ export const register: Register = (on, options) => {
       argumentHint: 'scan <path | repository> | report | badge | list | held | forget <name>',
     })
     started = true
-    // The mods kept out as the session loaded: the first in the pane, all of them named, each once.
+    // The mods kept out as the session loaded: all of them named, each once, and the first you have not rejected in the pane.
     const fresh = held.filter(mod => !announced.has(mod.root))
     for (const mod of fresh) announced.add(mod.root)
-    const first = fresh[0]
-    if (first !== undefined) {
-      $.ui.toast(heldToast(fresh))
-      await reviewHeld($, first, lookups).catch(() => undefined)
-    }
+    if (fresh.length > 0) $.ui.toast(heldToast(fresh))
+    const first = toReview(fresh)
+    if (first !== undefined) await reviewHeld($, first, lookups).catch(() => undefined)
     return next(e)
   })
 
@@ -84,11 +82,22 @@ export const register: Register = (on, options) => {
       // At a reload the session is running and the pane can show it now; at start, session.start does.
       if (started) {
         announced.add(judged.held.root)
-        await reviewHeld($, judged.held, lookups).catch(() => undefined)
+        const review = toReview([judged.held])
+        if (review !== undefined) await reviewHeld($, review, lookups).catch(() => undefined)
       }
     }
     return { refuse: judged.reason }
-  }).catch(($, e, next) => (next.called ? next(e) : { refuse: 'AI Install Guard kept this mod from loading: the guard failed before it could check it.' }))
+  }).catch(($, e, next) => {
+    if (next.called) return next(e)
+    // Kept out all the same, with what failed in the refusal and in /guard held.
+    try {
+      const { reason, ...mod } = failedLoad(e, next.error)
+      remember(held, mod)
+      return { refuse: reason }
+    } catch {
+      return { refuse: 'AI Install Guard kept this mod from loading: the guard failed before it could check it.' }
+    }
+  })
 
   on('command.run', { command: 'guard' }, async ($, e) => {
     const { sub, rest, details, ref, path, error } = splitArgs(e.args)
