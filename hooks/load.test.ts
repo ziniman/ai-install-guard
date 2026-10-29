@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Plugin } from 'claude-code/testing'
 
-import { heldToast, remember, type HeldMod } from './gate/load'
+import { heldToast, release, remember, type HeldMod } from './gate/load'
 import { takeInventory } from './scan/inventory'
 import { FIXTURES } from './test-support/fixtures.gen'
 import { memoryHost, serveFixture, typed, type FixtureFiles } from './test-support/memfs'
@@ -159,6 +159,10 @@ describe('the mods held in a session', () => {
     expect(held.map(mod => mod.treeHash)).toEqual(['sha256:b', undefined])
     expect(heldToast(held.slice(0, 1))).toBe(`AI Install Guard kept 1 mod from loading: ${LABEL}. Review it in the pane (/guard held), then run /reload-plugins.`)
     expect(heldToast(held)).toBe(`AI Install Guard kept 2 mods from loading: ${LABEL}, tally@acme. Review each in the pane (/guard held), then run /reload-plugins.`)
+    // A mod that loads at a reload, approved since, leaves the list; another folder is left alone.
+    release(held, '/plugins/other')
+    release(held, ROOT)
+    expect(held.map(mod => mod.label)).toEqual(['tally@acme'])
   })
 
   test('with nothing held, /guard held says so', async ($, on) => {

@@ -2,7 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
-import { heldReport, heldToast, judgeLoad, remember, reviewHeld, type HeldMod } from './gate/load'
+import { heldReport, heldToast, judgeLoad, release, remember, reviewHeld, type HeldMod } from './gate/load'
 import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
 import { readPluginArgs, readShellCommand } from './gate/requests'
 import { claudeConfigDir, keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
@@ -45,6 +45,8 @@ export const register: Register = (on, options) => {
   let cwd: string | undefined
   /** The mods kept from loading in this session, for the pane and /guard held. */
   const held: HeldMod[] = []
+  /** The folders of held mods already named to the person, so a reload, which starts the session's hooks again, does not name them twice. */
+  const announced = new Set<string>()
   /** Whether the session has started, so a mod kept out at a reload can be shown at once. */
   let started = false
   on('session.start', async ($, e, next) => {
@@ -55,10 +57,12 @@ export const register: Register = (on, options) => {
       argumentHint: 'scan <path | repository> | report | badge | list | held | forget <name>',
     })
     started = true
-    // The mods kept out as the session loaded: the first in the pane, all of them named.
-    const first = held[0]
+    // The mods kept out as the session loaded: the first in the pane, all of them named, each once.
+    const fresh = held.filter(mod => !announced.has(mod.root))
+    for (const mod of fresh) announced.add(mod.root)
+    const first = fresh[0]
     if (first !== undefined) {
-      $.ui.toast(heldToast(held))
+      $.ui.toast(heldToast(fresh))
       await reviewHeld($, first, lookups).catch(() => undefined)
     }
     return next(e)
@@ -70,11 +74,18 @@ export const register: Register = (on, options) => {
   // in the pane.
   on('plugin.register', async ($, e, next) => {
     const judged = await judgeLoad($, e)
-    if (judged.kind === 'allow') return next(e)
+    if (judged.kind === 'allow') {
+      // Approved since it was held, it loads at this reload and is no longer kept out.
+      release(held, e.root)
+      return next(e)
+    }
     if (judged.held !== undefined) {
       remember(held, judged.held)
       // At a reload the session is running and the pane can show it now; at start, session.start does.
-      if (started) await reviewHeld($, judged.held, lookups).catch(() => undefined)
+      if (started) {
+        announced.add(judged.held.root)
+        await reviewHeld($, judged.held, lookups).catch(() => undefined)
+      }
     }
     return { refuse: judged.reason }
   }).catch(($, e, next) => (next.called ? next(e) : { refuse: 'AI Install Guard kept this mod from loading: the guard failed before it could check it.' }))

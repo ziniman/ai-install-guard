@@ -69,6 +69,12 @@ export function remember(held: HeldMod[], mod: HeldMod): void {
   else held[at] = mod
 }
 
+/** Takes a mod that has loaded since off the session's list. */
+export function release(held: HeldMod[], root: string): void {
+  const at = held.findIndex(item => item.root === root)
+  if (at !== -1) held.splice(at, 1)
+}
+
 /** Shows one held mod in the pane: its folder scanned, with Approve and Reject; Could not verify when it could not be read. */
 export async function reviewHeld($: EngineInterface, mod: HeldMod, lookups: boolean): Promise<void> {
   const request: GuardRequest = { origin: 'command', args: '', label: mod.label, subject: 'load', display: `Kept from loading until you decide: ${mod.label}` }
