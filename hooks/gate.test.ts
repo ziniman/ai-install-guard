@@ -208,6 +208,18 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('claude plugin install notes@acme | sort | uniq').kind).toBe('install')
   })
 
+  test('a claude command read whole is no sign of an install in an unseen part beside it', () => {
+    const pass = { kind: 'pass', browse: false }
+    // What the guard held while its own tests ran: a test run, then a script file.
+    expect(readShellCommand('npm run typecheck; claude plugin test . 2>&1 | grep -E "pass|fail"; node skill/ai-install-guard/scripts/scan.js --details /tmp/self > /tmp/out.txt')).toEqual(pass)
+    expect(readShellCommand('claude plugin validate . && python3 -c "print(1)"')).toEqual(pass)
+    expect(readShellCommand("cat ~/.claude/plugins/marketplaces/x/.claude-plugin/marketplace.json | python3 -m json.tool")).toEqual(pass)
+    // Install words in code, or in a variable an unseen part can read, still count.
+    expect(readShellCommand(`node -e "require('child_process').execSync('claude plugin install x@y')"`)).toMatchObject({ kind: 'unreadable' })
+    expect(readShellCommand("X='claude plugin install x@y'; python3 run.py")).toMatchObject({ kind: 'unreadable' })
+    expect(readShellCommand(`python3 -c "import subprocess; subprocess.run(['claude', 'plugin', 'install', 'x'])"`)).toMatchObject({ kind: 'unreadable' })
+  })
+
   test('splits like a shell: quotes, separators, redirections and here-documents', () => {
     expect(splitShell(`a 'b c' "d \\"e\\"" f\\ g; h && i | j 2>&1 > out < in`).commands.map(item => item.words)).toEqual([['a', 'b c', 'd "e"', 'f g'], ['h'], ['i'], ['j']])
     expect(splitShell('cat <<-END\n\tbody\n\tEND\nnext').commands).toEqual([{ words: ['cat'], input: 'body', feeds: 'body\n' }, { words: ['next'] }])

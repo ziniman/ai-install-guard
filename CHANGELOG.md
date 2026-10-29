@@ -4,7 +4,11 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
-## Unreleased
+## v0.8.3 &nbsp;·&nbsp; 2026-10-29
+
+**Claude's shell commands** - Inline code that names Claude's folder is held only when it may write, copy, move or delete files, run another program or hide what it does, so a Python or Node one-liner that only reads a settings file and prints it goes on. Code piped into an interpreter through `-` counts as code from input, which stays held
+
+**Install gate** - A path such as `.claude-plugin/marketplace.json` is no longer read as the words of a plugin install in another language's code, and a `claude` command the guard read whole and found to install nothing (`claude plugin test .`) no longer makes a script run beside it look like a possible install. Both held commands that installed nothing
 
 **Install** - The marketplace names the plugin by its `https://` address, so installing or updating the guard works without a GitHub SSH key. 0.8.1 named it as a `github` source, which Claude Code clones over SSH when a key looks configured, and an update inside a session does not fall back to HTTPS
 
