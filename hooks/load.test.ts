@@ -200,12 +200,16 @@ describe('the mods held in a session', () => {
     if (rejected.kind !== 'refuse' || rejected.held === undefined) throw new Error('not held')
     expect(rejected.held).toEqual({ label: LABEL, root: ROOT, treeHash: tree, why: 'you rejected these files on 2026-10-20', rejected: true })
 
+    // The same files rejected under the name they were first installed by: forget names that one.
+    const elsewhere = [{ ...decision(tree, 'rejected', 'notes@acme'), root: 'https://github.com/acme/notes.git' }, decision('sha256:b', 'approved', 'tally@acme')]
+    const again = await judgeLoad(fakeGuard(MOD, elsewhere), LOADING)
+    expect(again.kind === 'refuse' ? again.reason : '').toBe(`AI Install Guard kept ${LABEL} from loading: you rejected these files on 2026-10-20. /guard forget notes@acme judges them again.`)
     const approved: HeldMod = { label: 'tally@acme', root: '/plugins/tally', treeHash: 'sha256:b', why: 'you have not approved these files' }
-    const text = await heldReport(fakeGuard(MOD, [decision(tree, 'rejected'), decision('sha256:b', 'approved', 'tally@acme')]), [rejected.held, approved], false)
+    const text = await heldReport(fakeGuard(MOD, elsewhere), [rejected.held, approved], false)
     expect(text).toBe(
       [
         'AI Install Guard kept 2 mods from loading in this session, and each is decided:',
-        `  ${LABEL}: you rejected these files on 2026-10-20; /guard forget ${LABEL} judges them again`,
+        `  ${LABEL}: you rejected these files on 2026-10-20; /guard forget notes@acme judges them again`,
         '  tally@acme: approved; run /reload-plugins to load it',
       ].join('\n'),
     )

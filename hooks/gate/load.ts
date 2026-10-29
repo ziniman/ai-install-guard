@@ -49,7 +49,7 @@ export async function judgeLoad($: EngineInterface, e: PluginRegisterInput): Pro
   if (decided?.decision === 'approved') return { kind: 'allow' }
   if (decided?.decision === 'rejected') {
     const why = `you rejected these files on ${day(decided.decidedAt)}`
-    return { kind: 'refuse', reason: `AI Install Guard kept ${label} from loading: ${why}. /guard forget ${label} judges them again.`, held: { label, root: e.root, treeHash: tree.treeHash, why, rejected: true } }
+    return { kind: 'refuse', reason: `AI Install Guard kept ${label} from loading: ${why}. ${forgetHint(decided)}.`, held: { label, root: e.root, treeHash: tree.treeHash, why, rejected: true } }
   }
   const earlier = decisions.find(item => item.decision === 'approved' && sameMod(item, e))
   const why = earlier === undefined ? 'you have not approved these files' : `its files changed since you approved it on ${day(earlier.decidedAt)}`
@@ -59,6 +59,15 @@ export async function judgeLoad($: EngineInterface, e: PluginRegisterInput): Pro
 /** A decision about this same mod, by the names an install or a review keeps it under. */
 function sameMod(decision: Decision, e: PluginRegisterInput): boolean {
   return [e.provenance, safeLine(e.provenance), e.root].includes(decision.target) || decision.root === e.root
+}
+
+/**
+ * How to judge rejected files again. The rejection is found by its files, so
+ * it may be kept under another name (the plugin as first installed, its
+ * repository): forget names it as it is kept.
+ */
+function forgetHint(decision: Decision): string {
+  return `/guard forget ${safeLine(decision.target)} judges them again`
 }
 
 function keptOut(label: string, why: string): string {
@@ -102,7 +111,7 @@ export async function heldReport($: EngineInterface, held: readonly HeldMod[], l
     const decided = decisionOf(mod)
     if (decided === undefined) return `  ${mod.label}: ${mod.why}`
     if (decided.decision === 'approved') return `  ${mod.label}: approved; run /reload-plugins to load it`
-    return `  ${mod.label}: you rejected these files on ${day(decided.decidedAt)}; /guard forget ${mod.label} judges them again`
+    return `  ${mod.label}: you rejected these files on ${day(decided.decidedAt)}; ${forgetHint(decided)}`
   })
   const next = held.find(mod => decisionOf(mod) === undefined)
   if (next === undefined) return `AI Install Guard kept ${count(held.length)} from loading in this session, and each is decided:\n${lines.join('\n')}`
