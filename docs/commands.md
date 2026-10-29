@@ -9,6 +9,7 @@
 | `/guard report` | Reopen the last report |
 | `/guard badge` | A README badge for the last scan, when it was No red flags or Worth a look (see [Review badge](badge.md)) |
 | `/guard list` | Your approved and rejected versions, newest first |
+| `/guard held` | The mods kept from loading in this session, and the next one undecided in the pane (see [Loading mods](gates.md#loading-mods)) |
 | `/guard forget <name>` | Forget decisions about a name, so it is judged again |
 
 A remote scan resolves the ref to one commit, fetches only that commit (no hooks, submodules, Git LFS downloads or filters), checks it out by its id and confirms that `HEAD` is that commit before reading a file. The report and the pane name the commit, and your decision is recorded against it and the tree hash.

@@ -31,7 +31,7 @@ AI Install Guard lives inside Claude Code instead. When something new is about t
 - **Pinned.** A verdict belongs to one commit and content hash, and only that version installs.
 - **Local and open.** No account or server, and every check is in this repository.
 
-It holds `/plugin install` and `/plugin marketplace add`, and, when Claude does them: plugin installs, MCP servers it adds, skills, commands and agents it writes with a red flag, settings changes that widen what it may run, and the same changes made with a shell command. A plugin picked from the `/plugin` menu is not held yet, so type `/plugin install <name>@<marketplace>` instead. [Where it steps in](docs/gates.md) has every case.
+It holds `/plugin install` and `/plugin marketplace add`, and, when Claude does them: plugin installs, MCP servers it adds, skills, commands and agents it writes with a red flag, settings changes that widen what it may run, and the same changes made with a shell command. A mod that loads with files you never approved (picked from the `/plugin` menu, updated on its own, changed in place) is kept off until you approve it. A plugin picked from the menu is not scanned before it installs, so type `/plugin install <name>@<marketplace>` instead. [Where it steps in](docs/gates.md) has every case.
 
 ## Using it
 
@@ -51,6 +51,7 @@ To check something before you install it anywhere:
 | `/guard scan <folder or repository>` | Scan it without installing it |
 | `/guard report` | Reopen the last report |
 | `/guard list` | Your approved and rejected versions |
+| `/guard held` | The mods kept from loading in this session |
 | `/guard forget <name>` | Forget a decision, so it is judged again |
 
 The same scanner also runs in Claude chat, as a skill: [Use it in Claude chat](docs/claude-chat.md). For everything else, see [How it works](docs/how-it-works.md), [Commands and the pane](docs/commands.md) and the rest of [the documentation](docs/README.md).
@@ -70,6 +71,7 @@ A security tool should be held to its own rules. Everything this mod uses, as `c
 | `command.run` | Intercepts `/plugin` to hold an install, and runs your own `/plugin` command again once you approve it. |
 | `tool.call` | Reads each shell command and file write Claude is about to make, and refuses only those that add something where Claude Code loads from, until you approve. |
 | `classic.CwdChanged` | Notes the folder Claude's shell commands run in, so a relative path is read where it lands. |
+| `plugin.register` | Checks each mod Claude Code is about to load, and keeps out one whose files are not a version you approved. |
 | `http.fetch` | Reads a GitHub repository's public details (age, stars, whether the commit is signed) and, only if you turn them on, the [outside lookups](docs/permissions.md#outside-lookups). |
 | `store`, `state`, `ui`, `command.register` | Remembers your decisions, draws the pane, and adds the `/guard` command. |
 
@@ -91,7 +93,7 @@ More, including your stored decisions and installs for one project only: [Uninst
 
 ## Status
 
-Early development. The gates above work today; a gate on loading mods, one on a skill's first use, and a check at session start come next. See the [roadmap](docs/roadmap.md).
+Early development. The gates above work today; a gate on a skill's first use and a check at session start come next. See the [roadmap](docs/roadmap.md).
 
 ## Contributing
 
