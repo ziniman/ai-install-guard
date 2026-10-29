@@ -127,9 +127,14 @@ export function serveFixture(
     homeFails?: () => boolean
     /** Answers other commands (git, mktemp); undefined passes them on. */
     run?: (argv: readonly string[]) => RunResult | undefined
+    /** Where a path asked for is served from: a folder the engine names (an inline test plugin's) laid at `root`. */
+    moved?: (path: string) => string
+    /** Paths whose reading fails, as a file the guard may not read. */
+    unreadable?: (path: string) => boolean
   } = {},
 ): void {
   const isWindows = options.platform === 'windows'
+  const at = options.moved ?? ((path: string) => path)
   const host = memoryHost(root, files) as Host & { owns: (path: string) => boolean }
   const toBase64 = (bytes: Uint8Array): string => {
     let binary = ''
@@ -138,20 +143,21 @@ export function serveFixture(
   }
 
   on('fs.stat', async ($, e, next) =>
-    host.owns(trimSlash(e.path))
-      ? { value: { ...(await host.stat(e.path, { resolve: e.resolve })), mtimeMs: 0 } }
+    host.owns(trimSlash(at(e.path)))
+      ? { value: { ...(await host.stat(at(e.path), { resolve: e.resolve })), mtimeMs: 0 } }
       : next(e),
   )
   on('fs.list', async ($, e, next) =>
-    host.owns(trimSlash(e.path))
-      ? { value: (await host.list(e.path)).map(entry => ({ ...entry, mtimeMs: 0 })) }
+    host.owns(trimSlash(at(e.path)))
+      ? { value: (await host.list(at(e.path))).map(entry => ({ ...entry, mtimeMs: 0 })) }
       : next(e),
   )
   on('fs.read', async ($, e, next) => {
-    if (!host.owns(trimSlash(e.path))) {
+    if (!host.owns(trimSlash(at(e.path)))) {
       return next(e)
     }
-    const bytes = await host.readBytes(e.path)
+    if (options.unreadable?.(at(e.path)) === true) return { deny: 'the file cannot be read' }
+    const bytes = await host.readBytes(at(e.path))
     return { value: e.as === 'bytes' ? { base64: toBase64(bytes) } : new TextDecoder().decode(bytes) }
   })
   on('process.run', async ($, e, next) => {
