@@ -44,8 +44,8 @@ export type GuardRequest = {
   args: string
   /** What it installs, as the pane names it. */
   label: string
-  /** An install (the default), a file Claude writes into a place Claude Code loads from, or a shell command that changes one. */
-  subject?: 'install' | 'write' | 'command'
+  /** An install (the default), a file Claude writes into a place Claude Code loads from, a shell command that changes one, or a mod kept from loading. */
+  subject?: 'install' | 'write' | 'command' | 'load'
   /** The pane's line for what Claude asked for, when `args` is not one to show (a write's path, not its content). */
   display?: string
 }

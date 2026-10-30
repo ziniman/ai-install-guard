@@ -4,6 +4,18 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.4 &nbsp;·&nbsp; 2026-10-29
+
+**Mod loading** - A mod Claude Code is about to load, however it got there (the `/plugin` menu, an update made on its own, files changed in place), loads only when its folder holds exactly files you approved. Anything else is kept off, scanned in the pane with Approve and Reject, and loads after `/reload-plugins` once you approve it. The guard judges the mods that load after it; managed and built-in plugins load as they are
+
+**`/guard held`** - Lists the mods kept from loading in this session and opens the next undecided one in the pane
+
+**`/guard scan`** - The `.in_use` marks Claude Code keeps in an installed plugin's folder are left out of the tree hash, so an installed copy hashes as the commit it was installed from. A folder with anything else in `.in_use` counts in full
+
+**The `/plugin` menu note** - Now says that a mod picked there stays off until you approve it
+
+---
+
 ## v0.8.3 &nbsp;·&nbsp; 2026-10-29
 
 **Claude's shell commands** - Inline code that names Claude's folder is held only when it may write, copy, move or delete files, run another program or hide what it does, so a Python or Node one-liner that only reads a settings file and prints it goes on. Code piped into an interpreter through `-` counts as code from input, which stays held

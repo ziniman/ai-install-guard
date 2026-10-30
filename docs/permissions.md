@@ -12,6 +12,7 @@ Installing it runs nothing either. The plugin installs from a `release` branch t
 | `command.run` (call) | When you press Install, runs your own `/plugin` command again, after checking the version is still the one you approved. |
 | `tool.call` (hook) | Reads the text of each shell command Claude is about to run, to catch `claude plugin install`, `claude mcp add` and their kin, and the files the command writes, and refuses those that change where Claude Code loads from until you approve. Reads the path of each file Claude is about to write or edit, and, only for one in a skill, command, agent, plugin or MCP configuration, the content it would write. Every other command and every other tool goes on untouched; it never rewrites or answers one. |
 | `classic.CwdChanged` (hook) | Notes the folder Claude's shell commands run in when it changes, so a relative path in a later command is read where it lands. It changes nothing. |
+| `plugin.register` (hook) | As Claude Code is about to load a mod you installed, reads and hashes its folder, and keeps the mod from loading unless those exact files are a version you approved. It reads only that folder; an administrator's managed plugins and the ones bundled with Claude Code go on untouched. |
 | `command.register` | Adds the `/guard` command. |
 | `store`, `state` | Remembers your decisions and the last report, holds what the pane shows, and keeps a one-time pass for an install you allowed anyway. |
 | `ui` | The verdict pane, its status line and toasts, and copying the report. |

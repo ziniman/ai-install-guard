@@ -53,7 +53,7 @@ export type Inventory = {
   entries: InventoryEntry[]
   totalBytes: number
   treeHash: string
-  /** Folders left out on purpose (the root's `.git`). */
+  /** Folders left out on purpose: the root's `.git`, and its `.in_use` when it holds only Claude Code's marks. */
   skipped: string[]
 }
 
@@ -99,7 +99,7 @@ export async function takeInventory(host: Host, path: string): Promise<ScannedTr
       if (item.isLink) {
         links.push(rel)
       } else if (item.kind === 'dir') {
-        if (dir === '' && item.name === '.git') {
+        if (dir === '' && (item.name === '.git' || (item.name === IN_USE && (await onlyInUseMarks(host, `${root}/${rel}`))))) {
           skipped.push(rel)
         } else {
           entries.push({ kind: 'dir', path: rel })
@@ -152,6 +152,36 @@ export async function takeInventory(host: Host, path: string): Promise<ScannedTr
     },
     contents,
   }
+}
+
+/**
+ * Claude Code marks an installed plugin's folder as in use by each running
+ * session: `.in_use/<pid>`, one line of JSON naming the process, written as
+ * `<pid>.tmp.<hex>` first (one left behind when a session stops mid-write).
+ * Left out, so the installed copy hashes as the commit it was installed from.
+ * Anything else there, or a mark that does not read as one, keeps the folder in.
+ */
+const IN_USE = '.in_use'
+const MAX_MARKS = 64
+const MARK_NAME = /^(\d{1,10})(?:\.tmp\.[0-9a-f]{1,32})?$/
+const MARK_TEXT = /^\{"pid":(\d{1,10}),"procStart":"[^"\\\x00-\x1f]{1,64}"\}\n?$/
+
+async function onlyInUseMarks(host: Host, dir: string): Promise<boolean> {
+  const listed = await host.list(dir).catch(() => undefined)
+  if (listed === undefined || listed.length > MAX_MARKS) return false
+  for (const item of listed) {
+    const pid = MARK_NAME.exec(item.name)?.[1]
+    if (item.isLink || item.kind !== 'file' || pid === undefined || item.size > 128) return false
+    const full = `${dir}/${item.name}`
+    const stat = await host.stat(full, { resolve: true }).catch(() => undefined)
+    if (stat === undefined || stat.isLink || stat.kind !== 'file' || stat.realPath === undefined || normalize(stat.realPath) !== normalize(full)) return false
+    const text = await host.readBytes(full).then(
+      bytes => new TextDecoder().decode(bytes),
+      () => undefined,
+    )
+    if (text === undefined || MARK_TEXT.exec(text)?.[1] !== pid) return false
+  }
+  return true
 }
 
 /** Throws when a file, or all of them together, is over its limit. */

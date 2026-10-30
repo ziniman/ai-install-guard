@@ -2,6 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
+import { failedLoad, heldReport, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
 import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
 import { readPluginArgs, readShellCommand } from './gate/requests'
 import { claudeConfigDir, keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
@@ -32,6 +33,7 @@ const USAGE = [
   '  /guard report                 Reopen the last report',
   '  /guard badge                  A README badge for the last scan (No red flags or Worth a look)',
   '  /guard list                   Your approved and rejected versions',
+  '  /guard held                   The mods kept from loading in this session, the next one in the pane',
   '  /guard forget <name>          Forget decisions about a name, so it is judged again',
 ].join('\n')
 
@@ -41,14 +43,60 @@ export const register: Register = (on, options) => {
 
   /** The folder Claude's shell commands run in, as the session last said: where a relative path in one lands. */
   let cwd: string | undefined
+  /** The mods kept from loading in this session, for the pane and /guard held. */
+  const held: HeldMod[] = []
+  /** The folders of held mods already named to the person, so a reload, which starts the session's hooks again, does not name them twice. */
+  const announced = new Set<string>()
+  /** Whether the session has started, so a mod kept out at a reload can be shown at once. */
+  let started = false
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
     await $.command.register({
       name: 'guard',
       description: 'Scan a plugin, mod, skill or MCP server without installing it',
-      argumentHint: 'scan <path | repository> | report | badge | list | forget <name>',
+      argumentHint: 'scan <path | repository> | report | badge | list | held | forget <name>',
     })
+    started = true
+    // The mods kept out as the session loaded: all of them named, each once, and the first you have not rejected in the pane.
+    const fresh = held.filter(mod => !announced.has(mod.root))
+    for (const mod of fresh) announced.add(mod.root)
+    if (fresh.length > 0) $.ui.toast(heldToast(fresh))
+    const first = toReview(fresh)
+    if (first !== undefined) await reviewHeld($, first, lookups).catch(() => undefined)
     return next(e)
+  })
+
+  // Gate D: a mod about to load, however it got there (the /plugin menu, an
+  // update, files changed in place). It joins only when its folder holds
+  // exactly files the person approved; anything else is kept out and shown
+  // in the pane.
+  on('plugin.register', async ($, e, next) => {
+    const judged = await judgeLoad($, e)
+    if (judged.kind === 'allow') {
+      // Approved since it was held, it loads at this reload and is no longer kept out.
+      release(held, e.root)
+      return next(e)
+    }
+    if (judged.held !== undefined) {
+      remember(held, judged.held)
+      // At a reload the session is running and the pane can show it now; at start, session.start does.
+      if (started) {
+        announced.add(judged.held.root)
+        const review = toReview([judged.held])
+        if (review !== undefined) await reviewHeld($, review, lookups).catch(() => undefined)
+      }
+    }
+    return { refuse: judged.reason }
+  }).catch(($, e, next) => {
+    if (next.called) return next(e)
+    // Kept out all the same, with what failed in the refusal and in /guard held.
+    try {
+      const { reason, ...mod } = failedLoad(e, next.error)
+      remember(held, mod)
+      return { refuse: reason }
+    } catch {
+      return { refuse: 'AI Install Guard kept this mod from loading: the guard failed before it could check it.' }
+    }
   })
 
   on('command.run', { command: 'guard' }, async ($, e) => {
@@ -58,6 +106,7 @@ export const register: Register = (on, options) => {
     if (sub === 'report') return { text: await reopen($) }
     if (sub === 'badge') return { text: await badge($) }
     if (sub === 'list') return { text: await list($) }
+    if (sub === 'held') return { text: await heldReport($, held, lookups) }
     if (sub === 'forget' && rest !== '') {
       const count = (await forgetDecisions($, rest, await landedName($, rest))).length
       return { text: `AI Install Guard: forgot ${count} decision${count === 1 ? '' : 's'} about ${safeLine(rest)}.` }
