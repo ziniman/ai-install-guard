@@ -618,14 +618,14 @@ describe('gate A: /plugin install', () => {
     await pane.unmount()
   })
 
-  test("the plugins menu opens, with a note that what it installs is not scanned yet", async ($, on) => {
+  test("the plugins menu opens, with a note that what it installs is not scanned first", async ($, on) => {
     seededStore(on)
     const ui = serveUi(on)
     const state = world(on)
     await $.command.run(typed('plugin', ''))
     await $.command.run(typed('plugin', 'install acme'))
     expect(state.core).toEqual(['', 'install acme'])
-    expect(ui.toasts.filter(text => text.includes('not scanned yet'))).toHaveLength(2)
+    expect(ui.toasts.filter(text => text.includes('not scanned before they install'))).toHaveLength(2)
   })
 
   test('a gate that fails refuses the install', async ($, on) => {
