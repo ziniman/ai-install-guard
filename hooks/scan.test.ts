@@ -138,6 +138,15 @@ describe('inventory', () => {
     await expect(takeInventory(swapped, '/r')).rejects.toThrow(/notes.md changed while it was being scanned/)
   })
 
+  test('a file it may not read is said to be unreadable, not changed', async () => {
+    const host = memoryHost('/r', { 'README.md': text('x'), 'notes.md': text('y') })
+    const locked: Host = {
+      ...host,
+      stat: async (path, options) => (path === '/r/notes.md' && options?.resolve === true ? Promise.reject(new Error('EACCES')) : host.stat(path, options)),
+    }
+    await expect(takeInventory(locked, '/r')).rejects.toThrow(/^notes.md could not be read$/)
+  })
+
   test('limits apply to the bytes read, not only to the listed size', async () => {
     const host = memoryHost('/r', { 'grows.txt': text('small') })
     const growing: Host = {

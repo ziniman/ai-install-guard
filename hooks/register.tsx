@@ -4,6 +4,7 @@ import { atom, update } from 'claude-code'
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
 import { failedLoad, heldReport, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
 import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
+import { failedSkill, judgeSkill } from './gate/skill'
 import { readPluginArgs, readShellCommand } from './gate/requests'
 import { claudeConfigDir, keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
 import { expandHome } from './gate/resolve'
@@ -179,6 +180,17 @@ export const register: Register = (on, options) => {
       gate.release()
     }
   }).catch(($, e, next) => (next.called ? next(e) : writeRefused))
+
+  // Gate E: a skill or command as Claude Code loads its instructions for the
+  // model (typed as /name, run by the Skill tool, preloaded into a subagent),
+  // however it got there. No red flags goes on; anything else is held in the
+  // pane, and the model reads why in place of the instructions.
+  on('skill.prompt', async ($, e, next) => {
+    const judged = await judgeSkill($, e, lookups, await claudeFolder($))
+    if (judged.kind === 'hold') return { text: judged.text }
+    if (judged.note !== undefined) $.ui.toast(judged.note)
+    return next(e)
+  }).catch(($, e, next) => (next.called ? next(e) : { text: failedSkill(e, next.error) }))
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($, e) => drawPane($, e))
 }

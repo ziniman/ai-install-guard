@@ -14,7 +14,7 @@
         "url": "https://github.com/ziniman/ai-install-guard.git",
         "ref": "release"
       },
-      "version": "0.8.4",
+      "version": "0.8.5",
       "description": "A Claude Code mod that runs in the background: every /plugin install and marketplace you add, yours or Claude's, is scanned before it happens, without running any of it, and nothing installs until you approve.",
       "category": "security",
       "keywords": [
