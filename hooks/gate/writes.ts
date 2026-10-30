@@ -41,7 +41,7 @@ type Place =
 const PASS: WriteReading = { kind: 'pass' }
 
 /** A path as written, with `\` read as `/` and nothing resolved: what the system follows. */
-function slashed(path: string): string {
+export function slashed(path: string): string {
   return path.replace(/\\/g, '/')
 }
 

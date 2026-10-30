@@ -4,7 +4,7 @@ import { atom, update } from 'claude-code'
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
 import { failedLoad, heldReport, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
 import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
-import { failedSkill, judgeSkill } from './gate/skill'
+import { failedSkill, judgeByName, judgeSkill } from './gate/skill'
 import { readPluginArgs, readShellCommand } from './gate/requests'
 import { claudeConfigDir, keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
 import { expandHome } from './gate/resolve'
@@ -44,6 +44,9 @@ export const register: Register = (on, options) => {
 
   /** The folder Claude's shell commands run in, as the session last said: where a relative path in one lands. */
   let cwd: string | undefined
+  /** The folder the session started in, whose `.claude` (and those above it) Claude Code loads skills from. */
+  let projectDir: string | undefined
+  const skillFolders = (): string[] => [projectDir, cwd].filter((folder): folder is string => folder !== undefined)
   /** The mods kept from loading in this session, for the pane and /guard held. */
   const held: HeldMod[] = []
   /** The folders of held mods already named to the person, so a reload, which starts the session's hooks again, does not name them twice. */
@@ -52,6 +55,7 @@ export const register: Register = (on, options) => {
   let started = false
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
+    projectDir = e.cwd
     await $.command.register({
       name: 'guard',
       description: 'Scan a plugin, mod, skill or MCP server without installing it',
@@ -181,10 +185,24 @@ export const register: Register = (on, options) => {
     }
   }).catch(($, e, next) => (next.called ? next(e) : writeRefused))
 
-  // Gate E: a skill or command as Claude Code loads its instructions for the
-  // model (typed as /name, run by the Skill tool, preloaded into a subagent),
-  // however it got there. No red flags goes on; anything else is held in the
-  // pane, and the model reads why in place of the instructions.
+  // Gate E: a skill or command that came with no install. Its inline commands
+  // run as Claude Code expands it, before skill.prompt, so the person's /name
+  // and Claude's Skill tool are judged first, by the files Claude Code may
+  // load that name from. Nothing runs while one is held.
+  on('command.run', async ($, e, next) => {
+    const judged = await judgeByName($, e.command, skillFolders(), lookups, await claudeFolder($))
+    if (judged.kind === 'hold') return { text: judged.toPerson }
+    if (judged.note !== undefined) $.ui.toast(judged.note)
+    return next(e)
+  }).catch(($, e, next) => (next.called ? next(e) : { text: `AI Install Guard stopped /${safeLine(e.command)}: it failed before it could check the skill by that name, so nothing in it ran.` }))
+  on('tool.call', { tool: 'Skill' }, async ($, e, next) => {
+    const judged = await judgeByName($, e.skill, skillFolders(), lookups, await claudeFolder($))
+    if (judged.kind === 'hold') return { deny: judged.text }
+    if (judged.note !== undefined) $.ui.toast(judged.note)
+    return next(e)
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: `AI Install Guard stopped the skill ${safeLine(e.skill)}: it failed before it could check it, so nothing in it ran. Tell the person.` }))
+  // And as its instructions load for the model, the net for a skill found
+  // anywhere else (a subagent's preload): the model reads why in place of them.
   on('skill.prompt', async ($, e, next) => {
     const judged = await judgeSkill($, e, lookups, await claudeFolder($))
     if (judged.kind === 'hold') return { text: judged.text }
