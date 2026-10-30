@@ -176,7 +176,7 @@ async function promptCandidate(host: Host, reading: Extract<WriteReading, { kind
 }
 
 /** What the plugins menu cannot promise yet. */
-export const BROWSE_NOTE = 'AI Install Guard: plugins picked from this menu are not scanned yet. To scan one first, run /plugin install <name>@<marketplace>'
+export const BROWSE_NOTE = 'AI Install Guard: plugins picked from this menu are not scanned before they install, and a mod among them stays off until you approve it. To scan one first, run /plugin install <name>@<marketplace>'
 
 /** The name a decision is kept under, so /guard forget finds it: the plugin as typed, or the marketplace's source. */
 function nameOf(request: InstallRequest): string {

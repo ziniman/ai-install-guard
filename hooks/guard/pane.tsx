@@ -151,7 +151,9 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       await carryOut($, held, decided)
       return
     }
-    $.ui.toast(`AI Install Guard: ${decision === 'approved' ? 'approved' : 'rejected'} ${current.target}${held === undefined ? '' : '; nothing was installed'}`)
+    // A mod kept from loading loads once the plugins are read again.
+    const loads = current.request?.subject === 'load' ? (decision === 'approved' ? '; run /reload-plugins to load it' : '; it stays off') : ''
+    $.ui.toast(`AI Install Guard: ${decision === 'approved' ? 'approved' : 'rejected'} ${current.target}${held === undefined ? loads : '; nothing was installed'}`)
     await closeOwn($, decided)
   }
 
