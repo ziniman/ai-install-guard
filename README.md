@@ -68,11 +68,11 @@ A security tool should be held to its own rules. Everything this mod uses, as `c
 |------------|-----|
 | `process.run` | Runs `git` to fetch the exact commit being scanned into its own temporary folder, the `claude` command to validate a candidate and to find where a plugin comes from, `readlink` to see where a link points, and `printenv` to find your home folder. It never runs anything from a candidate. |
 | `fs.read`, `fs.list`, `fs.stat` | Reads the files it scans, and where a file Claude is about to write would really land. It writes no files itself. |
-| `command.run` | Intercepts `/plugin` to hold an install, and runs your own `/plugin` command again once you approve it. |
-| `tool.call` | Reads each shell command and file write Claude is about to make, and refuses only those that add something where Claude Code loads from, until you approve. |
+| `command.run` | Intercepts `/plugin` to hold an install, and runs your own `/plugin` command again once you approve it. Sees every other slash command too, to check a skill or command by that name before it runs, and answers only one it holds. |
+| `tool.call` | Reads each shell command and file write Claude is about to make, and refuses only those that add something where Claude Code loads from, until you approve. Checks each skill Claude is about to run the same way. |
 | `classic.CwdChanged` | Notes the folder Claude's shell commands run in, so a relative path is read where it lands. |
 | `plugin.register` | Checks each mod Claude Code is about to load, and keeps out one whose files are not a version you approved. |
-| `skill.prompt` | Checks a skill that came with no install (yours, a repository's) as Claude Code loads it, and holds one with a red flag until you approve it. |
+| `skill.prompt` | Checks a skill that came with no install (yours, a repository's) again as its instructions load, for one found where the slash command and the Skill tool did not look, and holds one with a red flag until you approve it. |
 | `http.fetch` | Reads a GitHub repository's public details (age, stars, whether the commit is signed) and, only if you turn them on, the [outside lookups](docs/permissions.md#outside-lookups). |
 | `store`, `state`, `ui`, `command.register` | Remembers your decisions, draws the pane, and adds the `/guard` command. |
 

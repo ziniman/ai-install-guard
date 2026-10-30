@@ -6,7 +6,9 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ## v0.8.5 &nbsp;·&nbsp; 2026-10-30
 
-**A skill's first use** - A skill or command that came with no install (a repository's own, one copied into `~/.claude/skills`, one synced from your account) is scanned each time Claude Code loads it for the model. One with no red flags loads, named once; one with a red flag is held in the pane with Approve and Reject, and Claude reads that it was held in place of its instructions. A plugin's skills are left to the plugin's install, since a skill's folder read alone is cut off from the rest of its plugin
+**A skill's first use** - A skill or command that came with no install (a repository's own, one copied into `~/.claude/skills`, one synced from your account) is scanned before it runs, when you type `/name` or Claude calls the Skill tool, since its inline commands run as Claude Code expands it. One with no red flags runs, named once; one with a red flag is held in the pane with Approve and Reject, and nothing in it runs. It is checked again as its instructions load, for a skill found anywhere else. A plugin's skills are left to the plugin's install, since a skill's folder read alone is cut off from the rest of its plugin
+
+**Skills: inline commands** - A command a skill runs as it loads (`!` and a command in backquotes) is read as one: one that puts text from a web address into the skill is Worth a look, and any other is listed under what the skill can do
 
 **Claude writing a skill** - A skill Claude writes with no red flags is remembered as checked, so its first use does not name it again
 
