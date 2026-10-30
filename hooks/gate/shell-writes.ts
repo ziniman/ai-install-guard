@@ -227,8 +227,8 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       const filledIn = codeAt.length > 0 ? codeAt.some(at => at < args.length && unknown(at)) : command.feedsExpand === true
       const script = language === 'perl' || language === 'ruby' ? language : undefined
       const switches = script === undefined ? undefined : scriptSwitches(script, args)
-      // The text Perl's plain replacements write is no code (`s/old/write tests/`).
-      const codeText = script === 'perl' && switches !== undefined ? [...words.slice(0, placed.index + 1), ...plainArgs(args, switches.code), command.input ?? ''].join(' ') : ownText
+      // The text a plain replacement writes is no code (`s/old/write tests/`).
+      const codeText = script !== undefined && switches !== undefined ? [...words.slice(0, placed.index + 1), ...plainArgs(script, args, switches.code), command.input ?? ''].join(' ') : ownText
       if (!known) out.unseen.push({ reason: `${program} runs code from its input, which the guard does not read`, text: ownText })
       else if (filledIn) out.unseen.push({ reason: `${program} runs code only known as it runs` })
       else if (mayChange(codeText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text: ownText })
@@ -406,9 +406,9 @@ const SCRIPT_SWITCHES = {
  * list by name (`ARGV`, Ruby's `$*` and `ARGF`), Perl's symbolic references
  * and symbol table (`@{"AR"."GV"}`, `$::{…}`), Ruby's calls by name (`send`,
  * `const_get`), and `chdir`. Read over the code alone, so a file's name never
- * counts, and in Perl's without the text of its plain replacements
- * (`plainCode`). Anywhere else a `require` counts, as it may follow any word
- * in Perl (`print require "x"`): a needless hold is the safer way to be wrong.
+ * counts, and without the text of its plain replacements (`plainCode`).
+ * Anywhere else a `require` counts, as it may follow any word in Perl
+ * (`print require "x"`): a needless hold is the safer way to be wrong.
  */
 const IN_PLACE_LOADS = {
   perl: /(?:^|[;{}])\s*(?:use|no)\b|\brequire\b|\bdo\b(?!\s*\{)/m,
@@ -420,17 +420,31 @@ const IN_PLACE_CHOOSES = {
 } as const
 
 /**
- * Perl code made only of substitutions whose replacement is plain text
- * (`s/old/new words/g;`): the same mark around each part, none of the
- * brackets Perl pairs, no `e` flag to run the replacement, and no `$` or `@`
- * to fill one in. Such a replacement is text the edit writes, never code.
+ * Code made only of substitutions whose replacement is plain text, which is
+ * text the edit writes and never code. Perl's (`s/old/new words/g;`): the
+ * same mark around each part, none of the brackets Perl pairs, no `e` flag to
+ * run the replacement, and no `$` or `@` to fill one in. Ruby's
+ * (`gsub(/old/, "new words")`, `sub`, with `!` or on `$_`): a regular
+ * expression, and a quoted string with no `#` to fill it in. `whole` is the
+ * code, `edit` each replacement in it, and `as` what is left of it.
  */
-const PLAIN_EDITS = /^(?:\s*s([^\w\s{(<[])(?:\\.|(?!\1)[^\\])*\1(?:\\.|(?!\1)[^\\$@])*\1[a-df-z]*\s*(?:;|$))+\s*$/
-const PLAIN_EDIT = /\bs([^\w\s{(<[])((?:\\.|(?!\1)[^\\])*)\1(?:\\.|(?!\1)[^\\$@])*\1/g
+const PLAIN_EDITS = {
+  perl: {
+    whole: /^(?:\s*s([^\w\s{(<[])(?:\\.|(?!\1)[^\\])*\1(?:\\.|(?!\1)[^\\$@])*\1[a-df-z]*\s*(?:;|$))+\s*$/,
+    edit: /\bs([^\w\s{(<[])((?:\\.|(?!\1)[^\\])*)\1(?:\\.|(?!\1)[^\\$@])*\1/g,
+    as: 's$1$2$1$1',
+  },
+  ruby: {
+    whole: /^(?:\s*(?:\$_\s*\.\s*)?g?sub!?\s*\(\s*\/(?:\\.|[^\\/\n])*\/[a-z]*\s*,\s*(?:'(?:\\.|[^\\'])*'|"(?:\\.|[^\\"#])*")\s*\)\s*(?:;|$))+\s*$/,
+    edit: /(,\s*)(?:'(?:\\.|[^\\'])*'|"(?:\\.|[^\\"#])*")(\s*\))/g,
+    as: '$1""$2',
+  },
+} as const
 
-/** Perl code without the text of its replacements, when it is made only of plain ones (PLAIN_EDITS); any other code as it is. */
-function plainCode(code: string): string {
-  return PLAIN_EDITS.test(code) ? code.replace(PLAIN_EDIT, 's$1$2$1$1') : code
+/** Code without the text of its replacements, when it is made only of plain ones (PLAIN_EDITS); any other code as it is. */
+function plainCode(language: 'perl' | 'ruby', code: string): string {
+  const { whole, edit, as } = PLAIN_EDITS[language]
+  return whole.test(code) ? code.replace(edit, as) : code
 }
 
 /** Perl's or Ruby's switches: the code given inline, each `-e` apart, `-i`'s suffix, a module loaded, a folder changed to, and where the words after them start. */
@@ -478,12 +492,12 @@ function scriptSwitches(language: 'perl' | 'ruby', args: readonly string[]): Scr
   return { code, ...(suffix === undefined ? {} : { suffix }), module, ...(folder === undefined ? {} : { folder }), after: at }
 }
 
-/** The arguments with Perl's code read as plainCode does, for what that code may do. */
-function plainArgs(args: readonly string[], code: readonly Value[]): string[] {
+/** The arguments with the code in them read as plainCode does, for what that code may do. */
+function plainArgs(language: 'perl' | 'ruby', args: readonly string[], code: readonly Value[]): string[] {
   const plain = [...args]
   for (const { value, at } of code) {
     const word = plain[at]
-    if (word !== undefined) plain[at] = `${word.slice(0, word.length - value.length)}${plainCode(value)}`
+    if (word !== undefined) plain[at] = `${word.slice(0, word.length - value.length)}${plainCode(language, value)}`
   }
   return plain
 }
@@ -500,7 +514,7 @@ function readInPlace(language: 'perl' | 'ruby', switches: ScriptSwitches, args: 
   const { code, suffix, module, folder, after } = switches
   if (suffix === undefined) return
   // With no code inline, a here-document is the script.
-  const source = code.length > 0 ? code.map(item => (language === 'perl' ? plainCode(item.value) : item.value)).join('\n') : (input ?? '')
+  const source = code.length > 0 ? code.map(item => plainCode(language, item.value)).join('\n') : (input ?? '')
   if (module || IN_PLACE_LOADS[language].test(source)) {
     out.unseen.push({ reason: `${language} loads a module beside the files it edits in place, which the guard does not read`, text: ownText })
     return

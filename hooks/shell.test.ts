@@ -294,6 +294,8 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `perl -pi -e 's/Bun/use npm, then no cache/' .claude/CLAUDE.md`,
       // A replacement of plain text is what the edit writes, whatever its words: none of it runs.
       `perl -pi -e 's/old rule/Always write tests, require review, do not delete > 2 files/g; s|a|b|' .claude/CLAUDE.md`,
+      `ruby -pi -e 'gsub(/old rule/i, "Always write tests, require review and load fixtures")' .claude/CLAUDE.md`,
+      `ruby -pi -e '$_.gsub!(/old/, '"'"'load the remove step'"'"')' .claude/CLAUDE.md`,
     ]) expect(await change(command)).toEqual({ kind: 'pass' })
     expect(readShellCommand(lookup)).toEqual({ kind: 'pass', browse: false })
     // `command` without -v runs what follows; an in-place edit where Claude Code loads from waits; code that may do more stays unseen.
@@ -330,6 +332,9 @@ describe('what a shell command changes where Claude Code loads from', () => {
       [`perl -pi -e 's/(?{ require "x" })a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
       [`perl -pi -e 'print "; s/a/"; require "x"; print "/"' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
       [`perl -pi -e 's/a/write/; unlink "x"' .claude/CLAUDE.md`, 'perl runs code that may write files or run programs'],
+      [`ruby -pi -e 'gsub(/a/, "#{require %q(x)}")' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
+      [`ruby -pi -e 'gsub(/#{require %q(x)}/, "b")' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
+      [`ruby -pi -e 'gsub(/a/, "b"); require "x"' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
       [`perl -pi -e 'BEGIN { @ARGV = ("/home/tester/.claude/settings.json") } s/a/b/'`, 'perl edits files in place that its code chooses as it runs'],
       [`ruby -pi -e 'BEGIN { Dir.chdir(%q(/home/tester/.claude/skills/x)) }; gsub(/a/, %q(b))' SKILL.md`, 'ruby edits files in place that its code chooses as it runs'],
       [`ls ~/.claude/skills/*/SKILL.md | xargs perl -pi -e 's/a/b/'`, 'perl is given paths from its input'],
