@@ -6,7 +6,7 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ## v0.8.5 &nbsp;·&nbsp; 2026-10-30
 
-**Claude's shell commands** - `command -v` and `command -V` are read as a lookup that runs nothing, so a loop that checks which tools are installed no longer counts as running a program only known as it runs. `perl -i` and `ruby -i` are read as `sed -i` is: each file after the code is an edit judged by where it lands, with the copy a suffix such as `-i.bak` keeps, so editing a file Claude Code does not load goes on and editing a skill or a settings file still waits. Both commands were held as Could not verify beside a mention of `.claude`. An in-place edit beside a module (`-M`, `-r`), code that picks its own files or changes folder, and Perl's and Ruby's other ways to run a program (`qx`, `%x`, a pipe opened as a file) stay held
+**Claude's shell commands** - `command -v` and `command -V` are read as a lookup that runs nothing, so a loop that checks which tools are installed no longer counts as running a program only known as it runs. `perl -i` and `ruby -i` are read as `sed -i` is: each file after the code is an edit judged by where it lands, with the copy a suffix such as `-i.bak` keeps, so editing a file Claude Code does not load goes on and editing a skill or a settings file still waits. A Perl replacement of plain text (no `e` flag, no `$` or `@`) is read as the text it writes, so words such as "write" or "require" in it hold nothing. Both commands were held as Could not verify beside a mention of `.claude`. An in-place edit beside a module (`-M`, `-r`), code that picks its own files or changes folder, and Perl's and Ruby's other ways to run a program (`qx`, `%x`, a pipe opened as a file) stay held
 
 ---
 

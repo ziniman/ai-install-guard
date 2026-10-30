@@ -292,6 +292,8 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `ruby -pi -e 'gsub(/old/, %q(new))' .claude/CLAUDE.md`,
       // Words in a replacement are text, not a statement of the code.
       `perl -pi -e 's/Bun/use npm, then no cache/' .claude/CLAUDE.md`,
+      // A replacement of plain text is what the edit writes, whatever its words: none of it runs.
+      `perl -pi -e 's/old rule/Always write tests, require review, do not delete > 2 files/g; s|a|b|' .claude/CLAUDE.md`,
     ]) expect(await change(command)).toEqual({ kind: 'pass' })
     expect(readShellCommand(lookup)).toEqual({ kind: 'pass', browse: false })
     // `command` without -v runs what follows; an in-place edit where Claude Code loads from waits; code that may do more stays unseen.
@@ -321,6 +323,13 @@ describe('what a shell command changes where Claude Code loads from', () => {
       [`ruby -e 'Object.instance_eval(%q(1))' .claude/CLAUDE.md`, 'ruby runs code that may write files or run programs'],
       [`ruby -i -e 'Kernel::require "/home/me/.claude/payload.rb"' notes.md`, 'ruby loads a module beside the files it edits in place'],
       [`perl -pi -e 'my $ok = require "/home/me/.claude/payload.pl"; s/a/b/' notes.md`, 'perl loads a module beside the files it edits in place'],
+      // PR review: `do` runs a file however it is named; a replacement is only plain text with no flag, `$` or `@` that runs or fills it in.
+      [`perl -pi -e 'BEGIN { do q(/home/tester/.claude/payload.pl) } s/a/b/' notes.md`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/a/require "x"/e' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/a/$h{ require "x" }/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/(?{ require "x" })a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 'print "; s/a/"; require "x"; print "/"' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/a/write/; unlink "x"' .claude/CLAUDE.md`, 'perl runs code that may write files or run programs'],
       [`perl -pi -e 'BEGIN { @ARGV = ("/home/tester/.claude/settings.json") } s/a/b/'`, 'perl edits files in place that its code chooses as it runs'],
       [`ruby -pi -e 'BEGIN { Dir.chdir(%q(/home/tester/.claude/skills/x)) }; gsub(/a/, %q(b))' SKILL.md`, 'ruby edits files in place that its code chooses as it runs'],
       [`ls ~/.claude/skills/*/SKILL.md | xargs perl -pi -e 's/a/b/'`, 'perl is given paths from its input'],
