@@ -105,6 +105,23 @@ describe('reading what a shell command writes', () => {
     expect(writes("sed -i '' -e 's/a/b/' ~/.claude/settings.json")).toEqual([`unknown ${PROJECT}:~/.claude/settings.json: an edit sed makes`])
     expect(writes("sed -i.bak 's/a/b/' one.md two.md")).toEqual([`unknown ${PROJECT}:one.md: an edit sed makes`, `unknown ${PROJECT}:two.md: an edit sed makes`])
     expect(writes("sed 's/a/b/' one.md")).toEqual([])
+    // Perl and Ruby told to edit in place are read as sed -i is: each file after the code, and the copy a suffix keeps.
+    expect(writes("perl -pi -e 's/old/new/' .claude/CLAUDE.md")).toEqual([`unknown ${PROJECT}:.claude/CLAUDE.md: an edit perl makes`])
+    expect(writes("perl -i.bak -pe 's/a/b/' one.md two.md")).toEqual([
+      `unknown ${PROJECT}:one.md: an edit perl makes`,
+      `unknown ${PROJECT}:one.md.bak: the copy perl keeps of the file it edits`,
+      `unknown ${PROJECT}:two.md: an edit perl makes`,
+      `unknown ${PROJECT}:two.md.bak: the copy perl keeps of the file it edits`,
+    ])
+    expect(writes("perl -pi'old/*.orig' -e 's/a/b/' x.md")).toEqual([`unknown ${PROJECT}:x.md: an edit perl makes`, `unknown ${PROJECT}:old/x.md.orig: the copy perl keeps of the file it edits`])
+    expect(writes("perl -0777 -l -pi -e 's/a/b/' -- -x.md")).toEqual([`unknown ${PROJECT}:-x.md: an edit perl makes`])
+    expect(writes("ruby -pi.bak -e 'gsub(/a/, %q(b))' x.md")).toEqual([`unknown ${PROJECT}:x.md: an edit ruby makes`, `unknown ${PROJECT}:x.md.bak: the copy ruby keeps of the file it edits`])
+    expect(writes("ruby -C ~/.claude/skills/x -i -pe 'gsub(/a/, %q(b))' SKILL.md")).toEqual(['unknown ~/.claude/skills/x:SKILL.md: an edit ruby makes'])
+    // With no code inline, the first word is the script; with no file at all, it edits its input.
+    expect(writes('perl -i fix.pl one.md')).toEqual([])
+    expect(writes('perl -pi fix.pl one.md')).toEqual([`unknown ${PROJECT}:one.md: an edit perl makes`])
+    expect(writes("perl -pi -e 's/a/b/' && ruby -pi -e 'x'")).toEqual([])
+    expect(unseen(`perl -pi -e 's/a/b/' "$F" *.md`)).toEqual(['perl writes to a path only known as it runs', 'perl writes to a path only known as it runs'])
     expect(writes('dd if=/dev/zero of=blob bs=1 count=1')).toEqual([`unknown ${PROJECT}:blob: what dd copies`])
     expect(writes('gunzip skill.md.gz')).toEqual([`unknown ${PROJECT}:skill.md: the file unpacked from skill.md.gz`])
     expect(writes('rm -rf ~/.claude/skills/old && unlink ~/.claude/settings.json')).toEqual([`remove ${PROJECT}:~/.claude/skills/old`, `remove ${PROJECT}:~/.claude/settings.json`])
@@ -117,7 +134,7 @@ describe('reading what a shell command writes', () => {
     expect(writes('x=$(cp a b)')).toEqual([`copy a -> ${PROJECT}:b`])
     expect(writes('if [ -f a ]; then cp a b; fi; for f in *.md; do echo "$f"; done')).toEqual([`copy a -> ${PROJECT}:b`])
     expect(unseen(`python3 -c "open('x','w')"`)).toEqual(['python3 runs code that may write files or run programs'])
-    expect(unseen(`perl -pi -e 's/a/b/' x.md`)).toEqual(['perl runs code that may write files or run programs'])
+    expect(unseen(`perl -pi -e 'system("x")' x.md`)).toEqual(['perl runs code that may write files or run programs'])
     expect(unseen('python3 <<EOF\nimport shutil\nshutil.copy("a", "b")\nEOF')).toEqual(['python3 runs code that may write files or run programs'])
     // Code that only reads and prints is no change; code piped in from elsewhere is unknown.
     expect(unseen('python3 <<EOF\nprint(1)\nEOF')).toEqual([])
@@ -262,6 +279,41 @@ describe('what a shell command changes where Claude Code loads from', () => {
     expect(await change('python3 build.py')).toEqual({ kind: 'pass' })
     expect(await change('cd "$X" && echo a > b')).toEqual({ kind: 'pass' })
     expect(await change('cd "$X" && echo a > .claude/commands/a.md')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('relative to a folder only known') })
+  })
+
+  test('looking a program up, and perl or ruby editing a file Claude Code does not load, pass', async () => {
+    // Both were held as Could not verify: one part read as unseen, beside a mention of Claude's folder.
+    const lookup = 'ls ~/.claude/skills 2>/dev/null | head; for c in whisper ffmpeg; do printf "%s: " $c; command -v $c || echo no; done'
+    for (const command of [
+      lookup,
+      'command -V $c && command -pv $c > /dev/null # ~/.claude',
+      `perl -pi -e 's/old/new/' .claude/CLAUDE.md`,
+      `perl -i.bak -pe 's/old/new/' notes.md && ls ~/.claude/skills`,
+      `ruby -pi -e 'gsub(/old/, %q(new))' .claude/CLAUDE.md`,
+    ]) expect(await change(command)).toEqual({ kind: 'pass' })
+    expect(readShellCommand(lookup)).toEqual({ kind: 'pass', browse: false })
+    // `command` without -v runs what follows; an in-place edit where Claude Code loads from waits; code that may do more stays unseen.
+    for (const [command, reason] of [
+      ['ls ~/.claude/skills; command $c', 'it runs a program only known as it runs'],
+      ['ls ~/.claude/skills; command -p $c', 'it runs a program only known as it runs'],
+      [`perl -pi -e 's/a/b/' ~/.claude/skills/x/SKILL.md`, 'an edit perl makes would land there'],
+      [`ruby -pi -e 'gsub(/a/, %q(b))' ~/.claude/settings.json`, 'an edit ruby makes would land there'],
+      [`ruby -C ~/.claude/skills/x -i -pe 'gsub(/a/, %q(b))' SKILL.md`, 'an edit ruby makes would land there'],
+      [`perl -pi'~/.claude/skills/evil/*' -e '' SKILL.md`, 'the copy perl keeps of the file it edits would land there'],
+      // The edit that passes above, with code that does more than edit.
+      [`perl -pi -e 'system("x")' .claude/CLAUDE.md`, 'perl runs code that may write files or run programs'],
+      [`ruby -pi -e 'system("x")' .claude/CLAUDE.md`, 'ruby runs code that may write files or run programs'],
+      [`perl -i -pe 's/x/qx(cp a ~\\/.claude\\/skills\\/x\\/SKILL.md)/e' notes.md`, 'perl runs code that may write files or run programs'],
+      [`perl -MFile::Copy -pi -e 's/a/b/' .claude/CLAUDE.md`, 'perl runs code that may write files or run programs'],
+      [`perl -MFile::Copy -e 'copy "a", ".claude/skills/x/SKILL.md"'`, 'perl runs code that may write files or run programs'],
+      [`perl -MList::Util=sum -pi -e 's/a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e'use File::Spec; s/a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
+      [`ruby -r json -pi -e 'gsub(/a/, %q(b))' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
+      [`perl -pi -e 'BEGIN { @ARGV = ("/home/tester/.claude/settings.json") } s/a/b/'`, 'perl edits files in place that its code chooses as it runs'],
+      [`ruby -pi -e 'BEGIN { Dir.chdir(%q(/home/tester/.claude/skills/x)) }; gsub(/a/, %q(b))' SKILL.md`, 'ruby edits files in place that its code chooses as it runs'],
+      [`ls ~/.claude/skills/*/SKILL.md | xargs perl -pi -e 's/a/b/'`, 'perl is given paths from its input'],
+      [`perl -ne 'BEGIN { $^I = "" } print' ~/.claude/settings.json`, 'perl runs code that may write files or run programs'],
+    ]) expect(await change(command as string)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining(reason as string) })
   })
 
   test('inline code that names Claude\'s folder is held only when it may change something', async () => {

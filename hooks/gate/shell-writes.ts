@@ -1,9 +1,9 @@
 // What a shell command Claude is about to run writes, read from its text
 // alone: the files its redirections write, and those cp, mv, install, ln,
-// rsync, ditto, git, curl, wget, unzip, tar, tee, sed -i and dd make. A
-// program the guard does not know is judged by the paths it is given; what
-// it writes on its own, unnamed, is not seen. Nothing here runs anything or
-// touches the disk.
+// rsync, ditto, git, curl, wget, unzip, tar, tee, sed -i, perl -i, ruby -i
+// and dd make. A program the guard does not know is judged by the paths it is
+// given; what it writes on its own, unnamed, is not seen. Nothing here runs
+// anything or touches the disk.
 
 import { CLAUDE, INTERPRETERS, QUIET, SHELLS, gitScripts, isDynamic, programAt, programName, splitShell, type ShellCommand } from './requests'
 
@@ -209,7 +209,8 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     readNested(args.join(' '), where, out, depth)
     return
   }
-  if (INTERPRETERS.has(program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1'))) {
+  const language = program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1')
+  if (INTERPRETERS.has(language)) {
     // Code given inline (`deno eval` too), or read from input, is not read.
     const inline = args.some(arg => INLINE_CODE.test(arg)) || (program === 'deno' && args[0] === 'eval')
     // A lone `-` in a script's place reads the script from input, as no script at all does.
@@ -226,7 +227,9 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       const filledIn = codeAt.length > 0 ? codeAt.some(at => at < args.length && unknown(at)) : command.feedsExpand === true
       if (!known) out.unseen.push({ reason: `${program} runs code from its input, which the guard does not read`, text: ownText })
       else if (filledIn) out.unseen.push({ reason: `${program} runs code only known as it runs` })
-      else if (mayChange(program, args, ownText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text: ownText })
+      else if (mayChange(ownText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text: ownText })
+      // Perl or Ruby told to edit files in place (`-i`) writes the files named after its code.
+      else if (language === 'perl' || language === 'ruby') readInPlace(language, args, unknown, where, writes, dynamicPath, fills, out, ownText)
       return
     }
     // A script file or a module (`python3 -m pip …`) is code already on disk: judged by the paths it is given, not by where it is.
@@ -359,18 +362,132 @@ const MAY_CHANGE: readonly RegExp[] = [
   /\bflags?\s*[:=]\s*['"][^'"]*[wax+]|\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b/i,
   // A path object's own changes (Path(…).replace), and deleting or moving by name.
   /\bPath\b[\s\S]*\.(?:replace|rename|unlink|rmdir|touch|symlink_to|hardlink_to|link_to|chmod|lchmod)\s*\(|\bdelete\b|\bmove\s*\(/i,
+  // Perl's and Ruby's other ways to run a program (`qx{…}`, `readpipe`, `%x(…)`, a pipe opened as a file),
+  // to edit files in place without -i (`$^I`, `$-i`, `inplace_mode`), and Perl's File::Copy, whose calls need no parentheses.
+  /\bqx\b|\breadpipe\b|%x[({[<|!]|\bopen\b[\s(]*(?:[^,;'"]*,\s*)?['"](?:\s*\||[^'"]*\|\s*['"])|\$\^I\b|\$-i\b|\binplace_mode\b|File::Copy\b/,
 ]
 
 /**
  * Whether code an interpreter runs from the command may change something:
- * any of MAY_CHANGE in its text, or Perl or Ruby told to edit files in place
- * (`-i`). Read over the code and its arguments together, so a path that
- * merely looks like one of those words holds it too: a needless hold is the
- * safer way to be wrong.
+ * any of MAY_CHANGE in its text. Read over the code and its arguments
+ * together, so a path that merely looks like one of those words holds it
+ * too: a needless hold is the safer way to be wrong. The files Perl or Ruby
+ * edits in place (`-i`) are read apart, by readInPlace.
  */
-function mayChange(program: string, args: readonly string[], text: string): boolean {
-  if (/^(?:perl|ruby)$/.test(program) && args.some(arg => /^-(?!-)[A-Za-z]*i/.test(arg))) return true
-  return MAY_CHANGE.some(pattern => pattern.test(text))
+function mayChange(text: string): boolean {
+  return readsAs(text, MAY_CHANGE)
+}
+
+/**
+ * Whether any of `patterns` is in code's text as written, or with code
+ * attached to its option (`-lne'unlink $_'`) set apart from it, so a word the
+ * code starts with counts as a word.
+ */
+function readsAs(text: string, patterns: readonly RegExp[]): boolean {
+  const apart = text.replace(/(^|\s)(-(?!-)[A-Za-z]*?[ceEpr])(?=\S)/g, '$1$2 ')
+  return patterns.some(pattern => pattern.test(text) || pattern.test(apart))
+}
+
+/**
+ * Perl's and Ruby's switches that take a value: `code` the code given
+ * inline, `rest` the rest of their word, `next` the next word when nothing is
+ * attached, and `digits` only the digits after them. Any other letter is a
+ * switch of its own, and more may follow it in the same word (`-pi.bak`).
+ */
+const SCRIPT_SWITCHES = {
+  perl: { code: 'eE', rest: 'CDeEFiIMmx', next: 'eEI', digits: '0l' },
+  ruby: { code: 'e', rest: 'CeEFiIKrTWxX', next: 'CeEIrX', digits: '0' },
+} as const
+
+/**
+ * What in the code makes the edit something the guard cannot follow: a
+ * module it loads by name, or a change to the list of files it edits
+ * (`@ARGV`, `ARGV`) or to the folder they are named in (`chdir`).
+ */
+const IN_PLACE_LOADS = { perl: /\buse\s+[A-Z]|\brequire\b|\bdo\s*['"$]/, ruby: /\brequire(?:_relative)?\b|\bload\b/ } as const
+const IN_PLACE_CHOOSES = { perl: /@ARGV\b|\$ARGV\s*\[|\$#ARGV\b|\*ARGV\b|\bchdir\b/, ruby: /\bARGV\b|\bARGF\.argv\b|\bchdir\b/ } as const
+
+/**
+ * `perl -i` and `ruby -i`: each file named after the code is edited in
+ * place, and with a suffix (`-i.bak`) a copy of it is kept as well, each a
+ * write of content only known as it runs. With no file, it edits its input
+ * and writes nothing. A module loaded beside it (`-M`, `-m`, `-d:`, `-r`, or
+ * by name in the code) is code the guard does not read, and so is code that
+ * chooses which files it edits.
+ */
+function readInPlace(language: 'perl' | 'ruby', args: readonly string[], unknown: (at: number) => boolean, where: Where, writes: Writes, dynamicPath: () => void, fills: boolean, out: ShellWrites, ownText: string): void {
+  const spec = SCRIPT_SWITCHES[language]
+  let suffix: Value | undefined
+  let code = false
+  let module = false
+  /** The folder it changes to before it runs (`ruby -C dir`, `-xdir`). */
+  let folder: Value | undefined
+  let at = 0
+  for (; at < args.length; at += 1) {
+    const arg = args[at] as string
+    if (arg === '--') {
+      at += 1
+      break
+    }
+    if (!arg.startsWith('-') || arg === '-') break
+    if (arg.startsWith('--')) continue
+    for (let letter = 1; letter < arg.length; letter += 1) {
+      const name = arg[letter] as string
+      const rest = arg.slice(letter + 1)
+      if (spec.digits.includes(name)) {
+        letter += (language === 'perl' && name === '0' ? /^(?:x[\da-f]+|\d*)/i : /^\d*/).exec(rest)?.[0].length ?? 0
+        continue
+      }
+      // `-d:Module` loads a debugger module; `-d` alone is a switch of its own.
+      if (language === 'perl' && name === 'd') {
+        if (!/^t?:/.test(rest)) continue
+        module = true
+        break
+      }
+      if (!spec.rest.includes(name)) continue
+      const value: Value = rest === '' && spec.next.includes(name) ? { value: args[at + 1] ?? '', at: at + 1 } : { value: rest, at }
+      if (spec.code.includes(name)) code = true
+      else if (name === 'i') suffix = value
+      else if (language === 'perl' ? name === 'M' || name === 'm' : name === 'r') module = true
+      else if (name === 'x' ? rest !== '' : language === 'ruby' && (name === 'C' || name === 'X')) folder = value
+      at = value.at
+      break
+    }
+  }
+  if (suffix === undefined) return
+  if (module || readsAs(ownText, [IN_PLACE_LOADS[language]])) {
+    out.unseen.push({ reason: `${language} loads a module beside the files it edits in place, which the guard does not read`, text: ownText })
+    return
+  }
+  if (readsAs(ownText, [IN_PLACE_CHOOSES[language]])) {
+    out.unseen.push({ reason: `${language} edits files in place that its code chooses as it runs`, text: ownText })
+    return
+  }
+  if (fills) {
+    out.unseen.push({ reason: `${language} is given paths from its input, which the guard does not see` })
+    return
+  }
+  const cwd = folder === undefined ? where.cwd : unknown(folder.at) ? undefined : join(where.cwd, folder.value)
+  // With no code given inline, the first word left names the script.
+  for (let file = code ? at : at + 1; file < args.length; file += 1) {
+    const path = args[file] as string
+    if (path === '-') continue
+    if (unknown(file)) {
+      dynamicPath()
+      continue
+    }
+    writes({ kind: 'unknown', to: { path, cwd }, what: `an edit ${language} makes` })
+    const kept = keptCopy(language, path, suffix.value)
+    if (kept === undefined) continue
+    if (unknown(suffix.at)) dynamicPath()
+    else writes({ kind: 'unknown', to: { path: kept, cwd }, what: `the copy ${language} keeps of the file it edits` })
+  }
+}
+
+/** The copy `-i` keeps of a file it edits: its suffix added to the name, or in Perl's, each `*` standing for the name. */
+function keptCopy(language: 'perl' | 'ruby', path: string, suffix: string): string | undefined {
+  if (suffix === '' || (language === 'perl' && suffix === '*')) return undefined
+  return language === 'perl' && suffix.includes('*') ? suffix.split('*').join(path) : `${path}${suffix}`
 }
 
 /**
