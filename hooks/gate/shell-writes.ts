@@ -395,19 +395,20 @@ const SCRIPT_SWITCHES = {
 
 /**
  * What in the code makes the edit something the guard cannot follow: a
- * module it loads (a `use`, `no` or `require` statement, Perl's `do FILE`,
- * Ruby's `load`), or a hand on the list of files it edits or the folder they
- * are named in: the list by name (`ARGV`, Ruby's `$*` and `ARGF`), Perl's
- * symbolic references and symbol table (`@{"AR"."GV"}`, `$::{…}`), Ruby's
- * calls by name (`send`, `const_get`), and `chdir`. Read over the code alone,
- * so words in a replacement are not taken for a statement.
+ * module it loads (Perl's `use` and `no` statements, `require` anywhere, as
+ * it can be part of an expression, Perl's `do FILE`, Ruby's `load`), or a
+ * hand on the list of files it edits or the folder they are named in: the
+ * list by name (`ARGV`, Ruby's `$*` and `ARGF`), Perl's symbolic references
+ * and symbol table (`@{"AR"."GV"}`, `$::{…}`), Ruby's calls by name (`send`,
+ * `const_get`), and `chdir`. Read over the code alone, so words in a
+ * replacement are not taken for a statement.
  */
 const IN_PLACE_LOADS = {
-  perl: /(?:^|[;{}])\s*(?:use|no|require)\b|\bdo\s*['"$]/m,
-  ruby: /(?:^|[;{}(=])\s*(?:require(?:_relative)?|load|autoload)\b|\bKernel\s*\.\s*(?:require|load)\b/m,
+  perl: /(?:^|[;{}])\s*(?:use|no)\b|\brequire\b|\bdo\s*['"$]/m,
+  ruby: /\b(?:require(?:_relative)?|load|autoload)\b/,
 } as const
 const IN_PLACE_CHOOSES = {
-  perl: /\bARGV\b|[@*$%]\s*\{\s*[^}\w\s]|::\s*\{|\bchdir\b/,
+  perl: /\bARGV\b|[@*$%&]\s*\{\s*[^}\w\s]|::\s*\{|\bchdir\b/,
   ruby: /\bARGV\b|\$\*|\bARGF\b|\bchdir\b|\bconst_get\b|\.\s*(?:public_)?send\b|\b__send__\b|\bsend\s*\(|\bbinding\b/,
 } as const
 
