@@ -335,6 +335,9 @@ describe('what a shell command changes where Claude Code loads from', () => {
       [`ruby -pi -e 'gsub(/a/, "#{require %q(x)}")' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
       [`ruby -pi -e 'gsub(/#{require %q(x)}/, "b")' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
       [`ruby -pi -e 'gsub(/a/, "b"); require "x"' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
+      // PR review: what reads as a string inside a regular expression, or one Ruby nests with `#{…}`, is never left out.
+      [`ruby -e "gsub(/x, '#{system(%q(echo x > .mcp.json))}' )/, 'ok')"`, 'ruby runs code that may write files or run programs'],
+      [`ruby -pi -e "gsub(/#{\\"/, '#{system(%q(evil))}'); gsub(/a/, '\\"}/, %q(b)) #')" .claude/CLAUDE.md`, 'ruby runs code that may write files or run programs'],
       [`perl -pi -e 'BEGIN { @ARGV = ("/home/tester/.claude/settings.json") } s/a/b/'`, 'perl edits files in place that its code chooses as it runs'],
       [`ruby -pi -e 'BEGIN { Dir.chdir(%q(/home/tester/.claude/skills/x)) }; gsub(/a/, %q(b))' SKILL.md`, 'ruby edits files in place that its code chooses as it runs'],
       [`ls ~/.claude/skills/*/SKILL.md | xargs perl -pi -e 's/a/b/'`, 'perl is given paths from its input'],

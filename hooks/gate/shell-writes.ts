@@ -425,8 +425,11 @@ const IN_PLACE_CHOOSES = {
  * same mark around each part, none of the brackets Perl pairs, no `e` flag to
  * run the replacement, and no `$` or `@` to fill one in. Ruby's
  * (`gsub(/old/, "new words")`, `sub`, with `!` or on `$_`): a regular
- * expression, and a quoted string with no `#` to fill it in. `whole` is the
- * code, `edit` each replacement in it, and `as` what is left of it.
+ * expression and a quoted string, neither with a `#`, as `#{…}` runs code
+ * and Ruby reads a `/` inside one as part of it. Perl finds where each part
+ * ends by its mark alone, so the guard reads the parts as Perl does. `whole`
+ * is the code, `edit` each substitution in it, whole, so it never starts
+ * inside another's pattern, and `as` what is left of it.
  */
 const PLAIN_EDITS = {
   perl: {
@@ -435,9 +438,9 @@ const PLAIN_EDITS = {
     as: 's$1$2$1$1',
   },
   ruby: {
-    whole: /^(?:\s*(?:\$_\s*\.\s*)?g?sub!?\s*\(\s*\/(?:\\.|[^\\/\n])*\/[a-z]*\s*,\s*(?:'(?:\\.|[^\\'])*'|"(?:\\.|[^\\"#])*")\s*\)\s*(?:;|$))+\s*$/,
-    edit: /(,\s*)(?:'(?:\\.|[^\\'])*'|"(?:\\.|[^\\"#])*")(\s*\))/g,
-    as: '$1""$2',
+    whole: /^(?:\s*(?:\$_\s*\.\s*)?g?sub!?\s*\(\s*\/(?:\\.|[^\\/\n#])*\/[a-z]*\s*,\s*(?:'(?:\\.|[^\\'#])*'|"(?:\\.|[^\\"#])*")\s*\)\s*(?:;|$))+\s*$/,
+    edit: /((?:\$_\s*\.\s*)?\bg?sub!?\s*\(\s*\/(?:\\.|[^\\/\n#])*\/[a-z]*\s*,\s*)(?:'(?:\\.|[^\\'#])*'|"(?:\\.|[^\\"#])*")(\s*\))/g,
+    as: "$1''$2",
   },
 } as const
 
