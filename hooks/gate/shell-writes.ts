@@ -400,8 +400,10 @@ const SCRIPT_SWITCHES = {
  * hand on the list of files it edits or the folder they are named in: the
  * list by name (`ARGV`, Ruby's `$*` and `ARGF`), Perl's symbolic references
  * and symbol table (`@{"AR"."GV"}`, `$::{…}`), Ruby's calls by name (`send`,
- * `const_get`), and `chdir`. Read over the code alone, so words in a
- * replacement are not taken for a statement.
+ * `const_get`), and `chdir`. Read over the code alone, so a file's name never
+ * counts. A replacement that says `use npm` is not a statement, but one that
+ * says `require` holds the edit too, as a `require` may follow any word in
+ * Perl (`print require "x"`): a needless hold is the safer way to be wrong.
  */
 const IN_PLACE_LOADS = {
   perl: /(?:^|[;{}])\s*(?:use|no)\b|\brequire\b|\bdo\s*['"$]/m,
