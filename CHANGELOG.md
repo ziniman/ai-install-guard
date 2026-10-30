@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.5 &nbsp;·&nbsp; 2026-10-30
+
+**Claude's shell commands** - `command -v` and `command -V` are read as a lookup that runs nothing, so a loop that checks which tools are installed no longer counts as running a program only known as it runs. `perl -i` and `ruby -i` are read as `sed -i` is: each file after the code is an edit judged by where it lands, with the copy a suffix such as `-i.bak` keeps, so editing a file Claude Code does not load goes on and editing a skill or a settings file still waits. Both commands were held as Could not verify beside a mention of `.claude`. An in-place edit beside a module (`-M`, `-r`), code that picks its own files or changes folder, and Perl's and Ruby's other ways to run a program (`qx`, `%x`, a pipe opened as a file) stay held
+
+---
+
 ## v0.8.4 &nbsp;·&nbsp; 2026-10-29
 
 **Mod loading** - A mod Claude Code is about to load, however it got there (the `/plugin` menu, an update made on its own, files changed in place), loads only when its folder holds exactly files you approved. Anything else is kept off, scanned in the pane with Approve and Reject, and loads after `/reload-plugins` once you approve it. The guard judges the mods that load after it; managed and built-in plugins load as they are
