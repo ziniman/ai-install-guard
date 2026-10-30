@@ -161,6 +161,9 @@ const READ_VERB = /\b(?:cat|read|open|print|show|copy|upload|send|include|paste|
 /** A command a skill or command runs as Claude Code expands it: `!` and the command in backquotes, of any length. */
 const INLINE_COMMAND = /!`[^`]+`/g
 
+/** An inline command that only prints its words: echo or printf, with no pipe, chaining, redirection or substitution. */
+const PRINTS_ONLY = /^!`\s*(?:echo|printf)\b[^`|;&<>$()\n]*`$/
+
 const REMOTE_INSTRUCTIONS =
   /\b(?:fetch|download|read|load|get|curl|retrieve|visit|open)\b[^\n]{0,80}?https?:\/\/\S{1,500}[^\n]{0,80}?\b(?:follow|execute|run|apply|obey|use|do)\b[^\n]{0,30}?\b(?:instructions?|steps|commands?|directions|it|them)\b|\bfollow\s+(?:the\s+)?(?:instructions?|steps|directions)\s+(?:at|from|in|on)\s+https?:\/\//i
 
@@ -274,8 +277,9 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     let fetches = 0
     let runs = 0
     for (const match of findAll(text, INLINE_COMMAND, Number.POSITIVE_INFINITY)) {
-      // Text from the internet: a network tool or network code given an address that is not this machine. Printing one is not.
-      if (REMOTE_ADDRESS.test(match.text) && (NETWORK_COMMAND.test(match.text) || NETWORK_CODE.test(match.text))) {
+      // Text from the internet: any program given an address that is not this machine, since too many can fetch one
+      // (curl, git clone, a package manager) to list them. Only printing it, and nothing else, is not.
+      if (REMOTE_ADDRESS.test(match.text) && !PRINTS_ONLY.test(match.text)) {
         if (fetches++ < 5) remote.push({ file: path, line: match.line, excerpt: `runs a command as it loads that puts text from the internet into its instructions: ${match.excerpt}`, status: cap('warn') })
         continue
       }
