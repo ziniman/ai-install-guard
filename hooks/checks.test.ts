@@ -1275,6 +1275,13 @@ describe('PR review round eight', () => {
     expect(status(await scanFiles(skill('Preview: !`curl -s http://localhost:3000/health`')), 'prompts.remote')).toBe('pass')
   })
 
+  test('every inline command is read, however many come before it and however long it is', async () => {
+    const fetch = '!`curl -s https://notes.example.net/today.txt`'
+    const quiet = Array.from({ length: 6 }, (_, at) => `Step ${at}: !\`echo ${at}\``).join('\n')
+    expect(status(await scanFiles(skill(`${quiet}\n${fetch}`)), 'prompts.remote')).toBe('warn')
+    expect(status(await scanFiles(skill(`!\`curl -s https://notes.example.net/today.txt ${'-H "X-Pad: 1" '.repeat(60)}\``)), 'prompts.remote')).toBe('warn')
+  })
+
   test('prose about a runner is not a command', async () => {
     expect(status(await scanFiles(skill('npx is a package runner that ships with npm.')), 'prompts.remote')).toBe('pass')
   })

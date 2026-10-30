@@ -158,8 +158,8 @@ const SCANNER_ADDRESS: readonly RegExp[] = [
 
 const READ_VERB = /\b(?:cat|read|open|print|show|copy|upload|send|include|paste|output|display|load|attach|collect)\b/i
 
-/** A command a skill or command runs as Claude Code expands it: `!` and the command in backquotes. */
-const INLINE_COMMAND = /!`[^`\n]{1,500}`/g
+/** A command a skill or command runs as Claude Code expands it: `!` and the command in backquotes, of any length. */
+const INLINE_COMMAND = /!`[^`]+`/g
 
 const REMOTE_INSTRUCTIONS =
   /\b(?:fetch|download|read|load|get|curl|retrieve|visit|open)\b[^\n]{0,80}?https?:\/\/\S{1,500}[^\n]{0,80}?\b(?:follow|execute|run|apply|obey|use|do)\b[^\n]{0,30}?\b(?:instructions?|steps|commands?|directions|it|them)\b|\bfollow\s+(?:the\s+)?(?:instructions?|steps|directions)\s+(?:at|from|in|on)\s+https?:\/\//i
@@ -270,12 +270,15 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     const counts = cap('warn') === 'warn'
     // `!` and a command in backquotes runs as Claude Code expands the skill, before
     // the model reads it, and what it prints becomes part of the instructions.
-    for (const match of findAll(text, INLINE_COMMAND, 5)) {
+    // Every one is read, however many come first; only the evidence shown is capped.
+    let fetches = 0
+    let runs = 0
+    for (const match of findAll(text, INLINE_COMMAND, 10_000)) {
       if (REMOTE_ADDRESS.test(match.text)) {
-        remote.push({ file: path, line: match.line, excerpt: `runs a command as it loads that puts text from the internet into its instructions: ${match.excerpt}`, status: cap('warn') })
+        if (fetches++ < 5) remote.push({ file: path, line: match.line, excerpt: `runs a command as it loads that puts text from the internet into its instructions: ${match.excerpt}`, status: cap('warn') })
         continue
       }
-      tools.push({ file: path, line: match.line, excerpt: `runs a shell command as it loads, before Claude reads it: ${match.excerpt}`, status: 'info' })
+      if (runs++ < 5) tools.push({ file: path, line: match.line, excerpt: `runs a shell command as it loads, before Claude reads it: ${match.excerpt}`, status: 'info' })
       if (counts) toolAccess.add(`run shell commands as it loads, in ${whereItRuns(path, front)}`)
     }
     for (const key of ['allowed-tools', 'tools']) {

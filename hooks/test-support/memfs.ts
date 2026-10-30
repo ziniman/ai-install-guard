@@ -142,11 +142,13 @@ export function serveFixture(
     return btoa(binary)
   }
 
-  on('fs.stat', async ($, e, next) =>
-    host.owns(trimSlash(at(e.path)))
-      ? { value: { ...(await host.stat(at(e.path), { resolve: e.resolve })), mtimeMs: 0 } }
-      : next(e),
-  )
+  on('fs.stat', async ($, e, next) => {
+    const path = trimSlash(at(e.path))
+    if (host.owns(path)) return { value: { ...(await host.stat(at(e.path), { resolve: e.resolve })), mtimeMs: 0 } }
+    // A path under the fixture's root that it does not hold is missing, which the engine reports as ENOENT.
+    if (path === root || path.startsWith(`${root}/`)) return { deny: `ENOENT: no such file or directory, stat '${e.path}'` }
+    return next(e)
+  })
   on('fs.list', async ($, e, next) =>
     host.owns(trimSlash(at(e.path)))
       ? { value: (await host.list(at(e.path))).map(entry => ({ ...entry, mtimeMs: 0 })) }

@@ -51,13 +51,14 @@ export async function judgeSkill($: EngineInterface, e: Pick<SkillPromptInput, '
   // Files the scan could not read leave nothing to approve: no pane, and the reason.
   if (report.inventory === undefined) return unverifiable(candidate.label, report.verdict.reasons[0] ?? 'its files could not be read')
   const { treeHash } = report.inventory
+  // Your rejection holds whatever the scan says now: the same files can scan cleaner later (outside lookups turned off).
+  const earlier = await decisionFor($, { treeHash }, report.verdict.kind)
+  if (earlier?.decision === 'rejected') return rejected(candidate.label, earlier)
   if (report.verdict.kind === 'safe') {
     const first = await noteChecked($, treeHash).catch(() => false)
     return first ? { kind: 'allow', note: `AI Install Guard: checked ${candidate.label} on its first use: No red flags` } : { kind: 'allow' }
   }
-  const earlier = await decisionFor($, { treeHash }, report.verdict.kind)
   if (earlier?.decision === 'approved') return { kind: 'allow' }
-  if (earlier?.decision === 'rejected') return rejected(candidate.label, earlier)
   const request: GuardRequest = { origin: 'tool', args: '', label: candidate.label, subject: 'skill', display: `Held on its first use until you decide: ${candidate.label}` }
   return afterShown(candidate.label, await showScan($, candidate.label, candidate.how, { action: 'approve', request, lookups, report }))
 }
@@ -114,11 +115,10 @@ export async function skillFiles(host: Host, name: string, folders: readonly str
   const bases: { base: string; source: SkillFile['source'] }[] = []
   const seen = new Set<string>()
   for (const folder of folders) {
-    let dir = normalizePath(slashed(folder))
-    for (let up = 0; up < 32 && dir !== '' && dir !== '/' && dir !== home; up += 1) {
+    // Every folder up to the home folder, however deep: each step is shorter, so the walk ends.
+    for (let dir = normalizePath(slashed(folder)); dir !== '' && dir !== '/' && dir !== home; dir = dir.slice(0, Math.max(dir.lastIndexOf('/'), 0))) {
       if (!seen.has(dir)) bases.push({ base: `${dir}/.claude`, source: 'projectSettings' })
       seen.add(dir)
-      dir = dir.slice(0, dir.lastIndexOf('/'))
     }
   }
   if (userDir !== undefined) bases.push({ base: normalizePath(userDir), source: 'userSettings' })
@@ -126,10 +126,24 @@ export async function skillFiles(host: Host, name: string, folders: readonly str
   for (const { base, source } of bases) {
     for (const rel of rels) {
       const path = `${base}/${rel}`
-      if ((await host.stat(path).catch(() => undefined)) !== undefined) found.push({ path, source })
+      if (await present(host, path)) found.push({ path, source })
     }
   }
   return found
+}
+
+/**
+ * Whether a file is there. Only a path that is missing (`ENOENT`), or that
+ * runs through a file (`ENOTDIR`), is not: a stat that fails any other way
+ * counts as there, so the skill is judged, and held if it cannot be read.
+ */
+async function present(host: Host, path: string): Promise<boolean> {
+  try {
+    await host.stat(path)
+    return true
+  } catch (error) {
+    return !/\b(?:ENOENT|ENOTDIR)\b/.test(error instanceof Error ? error.message : String(error))
+  }
 }
 
 /**
@@ -140,6 +154,10 @@ export async function skillFiles(host: Host, name: string, folders: readonly str
  * and the first one held answers.
  */
 export async function judgeByName($: EngineInterface, name: string, folders: readonly string[], lookups: boolean, configDir?: string): Promise<SkillJudgement> {
+  // A name Claude Code answers with its own command, a plugin's or an MCP server's runs that one, not a file of
+  // yours. Asked of the session, not a list kept here: a command one version has, another may not.
+  const listed = (await $.command.list().catch(() => undefined))?.find(item => item.name === name)
+  if (listed !== undefined && listed.source !== 'user') return { kind: 'allow' }
   const host = modHost($)
   const home = await expandHome(host, '~').catch(() => undefined)
   const userDir = configDir ?? (home === undefined ? undefined : `${home}/.claude`)
