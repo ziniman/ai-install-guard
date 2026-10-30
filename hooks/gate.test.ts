@@ -151,6 +151,11 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('claude plugin install notes@acme 2>&1 | tail -20')).toMatchObject(install('notes', 'acme'))
     expect(readShellCommand("printf '%s\\n' claude plugin install notes@acme")).toEqual({ kind: 'pass', browse: false })
     expect(readShellCommand('echo claude plugin install notes@acme')).toEqual({ kind: 'pass', browse: false })
+    // `command` runs the program after it; `command -v` only says what a name would run.
+    expect(readShellCommand('command claude plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
+    expect(readShellCommand('command -v claude && claude plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
+    expect(readShellCommand('command -v $TOOL plugin install notes@acme')).toEqual({ kind: 'pass', browse: false })
+    expect(readShellCommand('command -p $TOOL plugin install notes@acme').kind).toBe('unreadable')
   })
 
   test('PR review: what runs only once the shell has expanded it is held', () => {
