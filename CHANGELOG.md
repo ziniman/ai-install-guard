@@ -4,6 +4,14 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.5 &nbsp;·&nbsp; 2026-10-30
+
+**A skill's first use** - A skill or command that came with no install (a repository's own, one copied into `~/.claude/skills`, one synced from your account) is scanned each time Claude Code loads it for the model. One with no red flags loads, named once; one with a red flag is held in the pane with Approve and Reject, and Claude reads that it was held in place of its instructions. A plugin's skills are left to the plugin's install, since a skill's folder read alone is cut off from the rest of its plugin
+
+**Claude writing a skill** - A skill Claude writes with no red flags is remembered as checked, so its first use does not name it again
+
+**`/guard scan`** - A file the guard may not read is reported as one it could not read, not as one that changed during the scan
+
 ## v0.8.4 &nbsp;·&nbsp; 2026-10-29
 
 **Mod loading** - A mod Claude Code is about to load, however it got there (the `/plugin` menu, an update made on its own, files changed in place), loads only when its folder holds exactly files you approved. Anything else is kept off, scanned in the pane with Approve and Reject, and loads after `/reload-plugins` once you approve it. The guard judges the mods that load after it; managed and built-in plugins load as they are
