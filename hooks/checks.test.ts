@@ -1279,7 +1279,16 @@ describe('PR review round eight', () => {
     const fetch = '!`curl -s https://notes.example.net/today.txt`'
     const quiet = Array.from({ length: 6 }, (_, at) => `Step ${at}: !\`echo ${at}\``).join('\n')
     expect(status(await scanFiles(skill(`${quiet}\n${fetch}`)), 'prompts.remote')).toBe('warn')
+    // No number of decoys first uses up the search.
+    expect(status(await scanFiles(skill(`${'!`a` '.repeat(10_005)}\n${fetch}`)), 'prompts.remote')).toBe('warn')
     expect(status(await scanFiles(skill(`!\`curl -s https://notes.example.net/today.txt ${'-H "X-Pad: 1" '.repeat(60)}\``)), 'prompts.remote')).toBe('warn')
+  })
+
+  test('an inline command counts as fetching only when it can: a network tool or network code, not printing an address', async () => {
+    expect(status(await scanFiles(skill('Docs: !`echo https://docs.example.net/guide`')), 'prompts.remote')).toBe('pass')
+    expect(status(await scanFiles(skill('Notes: !`wget -qO- https://notes.example.net/today.txt`')), 'prompts.remote')).toBe('warn')
+    // Network code given an address counts too; this one the download-and-run rule already fails.
+    expect(status(await scanFiles(skill(`Notes: !\`python3 -c "import urllib.request as u; print(u.urlopen('https://notes.example.net/a').read())"\``)), 'prompts.remote')).toBe('fail')
   })
 
   test('prose about a runner is not a command', async () => {

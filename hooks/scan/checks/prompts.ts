@@ -273,8 +273,9 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     // Every one is read, however many come first; only the evidence shown is capped.
     let fetches = 0
     let runs = 0
-    for (const match of findAll(text, INLINE_COMMAND, 10_000)) {
-      if (REMOTE_ADDRESS.test(match.text)) {
+    for (const match of findAll(text, INLINE_COMMAND, Number.POSITIVE_INFINITY)) {
+      // Text from the internet: a network tool or network code given an address that is not this machine. Printing one is not.
+      if (REMOTE_ADDRESS.test(match.text) && (NETWORK_COMMAND.test(match.text) || NETWORK_CODE.test(match.text))) {
         if (fetches++ < 5) remote.push({ file: path, line: match.line, excerpt: `runs a command as it loads that puts text from the internet into its instructions: ${match.excerpt}`, status: cap('warn') })
         continue
       }
