@@ -225,6 +225,19 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand(`python3 -c "import subprocess; subprocess.run(['claude', 'plugin', 'install', 'x'])"`)).toMatchObject({ kind: 'unreadable' })
   })
 
+  test('prose in code the guard does not read is no sign of an install', () => {
+    const pass = { kind: 'pass', browse: false }
+    // What the guard held while its own source was edited: a sed program, whose
+    // argument is read as a script it may run, and a script, each naming the product in a sentence.
+    expect(readShellCommand(`sed -i '' "s/a plugin found on at the start of a session (\\\`args\\\` its id)/a plugin, or an MCP server found where Claude Code loads from (\\\`args\\\` its key: \\\`mcp <scope> <name>\\\`)/; s/'skill' | 'installed'$/'skill' | 'installed' | 'configured'/" types/index.d.ts`)).toEqual(pass)
+    expect(readShellCommand("python3 - <<'EOF'\ntext = '/** The plugins installed and on, from Claude Code\\'s own listing; the MCP servers too */'\nprint(text)\nEOF")).toEqual(pass)
+    expect(readShellCommand(`python3 -c "print('the plugins I use')"`)).toEqual(pass)
+    // The command as the shell runs it, lowercase, still counts: by its words, or by its name beside a plugin or a server.
+    expect(readShellCommand(`python3 -c "import os; os.system('claude plugin i x@y')"`)).toMatchObject({ kind: 'unreadable' })
+    expect(readShellCommand(`ACTION=install python3 -c 'import os; os.system("claude mcp " + os.environ["ACTION"])'`)).toMatchObject({ kind: 'unreadable' })
+    expect(readShellCommand(`python3 -c "import os; os.system('CLAUDE PLUGIN INSTALL X'.lower())"`)).toMatchObject({ kind: 'unreadable' })
+  })
+
   test('splits like a shell: quotes, separators, redirections and here-documents', () => {
     expect(splitShell(`a 'b c' "d \\"e\\"" f\\ g; h && i | j 2>&1 > out < in`).commands.map(item => item.words)).toEqual([['a', 'b c', 'd "e"', 'f g'], ['h'], ['i'], ['j']])
     expect(splitShell('cat <<-END\n\tbody\n\tEND\nnext').commands).toEqual([{ words: ['cat'], input: 'body', feeds: 'body\n' }, { words: ['next'] }])

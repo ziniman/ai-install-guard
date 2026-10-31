@@ -56,7 +56,7 @@ export function readShellCommand(command: string): Reading {
   try {
     return readShell(command)
   } catch {
-    return MAY_INSTALL.test(command) ? { kind: 'unreadable', label: 'a claude plugin command', reason: 'the guard could not read the command' } : PASS
+    return mayInstall(command) ? { kind: 'unreadable', label: 'a claude plugin command', reason: 'the guard could not read the command' } : PASS
   }
 }
 
@@ -90,7 +90,7 @@ function readShell(command: string): Reading {
   // An unseen part may run an install whose words show elsewhere in the command (a variable it reads, code
   // in another language); a claude command read whole and found to install nothing is no such sign.
   const rest = texts.join('\n')
-  if (unseen && (MAY_INSTALL.test(rest) || (CLAUDE_WORD.test(rest) && /\b(?:plugins?|mcp)\b/i.test(rest)))) {
+  if (unseen && (mayInstall(rest) || (CLAUDE_WORD.test(rest) && /\b(?:plugins?|mcp)\b/i.test(rest)))) {
     return { kind: 'unreadable', label: 'a claude command', reason: 'part of the command is only known as it runs, so the guard cannot tell what it installs; run claude plugin install or claude mcp add as a plain command' }
   }
   return PASS
@@ -101,10 +101,20 @@ function readShell(command: string): Reading {
  * the commas of a list in another language (`['plugin', 'install']`). A path
  * separator never joins them, so `.claude-plugin/marketplace.json` is a path.
  */
-const MAY_INSTALL = /\bplugins?\b[^\w\n/\\]{1,8}(?:install|i|update|marketplace)\b|\bmcp\b[^\w\n/\\]{1,8}add(?:-json|-from-claude-desktop)?\b/i
+const MAY_INSTALL = /\bplugins?\b[^\w\n/\\]{1,8}(?:install|update|marketplace)\b|\bmcp\b[^\w\n/\\]{1,8}add(?:-json|-from-claude-desktop)?\b/i
+/** `plugin i`, install's short name, only as the command takes it: `the plugins I use` is English. */
+const MAY_INSTALL_SHORT = /\bplugins?\b[^\w\n/\\]{1,8}i\b/
 
-/** The `claude` command's names as words of their own, not part of a path such as `~/.claude/`. */
-const CLAUDE_WORD = /(?<![\w./-])claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?(?![\w./-])/i
+function mayInstall(text: string): boolean {
+  return MAY_INSTALL.test(text) || MAY_INSTALL_SHORT.test(text)
+}
+
+/**
+ * The `claude` command's names as words of their own, not part of a path
+ * such as `~/.claude/`, and spelled as the command is: `Claude Code` in a
+ * sentence names the product, not a command.
+ */
+const CLAUDE_WORD = /(?<![\w./-])claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?(?![\w./-])/
 
 /** Names the `claude` command goes by, Windows' launchers included. */
 export const CLAUDE = new Set(['claude', 'claude-code'].flatMap(name => [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`, `${name}.ps1`]))
