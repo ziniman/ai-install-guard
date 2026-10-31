@@ -4,11 +4,15 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
-## Unreleased
+## v0.8.9 &nbsp;·&nbsp; 2026-10-31
 
 **Session start** - The check as a session starts now also reads your configuration: each MCP server in `~/.claude.json` and this folder's `.mcp.json`, and what your own and this folder's settings files run on their own (hooks, the status line, helper commands). That catches what a `git pull` or another program's installer adds outside Claude. It reads the files and runs nothing. A server with no red flags is named once; one with a red flag, or a settings file that runs something you have not approved, waits in the pane with Keep and Reject. Keep approves what a settings file runs, not the whole file, and a later change shows only what it adds or takes away. The guard never edits your configuration: Reject on a server makes it refuse that server's tools and tells you the command that removes it
 
 **`/guard held`** - Also lists the MCP servers and settings files in your configuration that wait for your decision
+
+## v0.8.8 &nbsp;·&nbsp; 2026-10-31
+
+**Claude's shell commands** - A command with code the guard does not read, such as a `sed` edit or an inline Python script, is no longer held because its text names Claude Code and MCP servers or plugins in a sentence. Only the `claude` command as the shell spells it, and `plugin i` in lowercase, count as a sign of an install there, so editing docs or source that talk about Claude Code goes through
 
 ## v0.8.7 &nbsp;·&nbsp; 2026-10-31
 
