@@ -11,7 +11,7 @@ import { modHost } from '../mod-host'
 import { loadReport, recordDecision, saveLastView } from './decisions'
 import { grantPass, takePass } from './passes'
 import { ownVersion } from './version'
-import { needsConfirmation, PANE_ID, primaryLabel } from './view'
+import { needsConfirmation, PANE_ID, primaryLabel, rejectLabel } from './view'
 
 const viewAtom = atom({ plugin: 'ai-install-guard', key: 'view' } as const, null)
 
@@ -113,6 +113,12 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
         await carryOut($, held, allowed)
         return
       }
+      // A plugin already on is turned off all the same: there is just no decision to remember.
+      if (current.request?.subject === 'installed' && decision === 'rejected') {
+        if (await release(current)) await closeOwn($, current)
+        await turnOff($, current.request)
+        return
+      }
       $.ui.toast(held !== undefined ? 'AI Install Guard: rejected; nothing was installed' : 'AI Install Guard: closed; the scan read nothing, so there is no decision to remember')
       if (await release(current)) await closeOwn($, current)
       return
@@ -139,7 +145,20 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     const decided = { ...current, decision, decidedAt, confirming: false, deciding: false }
     // The decision is saved for its version either way; the pane, the
     // reopened report and the install are this scan's only while it has the pane.
-    if (!(await replaceOwn(decided))) {
+    const ours = await replaceOwn(decided)
+    // A plugin found on stays on when kept, and is turned off once its
+    // rejection is saved, whichever scan has the pane by then.
+    const subject = current.request?.subject
+    if (subject === 'installed' && current.request !== undefined) {
+      if (ours) {
+        await saveOwn(decided)
+        await closeOwn($, decided)
+      }
+      if (decision === 'rejected') await turnOff($, current.request)
+      else $.ui.toast(`AI Install Guard: kept ${current.target}; it stays on`)
+      return
+    }
+    if (!ours) {
       $.ui.toast(`AI Install Guard: ${decision} ${current.target}, but ${movedOn}${held !== undefined && decision === 'approved' ? '; run the install again and it goes through' : ''}`)
       return
     }
@@ -152,7 +171,6 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       return
     }
     // A mod kept from loading loads once the plugins are read again; a held skill, once it is used again.
-    const subject = current.request?.subject
     const loads = subject === 'load' ? (decision === 'approved' ? '; run /reload-plugins to load it' : '; it stays off') : subject === 'skill' ? (decision === 'approved' ? '; ask Claude to use it again' : '; it stays off') : ''
     $.ui.toast(`AI Install Guard: ${decision === 'approved' ? 'approved' : 'rejected'} ${current.target}${held === undefined ? loads : '; nothing was installed'}`)
     await closeOwn($, decided)
@@ -241,7 +259,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
           {(view.treeHash !== undefined || (view.action === 'install' && view.request !== undefined)) && (
             <Button key="install" label={primaryLabel(view)} hotkey="i" variant={needsConfirmation(view) ? 'secondary' : 'primary'} onPress={primary} />
           )}
-          <Button key="reject" label="Reject" hotkey="r" variant={needsConfirmation(view) ? 'primary' : 'secondary'} onPress={decide('rejected', false)} />
+          <Button key="reject" label={rejectLabel(view)} hotkey="r" variant={needsConfirmation(view) ? 'primary' : 'secondary'} onPress={decide('rejected', false)} />
           <Button key="details" label={view.details ? 'Fewer details' : 'Details'} hotkey="d" onPress={() => update($, viewAtom, current => (current === null ? current : { ...current, details: !current.details }))} />
           <Button key="copy" label="Copy report" hotkey="c" onPress={copy} />
           {offersBadge && <Button key="badge" label="Copy badge" hotkey="b" onPress={copyBadge} />}
@@ -416,6 +434,24 @@ async function carryOut($: EngineInterface, held: GuardRequest, view: GuardView)
   } finally {
     // A pass the gate did not use up is not left for a later command.
     await takePass($, { origin: 'command', args: held.args }).catch(() => undefined)
+  }
+}
+
+/**
+ * Turns off a plugin found on that the person rejected, with their own
+ * /plugin command, as if they typed it. `args` holds its id, or nothing when
+ * the id is not one a command can name.
+ */
+async function turnOff($: EngineInterface, request: GuardRequest): Promise<void> {
+  if (request.args === '') {
+    $.ui.toast(`AI Install Guard: rejected ${request.label}; turn it off in /plugin`)
+    return
+  }
+  $.ui.toast(`AI Install Guard: rejected ${request.label}; turning it off`)
+  try {
+    await $.command.run({ command: 'plugin', args: `disable ${request.args}` })
+  } catch {
+    $.ui.toast(`AI Install Guard: rejected ${request.label}, but it could not be turned off from here. Run /plugin disable ${safeLine(request.args)}`)
   }
 }
 

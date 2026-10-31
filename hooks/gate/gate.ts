@@ -6,7 +6,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { GuardRequest } from '../../types'
-import { decisionFor, pinnedDecision } from '../guard/decisions'
+import { decisionFor, noteChecked, pinnedDecision } from '../guard/decisions'
 import { takePass } from '../guard/passes'
 import { scanOnly, showScan, showUnverified, type ScanHow, type ShowOptions, type Shown } from '../guard/run'
 import type { Host } from '../scan/host'
@@ -25,7 +25,6 @@ import { safeLine } from '../scan/safe-text'
 import type { VerdictKind } from '../scan/verdict'
 import type { InstallRequest, Reading } from './requests'
 import { targetOf } from './resolve'
-import { noteChecked } from './skill'
 
 export type Judgement =
   /** The install goes through; `note` says why, for a toast. */

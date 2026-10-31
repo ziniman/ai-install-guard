@@ -27,6 +27,14 @@ const REPORT_TEXT = 'last-report-text'
 const LAST_VIEW = 'last-view'
 /** The store is capped at 4 MiB in all: keep the newest decisions only. */
 const MAX_DECISIONS = 500
+/**
+ * What was checked and named, by tree hash, so each is named once: skills,
+ * and plugins found on at the start of a session; `rejected <hash>` for a
+ * plugin on although you rejected its files. The key keeps its first name,
+ * so what was named before is not named again.
+ */
+const CHECKED = 'skills-checked'
+const MAX_CHECKED = 300
 /** How serious each verdict is, to tell whether an approval still covers it. */
 const SEVERITY: Record<GuardVerdict['kind'], number> = { safe: 0, caution: 1, unverified: 2, reject: 3 }
 
@@ -91,6 +99,28 @@ export async function decisionFor($: EngineInterface, version: { treeHash: strin
  */
 export async function pinnedDecision($: EngineInterface, pin: { root: string; sha: string }): Promise<Decision | undefined> {
   return (await loadDecisions($)).find(item => item.sha === pin.sha && item.root === pin.root)
+}
+
+async function loadChecked($: EngineInterface): Promise<string[]> {
+  const stored = await $.store.get(CHECKED)
+  return Array.isArray(stored) ? (stored as unknown[]).filter((item): item is string => typeof item === 'string') : []
+}
+
+/**
+ * Remembers that the files with this tree hash were checked and named, and
+ * says whether it is the first time. A skill Claude wrote with no red flags
+ * was named as it was written, so its first use names it no more.
+ */
+export async function noteChecked($: EngineInterface, treeHash: string): Promise<boolean> {
+  const checked = await loadChecked($)
+  if (checked.includes(treeHash)) return false
+  await $.store.set(CHECKED, [treeHash, ...checked].slice(0, MAX_CHECKED))
+  return true
+}
+
+/** Whether the files with this tree hash were checked and named before. */
+export async function wasChecked($: EngineInterface, treeHash: string): Promise<boolean> {
+  return (await loadChecked($)).includes(treeHash)
 }
 
 /**

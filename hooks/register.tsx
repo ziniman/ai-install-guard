@@ -2,7 +2,8 @@ import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
-import { failedLoad, heldReport, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
+import { checkAtStart, waitingReport, type FoundPlugin } from './gate/installed'
+import { failedLoad, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
 import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
 import { failedSkill, judgeByName, judgeSkill } from './gate/skill'
 import { readPluginArgs, readShellCommand } from './gate/requests'
@@ -34,7 +35,7 @@ const USAGE = [
   '  /guard report                 Reopen the last report',
   '  /guard badge                  A README badge for the last scan (No red flags or Worth a look)',
   '  /guard list                   Your approved and rejected versions',
-  '  /guard held                   The mods kept from loading in this session, the next one in the pane',
+  '  /guard held                   The mods kept from loading and the plugins on that wait for you, the next one in the pane',
   '  /guard forget <name>          Forget decisions about a name, so it is judged again',
 ].join('\n')
 
@@ -53,6 +54,11 @@ export const register: Register = (on, options) => {
   const announced = new Set<string>()
   /** Whether the session has started, so a mod kept out at a reload can be shown at once. */
   let started = false
+  /** The plugins on in this session whose files you have not approved, as the session-start check found them. */
+  let found: FoundPlugin[] = []
+  /** The session-start check once it has begun, so a reload, which starts the session's hooks again, does not run it twice, and /guard held can wait for it. */
+  let checking: Promise<void> | undefined
+
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
     projectDir = e.cwd
@@ -68,6 +74,14 @@ export const register: Register = (on, options) => {
     if (fresh.length > 0) $.ui.toast(heldToast(fresh))
     const first = toReview(fresh)
     if (first !== undefined) await reviewHeld($, first, lookups).catch(() => undefined)
+    // Gate F: every plugin installed and on, compared with what you approved,
+    // beside the session rather than before its first prompt. Only with a
+    // person at the prompt: a headless run has no pane to show what it finds.
+    if (e.isInteractive && checking === undefined) {
+      checking = checkAtStart($, { held, own: $.plugin.root, paneTaken: first !== undefined, lookups }).then(check => {
+        found = check
+      })
+    }
     return next(e)
   })
 
@@ -111,7 +125,11 @@ export const register: Register = (on, options) => {
     if (sub === 'report') return { text: await reopen($) }
     if (sub === 'badge') return { text: await badge($) }
     if (sub === 'list') return { text: await list($) }
-    if (sub === 'held') return { text: await heldReport($, held, lookups) }
+    if (sub === 'held') {
+      // A check still running at the start of the session is waited for, so the list is whole.
+      await checking
+      return { text: await waitingReport($, held, found, lookups) }
+    }
     if (sub === 'forget' && rest !== '') {
       const count = (await forgetDecisions($, rest, await landedName($, rest))).length
       return { text: `AI Install Guard: forgot ${count} decision${count === 1 ? '' : 's'} about ${safeLine(rest)}.` }

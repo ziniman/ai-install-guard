@@ -12,7 +12,7 @@ The guard holds what is about to be added to Claude Code, whether you add it or 
 | Claude's own shell commands | Files written, copied, moved, linked, cloned, downloaded or unpacked into those folders and files with the shell (`>`, `tee`, `cp`, `mv`, `ln`, `rsync`, `git clone`, `curl -o`, `wget`, `unzip`, `tar -x`, `sed -i`) | Text Claude writes is checked as a Write of it would be; a file or folder copied in, or a repository cloned, is scanned and waits for you; what cannot be known before it runs (a download, an archive, a link) is Could not verify | Yes |
 | Mod loading | Any mod that loads after the guard, however it got there: the `/plugin` menu, an update, files changed in place | Kept from loading until its files are a version you approved, and shown in the pane | Yes |
 | First use of a skill | Skills and commands that came with no install: a repository's own, ones you copied in, ones synced from your account | Checked before it runs (your `/name`, Claude's Skill tool) and again as it loads: no red flags runs, named once; anything else is held in the pane, and nothing in it runs | Yes |
-| Session start | Anything installed while the guard was not running | Scanned, with Keep or Uninstall | Later |
+| Session start | Plugins on that the guard never checked: an update Claude Code made on its own, an install from a terminal, a mod that loaded before the guard | Scanned beside the session: no red flags is named once; a red flag, or a mod you never approved, waits in the pane with Keep and Turn off | Yes |
 
 ## Installing with the guard on
 
@@ -66,7 +66,7 @@ Whenever Claude Code is about to load a mod (a plugin with a hooks module), as a
 
 The pane scans the first mod kept out, with **Approve** and **Reject**, and `/guard held` lists every mod kept out in the session and opens the next. Once you approve one, run `/reload-plugins` (or start a new session) and it loads. Files you rejected stay out without asking again, until `/guard forget <name>`. A folder the guard cannot read stays out as Could not verify.
 
-The guard judges only the mods that load after it. Claude Code loads the folders given with `--plugin-dir` first, then installed plugins in the order your settings list them (`enabledPlugins`), so a mod installed before the guard is not judged as it loads; the session-start check, in a later stage, covers those. An administrator's managed plugins and the ones bundled with Claude Code load as they are. This gate stops a mod's hooks module only: the skills, classic hooks and MCP servers of the same plugin are covered by the install gates, and later by the session-start gate. The `.in_use` marks Claude Code keeps in an installed plugin's folder are not part of what is compared.
+The guard judges only the mods that load after it. Claude Code loads the folders given with `--plugin-dir` first, then installed plugins in the order your settings list them (`enabledPlugins`), so a mod installed before the guard is not judged as it loads; the [check at the start of a session](#at-the-start-of-a-session) covers those. An administrator's managed plugins and the ones bundled with Claude Code load as they are. This gate stops a mod's hooks module only: the skills, classic hooks and MCP servers of the same plugin are covered by the install gates and by the check at the start of a session. The `.in_use` marks Claude Code keeps in an installed plugin's folder are not part of what is compared.
 
 ## A skill's first use
 
@@ -79,5 +79,18 @@ A skill can arrive without any install: a repository you clone brings its `.clau
 As its instructions load for the model, the guard checks the skill once more. That catches one found anywhere else, such as a skill a subagent preloads: Claude then reads, in place of the instructions, that it was held. By that point its inline commands have run.
 
 A plugin's skills load as they are: they are judged with the plugin as a whole when it installs, and a skill's folder scanned alone is cut off from the rest of its plugin (a link into the plugin's own files would look like one leaving it). Claude Code's own skills, an administrator's, and an MCP server's prompts, which have no file on this machine, load as they are too.
+
+## At the start of a session
+
+Claude Code adds plugins no gate sees: an update it makes on its own, a plugin installed from a terminal while no session ran, a mod that loads before the guard. So as each session starts, the guard lists the plugins installed and on, and hashes each one's folder. It does this beside the session: the first prompt does not wait for it.
+
+- **Files you approved** (through an install it held, a `/guard scan`, the mod loading gate, or this check) are left alone, and so are files it checked before with no red flags.
+- **No red flags:** a note names it once.
+- **A red flag, or a mod whose files you never approved:** it waits in the pane with **Keep** and **Turn off**. Keep records your approval for those exact files. Turn off records the rejection and runs `/plugin disable <name>@<marketplace>` for you. It waits again each session until you decide; `/guard held` lists what waits and is still on, and opens the next, unless the pane holds a verdict still waiting for you. A plugin you rejected that is on all the same is named once for each rejection.
+- **A folder it cannot read** waits as Could not verify; Turn off still turns it off.
+
+The first check on a machine names everything already on in one note and opens no pane, since you chose those plugins before the guard looked at them; `/guard held` opens each one to look at, in that session or a later one, without the guard naming them again. From then on, a plugin that is new or has changed is checked as a session starts.
+
+By the time the check runs, the plugin's classic hooks and MCP servers have started for this session: the check tells you, and Turn off keeps them from the next. It leaves out the mods the loading gate already kept out, an administrator's plugins and the guard itself. A headless run (`claude -p`) is not checked, since no pane can show what it finds.
 
 [Back to the documentation](README.md)

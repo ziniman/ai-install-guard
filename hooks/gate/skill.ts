@@ -9,7 +9,7 @@
 import type { EngineInterface, SkillPromptInput } from 'claude-code'
 
 import type { GuardRequest } from '../../types'
-import { decisionFor, type Decision } from '../guard/decisions'
+import { decisionFor, noteChecked, type Decision } from '../guard/decisions'
 import { scanOnly, showScan, type ScanHow, type Shown } from '../guard/run'
 import { modHost } from '../mod-host'
 import type { Host } from '../scan/host'
@@ -29,10 +29,6 @@ export type SkillFile = { path: string; source: 'projectSettings' | 'userSetting
  * a whole (a skill's folder read alone is cut off from the rest of it).
  */
 const NOT_JUDGED = new Set(['built-in', 'policySettings', 'plugin'])
-
-/** The skills already named as checked, by tree hash, so each is named once: the store is 4 MiB in all. */
-const CHECKED = 'skills-checked'
-const MAX_CHECKED = 300
 
 /** What a skill is scanned as: its folder, or a command's one file. */
 type Candidate = { label: string; how: ScanHow } | { label: string; unreadable: string }
@@ -61,19 +57,6 @@ export async function judgeSkill($: EngineInterface, e: Pick<SkillPromptInput, '
   if (earlier?.decision === 'approved') return { kind: 'allow' }
   const request: GuardRequest = { origin: 'tool', args: '', label: candidate.label, subject: 'skill', display: `Held on its first use until you decide: ${candidate.label}` }
   return afterShown(candidate.label, await showScan($, candidate.label, candidate.how, { action: 'approve', request, lookups, report }))
-}
-
-/**
- * Remembers that the skill with this tree hash was checked and named, and
- * says whether it is the first time. A skill Claude wrote with no red flags
- * was named as it was written, so its first use names it no more.
- */
-export async function noteChecked($: EngineInterface, treeHash: string): Promise<boolean> {
-  const stored = await $.store.get(CHECKED)
-  const checked = Array.isArray(stored) ? (stored as unknown[]).filter((item): item is string => typeof item === 'string') : []
-  if (checked.includes(treeHash)) return false
-  await $.store.set(CHECKED, [treeHash, ...checked].slice(0, MAX_CHECKED))
-  return true
 }
 
 /**
