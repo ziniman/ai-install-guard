@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## Unreleased
+
+**Session start** - The check as a session starts now also reads your configuration: each MCP server in `~/.claude.json` and this folder's `.mcp.json`, and what your own and this folder's settings files run on their own (hooks, the status line, helper commands). That catches what a `git pull` or another program's installer adds outside Claude. It reads the files and runs nothing. A server with no red flags is named once; one with a red flag, or a settings file that runs something you have not approved, waits in the pane with Keep and Reject. Keep approves what a settings file runs, not the whole file, and a later change shows only what it adds or takes away. The guard never edits your configuration: Reject on a server makes it refuse that server's tools and tells you the command that removes it
+
+**`/guard held`** - Also lists the MCP servers and settings files in your configuration that wait for your decision
+
 ## v0.8.7 &nbsp;·&nbsp; 2026-10-31
 
 **Session start** - As a session starts, the guard checks every plugin installed and on, beside the session so the first prompt does not wait. That catches what no gate sees: an update Claude Code made on its own, a plugin installed from a terminal while no session ran, a mod that loaded before the guard. Files you approved, or checked before with no red flags, are left alone. A new or changed plugin with no red flags is named once; one with a red flag, or a mod you never approved, waits in the pane with Keep and Turn off, which runs `/plugin disable` for it. The first check on a machine names what was already on in one note and opens no pane, since you chose those plugins before the guard looked

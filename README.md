@@ -31,7 +31,7 @@ AI Install Guard lives inside Claude Code instead. When something new is about t
 - **Pinned.** A verdict belongs to one commit and content hash, and only that version installs.
 - **Local and open.** No account or server, and every check is in this repository.
 
-It holds `/plugin install` and `/plugin marketplace add`, and, when Claude does them: plugin installs, MCP servers it adds, skills, commands and agents it writes with a red flag, settings changes that widen what it may run, and the same changes made with a shell command. A mod that loads with files you never approved (picked from the `/plugin` menu, updated on its own, changed in place) is kept off until you approve it, a skill that came with no install (from a repository you cloned, copied in by hand) is checked as it is first used, and a plugin that is on but new or changed since the guard last looked (updated on its own, installed from a terminal) is checked as a session starts. A plugin picked from the menu is not scanned before it installs, so type `/plugin install <name>@<marketplace>` instead. [Where it steps in](docs/gates.md) has every case.
+It holds `/plugin install` and `/plugin marketplace add`, and, when Claude does them: plugin installs, MCP servers it adds, skills, commands and agents it writes with a red flag, settings changes that widen what it may run, and the same changes made with a shell command. A mod that loads with files you never approved (picked from the `/plugin` menu, updated on its own, changed in place) is kept off until you approve it, a skill that came with no install (from a repository you cloned, copied in by hand) is checked as it is first used, and a plugin that is on but new or changed since the guard last looked (updated on its own, installed from a terminal) is checked as a session starts, as are the MCP servers and hooks in your configuration (brought by a `git pull`, written by another program's installer). A plugin picked from the menu is not scanned before it installs, so type `/plugin install <name>@<marketplace>` instead. [Where it steps in](docs/gates.md) has every case.
 
 ## Using it
 
@@ -51,7 +51,7 @@ To check something before you install it anywhere:
 | `/guard scan <folder or repository>` | Scan it without installing it |
 | `/guard report` | Reopen the last report |
 | `/guard list` | Your approved and rejected versions |
-| `/guard held` | The mods kept from loading, and the plugins on that wait for your decision |
+| `/guard held` | The mods kept from loading, and the plugins and configuration that wait for your decision |
 | `/guard forget <name>` | Forget a decision, so it is judged again |
 
 The same scanner also runs in Claude chat, as a skill: [Use it in Claude chat](docs/claude-chat.md). For everything else, see [How it works](docs/how-it-works.md), [Commands and the pane](docs/commands.md) and the rest of [the documentation](docs/README.md).
@@ -94,7 +94,7 @@ More, including your stored decisions and installs for one project only: [Uninst
 
 ## Status
 
-Early development. The gates above work today; next, the check at the start of a session extends to MCP servers and hooks in your configuration files. See the [roadmap](docs/roadmap.md).
+Early development. The gates above work today; next, an update shows what changed since the version you approved, and an optional model review can add warnings. See the [roadmap](docs/roadmap.md).
 
 ## Contributing
 

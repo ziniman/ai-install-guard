@@ -12,7 +12,7 @@
 10. [x] Mod load gate: a mod loads only when its files are a version you approved
 11. [x] Skill gate on first use: a skill that came with no install loads only with no red flags, or once you approve it
 12. [x] Session-start check of the plugins installed and on
-13. [ ] Session-start check of MCP servers and hooks in your configuration and settings files
+13. [x] Session-start check of MCP servers and hooks in your configuration and settings files
 14. [ ] Update diffs and the optional model review
 15. [x] Documentation
 
