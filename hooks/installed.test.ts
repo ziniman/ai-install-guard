@@ -51,9 +51,10 @@ function decision(id: string, treeHash: string, decision: 'approved' | 'rejected
  */
 function world(on: On, plugins: Plugin[], options: { listing?: 'fails'; unreadable?: (path: string) => boolean } = {}): { commands: string[]; listed: () => number } {
   const files: FixtureFiles = {}
-  for (const plugin of plugins) for (const [rel, file] of Object.entries(plugin.files)) files[`${folderOf(plugin.id)}/${rel}`] = file
+  // Laid out in the home folder, so the configuration the check reads next is there to be found missing.
+  for (const plugin of plugins) for (const [rel, file] of Object.entries(plugin.files)) files[`${CACHE.slice(HOME.length + 1)}/${folderOf(plugin.id)}/${rel}`] = file
   let listings = 0
-  serveFixture(on, CACHE, files, {
+  serveFixture(on, HOME, files, {
     unreadable: options.unreadable,
     run: argv => {
       if (argv.join(' ') === 'claude plugin list --json') {
@@ -101,7 +102,7 @@ describe('gate F: the plugins on at the start of a session', () => {
     const held = await start($)
     expect(ui.toasts).toEqual(['AI Install Guard checked 1 plugin new since it last looked: no red flags (notes@acme).'])
     expect(ui.opened).toEqual([])
-    expect(held).toBe('AI Install Guard: no mod was kept from loading in this session, and no plugin on waits for a decision.')
+    expect(held).toBe('AI Install Guard: no mod was kept from loading in this session, and no plugin or configuration waits for a decision.')
     // Remembered, so the next session names it no more.
     expect(stored.get('skills-checked')).toEqual([await treeOf(CLEAN)])
   })
@@ -210,7 +211,7 @@ describe('gate F: the plugins on at the start of a session', () => {
     // Turned off, it waits no more: /guard held leaves it out and opens nothing.
     notes.enabled = false
     const opened = ui.opened.length
-    expect((await $.command.run(typed('guard', 'held'))).text).toBe('AI Install Guard: no mod was kept from loading in this session, and no plugin on waits for a decision.')
+    expect((await $.command.run(typed('guard', 'held'))).text).toBe('AI Install Guard: no mod was kept from loading in this session, and no plugin or configuration waits for a decision.')
     expect(ui.opened.length).toBe(opened)
   })
 

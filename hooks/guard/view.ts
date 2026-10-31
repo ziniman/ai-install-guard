@@ -80,7 +80,8 @@ export function needsConfirmation(view: GuardView): boolean {
 
 /** The primary button's label for this verdict. */
 export function primaryLabel(view: GuardView): string {
-  const verb = view.action === 'install' ? 'Install' : view.request?.subject === 'installed' ? 'Keep' : 'Approve'
+  // What is on already, a plugin or part of your configuration, is kept.
+  const verb = view.action === 'install' ? 'Install' : view.request?.subject === 'installed' || view.request?.subject === 'configured' ? 'Keep' : 'Approve'
   return needsConfirmation(view) ? `${verb} anyway` : verb
 }
 
