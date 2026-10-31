@@ -18,6 +18,7 @@ import type { Host } from '../scan/host'
 import { takeInventory } from '../scan/inventory'
 import { safeLine } from '../scan/safe-text'
 import type { ScanReport } from '../scan/scan'
+import { checkConfigured, configStatus, configToast, configuredNow, reviewConfig, toReviewConfig, type ConfigCheck, type ConfigPlace, type FoundConfig } from './configured'
 import { day, heldReport, heldStatus, PANE_BUSY, reviewHeld, type HeldMod } from './load'
 import { claudeJson } from './resolve'
 
@@ -153,30 +154,46 @@ async function loadBaseline($: EngineInterface): Promise<Baseline | undefined> {
   return { at: isRecord(stored) && typeof stored.at === 'number' ? stored.at : 0, waiting }
 }
 
+/** What the check at the start of a session found waiting: plugins on, and MCP servers and settings files in your configuration. */
+export type StartCheck = { plugins: FoundPlugin[]; configs: FoundConfig[] }
+
 /**
- * The check as a session starts, run beside it: what it finds is named in a
- * toast, and the first plugin to review is opened in the pane, unless this is
- * the first check on this machine, a held mod has the pane (`paneTaken`) or a
- * scan there still waits for you. `own` is the
- * guard's own folder. Resolves with the plugins that wait, for /guard held; a
- * failure is named, never thrown.
+ * The check as a session starts, run beside it: the plugins on, then your
+ * configuration. What it finds is named in one toast, and the first one to
+ * review is opened in the pane, unless this is the first check on this
+ * machine, a held mod has the pane (`paneTaken`) or a scan there still waits
+ * for you. `own` is the guard's own folder. Resolves with what waits, for
+ * /guard held; a failure is named, never thrown.
  */
-export async function checkAtStart($: EngineInterface, options: { held: readonly HeldMod[]; own: string; paneTaken: boolean; lookups: boolean }): Promise<FoundPlugin[]> {
-  $.ui.status('AI Install Guard: checking the plugins that are on')
+export async function checkAtStart($: EngineInterface, options: { held: readonly HeldMod[]; own: string; paneTaken: boolean; lookups: boolean; place: () => Promise<ConfigPlace> }): Promise<StartCheck> {
+  const failed: string[] = []
+  const reason = (error: unknown): string => safeLine(error instanceof Error ? error.message : String(error))
+  $.ui.status('AI Install Guard: checking the plugins and configuration that are on')
+  let plugins: InstalledCheck | undefined
+  let configs: ConfigCheck | undefined
   try {
-    const check = await checkInstalled($, { skip: new Set(options.held.map(mod => mod.root)), own: options.own, lookups: options.lookups })
+    plugins = await checkInstalled($, { skip: new Set(options.held.map(mod => mod.root)), own: options.own, lookups: options.lookups }).catch((error: unknown) => {
+      failed.push(`AI Install Guard could not check the plugins that are on: ${reason(error)}`)
+      return undefined
+    })
+    configs = await options
+      .place()
+      .then(place => checkConfigured($, place, options.lookups))
+      .catch((error: unknown) => {
+        failed.push(`AI Install Guard could not check the MCP servers and settings in your configuration: ${reason(error)}`)
+        return undefined
+      })
+  } finally {
     $.ui.status(undefined)
-    const first = options.paneTaken || check.baseline ? undefined : toReviewFound(check.found)
-    // Opened only on a free pane, so the toast says what the pane shows.
-    const opens = first !== undefined && (await reviewFound($, first, options.lookups, true))
-    const toast = checkToast(check, opens)
-    if (toast !== undefined) $.ui.toast(toast)
-    return check.found
-  } catch (error) {
-    $.ui.status(undefined)
-    $.ui.toast(`AI Install Guard could not check the plugins that are on: ${safeLine(error instanceof Error ? error.message : String(error))}`)
-    return []
   }
+  const plugin = options.paneTaken || plugins === undefined || plugins.baseline ? undefined : toReviewFound(plugins.found)
+  const config = options.paneTaken || plugin !== undefined || configs === undefined || configs.baseline ? undefined : toReviewConfig(configs.found)
+  // Opened only on a free pane, so the toast says what the pane shows.
+  const opens = plugin !== undefined ? await reviewFound($, plugin, options.lookups, true) : config !== undefined && (await reviewConfig($, config, options.lookups))
+  const toasts = [plugins === undefined ? undefined : checkToast(plugins, opens && plugin !== undefined), configs === undefined ? undefined : configToast(configs, opens && config !== undefined), ...failed]
+  const toast = toasts.filter((text): text is string => text !== undefined).join(' ')
+  if (toast !== '') $.ui.toast(toast)
+  return { plugins: plugins?.found ?? [], configs: configs?.found ?? [] }
 }
 
 /** The plugins installed and on, from Claude Code's own listing; an administrator's left out. */
@@ -237,28 +254,39 @@ export async function reviewFound($: EngineInterface, plugin: FoundPlugin, looku
 }
 
 /**
- * What `/guard held` answers: the mods kept from loading and the plugins
- * found on that you have not approved and that are still on, each with where
- * it stands, and the first one still undecided opened in the pane, unless the
- * pane holds a verdict still waiting for you.
+ * What `/guard held` answers: the mods kept from loading, the plugins found
+ * on and the parts of your configuration found that you have not approved,
+ * each with where it stands, and the first one still undecided opened in the
+ * pane, unless the pane holds a verdict still waiting for you. A plugin no
+ * longer on, or a server or settings file no longer as it was found, waits
+ * no more.
  */
-export async function waitingReport($: EngineInterface, held: readonly HeldMod[], found: readonly FoundPlugin[], lookups: boolean): Promise<string> {
-  // A plugin turned off since it was found no longer waits; when the listing fails, every one is kept.
-  const on = found.length === 0 ? undefined : await installedPlugins(modHost($)).then(list => new Set(list.map(plugin => trimmed(plugin.root))), () => undefined)
-  const current = on === undefined ? found : found.filter(plugin => on.has(trimmed(plugin.root)))
-  if (current.length === 0) return heldReport($, held, lookups)
+export async function waitingReport($: EngineInterface, held: readonly HeldMod[], found: StartCheck, lookups: boolean, place: ConfigPlace): Promise<string> {
+  // When a listing fails, every one is kept.
+  const on = found.plugins.length === 0 ? undefined : await installedPlugins(modHost($)).then(list => new Set(list.map(plugin => trimmed(plugin.root))), () => undefined)
+  const plugins = on === undefined ? found.plugins : found.plugins.filter(plugin => on.has(trimmed(plugin.root)))
+  const now = found.configs.length === 0 ? undefined : await configuredNow($, place).catch(() => undefined)
+  // One that could not be read is named until it can be.
+  const configs = now === undefined ? found.configs : found.configs.filter(item => item.treeHash === undefined || now.has(item.treeHash))
+  if (plugins.length === 0 && configs.length === 0) return heldReport($, held, lookups)
   const decisions = await loadDecisions($)
   const mods = heldStatus(held, decisions)
-  const plugins = foundStatus(current, decisions)
+  const onNow = foundStatus(plugins, decisions)
+  const configured = configStatus(configs, decisions)
   const parts: string[] = []
+  const lead = (): string => (parts.length > 0 ? 'It' : 'AI Install Guard')
   if (held.length > 0) parts.push(`AI Install Guard kept ${held.length === 1 ? '1 mod' : `${held.length} mods`} from loading in this session:\n${mods.lines.join('\n')}`)
-  parts.push(`${held.length > 0 ? 'It' : 'AI Install Guard'} found ${count(current.length)} on in this session that you have not approved:\n${plugins.lines.join('\n')}`)
+  if (plugins.length > 0) parts.push(`${lead()} found ${count(plugins.length)} on in this session that you have not approved:\n${onNow.lines.join('\n')}`)
+  if (configs.length > 0) parts.push(`${lead()} found ${configs.length === 1 ? 'this' : 'these'} in your configuration that you have not approved:\n${configured.lines.join('\n')}`)
   if (mods.next !== undefined) {
     const shown = await reviewHeld($, mods.next, lookups, true)
     parts.push(shown ? `${mods.next.label} is in the guard's pane. Approve it there, then run /reload-plugins to load it. Run /guard held again for the next one.` : PANE_BUSY)
-  } else if (plugins.next !== undefined) {
-    const shown = await reviewFound($, plugins.next, lookups, true)
-    parts.push(shown ? `${plugins.next.label} is in the guard's pane: keep it, or turn it off there. Run /guard held again for the next one.` : PANE_BUSY)
+  } else if (onNow.next !== undefined) {
+    const shown = await reviewFound($, onNow.next, lookups, true)
+    parts.push(shown ? `${onNow.next.label} is in the guard's pane: keep it, or turn it off there. Run /guard held again for the next one.` : PANE_BUSY)
+  } else if (configured.next !== undefined) {
+    const shown = await reviewConfig($, configured.next, lookups)
+    parts.push(shown ? `The ${configured.next.label} is in the guard's pane: keep it, or reject it there. Run /guard held again for the next one.` : PANE_BUSY)
   } else {
     parts.push('Each is decided.')
   }

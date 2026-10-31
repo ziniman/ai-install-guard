@@ -44,8 +44,8 @@ export type GuardRequest = {
   args: string
   /** What it installs, as the pane names it. */
   label: string
-  /** An install (the default), a file Claude writes into a place Claude Code loads from, a shell command that changes one, a mod kept from loading, a skill held on its first use, or a plugin found on at the start of a session (`args` its id, for Turn off). */
-  subject?: 'install' | 'write' | 'command' | 'load' | 'skill' | 'installed'
+  /** An install (the default), a file Claude writes into a place Claude Code loads from, a shell command that changes one, a mod kept from loading, a skill held on its first use, a plugin found on at the start of a session (`args` its id, for Turn off), or an MCP server or settings file found in your configuration then (`args` its key: `mcp <scope> <name>`, `settings <path>` or `file <path>`). */
+  subject?: 'install' | 'write' | 'command' | 'load' | 'skill' | 'installed' | 'configured'
   /** The pane's line for what Claude asked for, when `args` is not one to show (a write's path, not its content). */
   display?: string
 }

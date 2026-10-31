@@ -109,7 +109,7 @@ export async function reviewHeld($: EngineInterface, mod: HeldMod, lookups: bool
  * approved since loads after /reload-plugins; one rejected stays out.
  */
 export async function heldReport($: EngineInterface, held: readonly HeldMod[], lookups: boolean): Promise<string> {
-  if (held.length === 0) return 'AI Install Guard: no mod was kept from loading in this session, and no plugin on waits for a decision.'
+  if (held.length === 0) return 'AI Install Guard: no mod was kept from loading in this session, and no plugin or configuration waits for a decision.'
   const { lines, next } = heldStatus(held, await loadDecisions($))
   if (next === undefined) return `AI Install Guard kept ${count(held.length)} from loading in this session, and each is decided:\n${lines.join('\n')}`
   if (!(await reviewHeld($, next, lookups, true))) return `AI Install Guard kept ${count(held.length)} from loading in this session:\n${lines.join('\n')}\n\n${PANE_BUSY}`
