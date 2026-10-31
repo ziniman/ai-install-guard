@@ -121,8 +121,10 @@ export const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'no
 /**
  * Programs that only print, read or wait: an install's words among their
  * arguments are text, and running one beside an install adds nothing to it.
+ * `command` is one only as `command -v` or `-V`, which says what a name would
+ * run; `programAt` goes past any other `command` to the program it runs.
  */
-export const QUIET = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'less', 'more', 'jq', 'sort', 'uniq', 'wc', 'tr', 'cut', 'ls', 'pwd', 'true', 'false', 'sleep', 'test', '[', 'date', 'which', 'type', 'column', 'nl', 'fold'])
+export const QUIET = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'less', 'more', 'jq', 'sort', 'uniq', 'wc', 'tr', 'cut', 'ls', 'pwd', 'true', 'false', 'sleep', 'test', '[', 'date', 'which', 'type', 'command', 'column', 'nl', 'fold'])
 
 /** A quiet program that writes a file all the same: `sort -o`, `uniq in out`. */
 function writesAnyway(program: string, args: readonly string[]): boolean {
@@ -134,15 +136,17 @@ function writesAnyway(program: string, args: readonly string[]): boolean {
 /**
  * Programs that run the command that follows their own options: the options
  * that take a value, how many plain words come before the command, whether
- * `NAME=value` words may come first, and whether the command's words come in
- * part from input (xargs).
+ * `NAME=value` words may come first, whether the command's words come in
+ * part from input (xargs), and an option with which they run nothing at all
+ * (`lookup`).
  */
-type Wrapper = { values?: readonly string[]; positionals?: number; assignments?: boolean; fromInput?: boolean; script?: readonly string[] }
+type Wrapper = { values?: readonly string[]; positionals?: number; assignments?: boolean; fromInput?: boolean; script?: readonly string[]; lookup?: RegExp }
 const WRAPPERS: Record<string, Wrapper> = {
   env: { values: ['-u', '--unset', '-C', '--chdir'], assignments: true, script: ['-S', '--split-string'] },
   sudo: { values: ['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from', '-D', '--chdir', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-U', '--other-user'], assignments: true },
   doas: { values: ['-u', '-C'] },
-  command: {},
+  // `command -v`, `-V` and `-pv` only say what a name would run.
+  command: { lookup: /^-[pvV]*[vV][pvV]*$/ },
   exec: { values: ['-a'] },
   nohup: {},
   time: {},
@@ -242,9 +246,10 @@ const BRACES = /\{[^}]*(?:,|\.\.)[^}]*\}/
 
 /**
  * Where the program of a simple command is: after `NAME=value` words and
- * any wrappers with their options. `scripts` are strings a wrapper runs as
- * shell text (`env -S`); `fromInput` is set when its words come in part
- * from input (`xargs`).
+ * any wrappers with their options. A wrapper given an option with which it
+ * runs nothing (`command -v`) is the program itself. `scripts` are strings a
+ * wrapper runs as shell text (`env -S`); `fromInput` is set when its words
+ * come in part from input (`xargs`).
  */
 export function programAt(words: readonly string[]): { index: number; scripts: string[]; fromInput: boolean } {
   const scripts: string[] = []
@@ -255,6 +260,7 @@ export function programAt(words: readonly string[]): { index: number; scripts: s
     const wrapper = WRAPPERS[programName(words[index])]
     if (wrapper === undefined) break
     fromInput ||= wrapper.fromInput === true
+    const own = index
     index += 1
     let plain = wrapper.positionals ?? 0
     while (index < words.length) {
@@ -268,6 +274,7 @@ export function programAt(words: readonly string[]): { index: number; scripts: s
         continue
       }
       if (word.startsWith('-') && word !== '-') {
+        if (wrapper.lookup?.test(word) === true) return { index: own, scripts, fromInput }
         const name = word.includes('=') ? word.slice(0, word.indexOf('=')) : word
         const takesValue = !word.includes('=') && ((wrapper.values ?? []).includes(name) || (wrapper.script ?? []).includes(name))
         if ((wrapper.script ?? []).includes(name)) scripts.push(word.includes('=') ? word.slice(word.indexOf('=') + 1) : (words[index + 1] ?? ''))
