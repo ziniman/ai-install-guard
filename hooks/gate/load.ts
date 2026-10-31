@@ -104,8 +104,15 @@ export async function reviewHeld($: EngineInterface, mod: HeldMod, lookups: bool
  * approved since loads after /reload-plugins; one rejected stays out.
  */
 export async function heldReport($: EngineInterface, held: readonly HeldMod[], lookups: boolean): Promise<string> {
-  if (held.length === 0) return 'AI Install Guard: no mod was kept from loading in this session.'
-  const decisions = await loadDecisions($)
+  if (held.length === 0) return 'AI Install Guard: no mod was kept from loading in this session, and no plugin on waits for a decision.'
+  const { lines, next } = heldStatus(held, await loadDecisions($))
+  if (next === undefined) return `AI Install Guard kept ${count(held.length)} from loading in this session, and each is decided:\n${lines.join('\n')}`
+  await reviewHeld($, next, lookups)
+  return `AI Install Guard kept ${count(held.length)} from loading in this session:\n${lines.join('\n')}\n\n${next.label} is in the guard's pane. Approve it there, then run /reload-plugins to load it. Run /guard held again for the next one.`
+}
+
+/** Each held mod and where it stands, and the first still undecided. */
+export function heldStatus(held: readonly HeldMod[], decisions: readonly Decision[]): { lines: string[]; next?: HeldMod } {
   const decisionOf = (mod: HeldMod): Decision | undefined => (mod.treeHash === undefined ? undefined : decisions.find(item => item.treeHash === mod.treeHash))
   const lines = held.map(mod => {
     const decided = decisionOf(mod)
@@ -113,10 +120,7 @@ export async function heldReport($: EngineInterface, held: readonly HeldMod[], l
     if (decided.decision === 'approved') return `  ${mod.label}: approved; run /reload-plugins to load it`
     return `  ${mod.label}: you rejected these files on ${day(decided.decidedAt)}; ${forgetHint(decided)}`
   })
-  const next = held.find(mod => decisionOf(mod) === undefined)
-  if (next === undefined) return `AI Install Guard kept ${count(held.length)} from loading in this session, and each is decided:\n${lines.join('\n')}`
-  await reviewHeld($, next, lookups)
-  return `AI Install Guard kept ${count(held.length)} from loading in this session:\n${lines.join('\n')}\n\n${next.label} is in the guard's pane. Approve it there, then run /reload-plugins to load it. Run /guard held again for the next one.`
+  return { lines, next: held.find(mod => decisionOf(mod) === undefined) }
 }
 
 /** The toast at the start of a session that kept mods out: each named, and what to do about those still undecided. */
@@ -148,6 +152,7 @@ function count(n: number): string {
   return n === 1 ? '1 mod' : `${n} mods`
 }
 
-function day(time: number): string {
+/** A decision's date, as the guard names it. */
+export function day(time: number): string {
   return new Date(time).toISOString().slice(0, 10)
 }

@@ -224,7 +224,7 @@ describe('the mods held in a session', () => {
     mock.store(on)
     on('command.register', ($, e) => ({ value: { command: e.name } }))
 
-    expect((await $.command.run(typed('guard', 'held'))).text).toBe('AI Install Guard: no mod was kept from loading in this session.')
+    expect((await $.command.run(typed('guard', 'held'))).text).toBe('AI Install Guard: no mod was kept from loading in this session, and no plugin on waits for a decision.')
   })
 })
 

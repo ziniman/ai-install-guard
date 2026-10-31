@@ -80,8 +80,13 @@ export function needsConfirmation(view: GuardView): boolean {
 
 /** The primary button's label for this verdict. */
 export function primaryLabel(view: GuardView): string {
-  const verb = view.action === 'install' ? 'Install' : 'Approve'
+  const verb = view.action === 'install' ? 'Install' : view.request?.subject === 'installed' ? 'Keep' : 'Approve'
   return needsConfirmation(view) ? `${verb} anyway` : verb
+}
+
+/** The reject button's label: a plugin already on is turned off. */
+export function rejectLabel(view: GuardView): string {
+  return view.request?.subject === 'installed' ? 'Turn off' : 'Reject'
 }
 
 /**
