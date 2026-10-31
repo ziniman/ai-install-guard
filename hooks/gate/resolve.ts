@@ -239,7 +239,7 @@ async function insideFolder(host: Host, folder: string, relative: string): Promi
 }
 
 /** Runs `claude <args>` and reads its JSON answer. */
-async function claudeJson(host: Host, args: readonly string[], what: string): Promise<unknown> {
+export async function claudeJson(host: Host, args: readonly string[], what: string): Promise<unknown> {
   const result = await host.run(['claude', ...args], { timeoutMs: 60_000 }).catch((error: unknown) => {
     throw new Error(`could not read ${what}: ${error instanceof Error ? safeLine(error.message) : 'the claude command did not run'}`)
   })

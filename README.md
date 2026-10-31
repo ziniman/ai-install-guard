@@ -6,7 +6,7 @@
 
 **A Claude Code mod that runs in the background. Install it once, and every `/plugin install`, marketplace and MCP server, yours or Claude's, and every skill or settings change Claude makes, is checked before it lands: nothing to run, nothing to remember.**
 
-[![AI Install Guard: No red flags at 356b518865b5](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_356b518865b5-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:356b518865b51fdc60fcc3a1a8cc11b57c0f2879f8fd67f7fb0dcaf1f2a02d55, read without this badge")
+[![AI Install Guard: No red flags at c1e6843f99bd](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_c1e6843f99bd-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:c1e6843f99bddf6ae7ccfd713212db7273b6aeafe4ec2431ede7fb973d3b56f2, read without this badge")
 
 [![npm version](https://img.shields.io/npm/v/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
 [![npm downloads](https://img.shields.io/npm/dm/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
@@ -31,7 +31,7 @@ AI Install Guard lives inside Claude Code instead. When something new is about t
 - **Pinned.** A verdict belongs to one commit and content hash, and only that version installs.
 - **Local and open.** No account or server, and every check is in this repository.
 
-It holds `/plugin install` and `/plugin marketplace add`, and, when Claude does them: plugin installs, MCP servers it adds, skills, commands and agents it writes with a red flag, settings changes that widen what it may run, and the same changes made with a shell command. A mod that loads with files you never approved (picked from the `/plugin` menu, updated on its own, changed in place) is kept off until you approve it, and a skill that came with no install (from a repository you cloned, copied in by hand) is checked as it is first used. A plugin picked from the menu is not scanned before it installs, so type `/plugin install <name>@<marketplace>` instead. [Where it steps in](docs/gates.md) has every case.
+It holds `/plugin install` and `/plugin marketplace add`, and, when Claude does them: plugin installs, MCP servers it adds, skills, commands and agents it writes with a red flag, settings changes that widen what it may run, and the same changes made with a shell command. A mod that loads with files you never approved (picked from the `/plugin` menu, updated on its own, changed in place) is kept off until you approve it, a skill that came with no install (from a repository you cloned, copied in by hand) is checked as it is first used, and a plugin that is on but new or changed since the guard last looked (updated on its own, installed from a terminal) is checked as a session starts. A plugin picked from the menu is not scanned before it installs, so type `/plugin install <name>@<marketplace>` instead. [Where it steps in](docs/gates.md) has every case.
 
 ## Using it
 
@@ -51,7 +51,7 @@ To check something before you install it anywhere:
 | `/guard scan <folder or repository>` | Scan it without installing it |
 | `/guard report` | Reopen the last report |
 | `/guard list` | Your approved and rejected versions |
-| `/guard held` | The mods kept from loading in this session |
+| `/guard held` | The mods kept from loading, and the plugins on that wait for your decision |
 | `/guard forget <name>` | Forget a decision, so it is judged again |
 
 The same scanner also runs in Claude chat, as a skill: [Use it in Claude chat](docs/claude-chat.md). For everything else, see [How it works](docs/how-it-works.md), [Commands and the pane](docs/commands.md) and the rest of [the documentation](docs/README.md).
@@ -66,9 +66,9 @@ A security tool should be held to its own rules. Everything this mod uses, as `c
 
 | Capability | Why |
 |------------|-----|
-| `process.run` | Runs `git` to fetch the exact commit being scanned into its own temporary folder, the `claude` command to validate a candidate and to find where a plugin comes from, `readlink` to see where a link points, and `printenv` to find your home folder. It never runs anything from a candidate. |
+| `process.run` | Runs `git` to fetch the exact commit being scanned into its own temporary folder, the `claude` command to validate a candidate, to find where a plugin comes from and to list the plugins that are on, `readlink` to see where a link points, and `printenv` to find your home folder. It never runs anything from a candidate. |
 | `fs.read`, `fs.list`, `fs.stat` | Reads the files it scans, and where a file Claude is about to write would really land. It writes no files itself. |
-| `command.run` | Intercepts `/plugin` to hold an install, and runs your own `/plugin` command again once you approve it. Sees every other slash command too, to check a skill or command by that name before it runs, and answers only one it holds. |
+| `command.run` | Intercepts `/plugin` to hold an install, and runs your own `/plugin` command again once you approve it, or `/plugin disable` when you turn off a plugin it found on. Sees every other slash command too, to check a skill or command by that name before it runs, and answers only one it holds. |
 | `tool.call` | Reads each shell command and file write Claude is about to make, and refuses only those that add something where Claude Code loads from, until you approve. Checks each skill Claude is about to run the same way. |
 | `classic.CwdChanged` | Notes the folder Claude's shell commands run in, so a relative path is read where it lands. |
 | `plugin.register` | Checks each mod Claude Code is about to load, and keeps out one whose files are not a version you approved. |
@@ -94,7 +94,7 @@ More, including your stored decisions and installs for one project only: [Uninst
 
 ## Status
 
-Early development. The gates above work today; a check at session start comes next. See the [roadmap](docs/roadmap.md).
+Early development. The gates above work today; next, the check at the start of a session extends to MCP servers and hooks in your configuration files. See the [roadmap](docs/roadmap.md).
 
 ## Contributing
 

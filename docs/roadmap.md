@@ -11,8 +11,9 @@
 9. [x] Gate on Claude's shell writes, copies, clones and downloads into skill, plugin and configuration folders
 10. [x] Mod load gate: a mod loads only when its files are a version you approved
 11. [x] Skill gate on first use: a skill that came with no install loads only with no red flags, or once you approve it
-12. [ ] Session-start reconciliation
-13. [ ] Update diffs and the optional model review
-14. [x] Documentation
+12. [x] Session-start check of the plugins installed and on
+13. [ ] Session-start check of MCP servers and hooks in your configuration and settings files
+14. [ ] Update diffs and the optional model review
+15. [x] Documentation
 
 [Back to the documentation](README.md)
