@@ -12,7 +12,7 @@ import type { EngineInterface } from 'claude-code'
 
 import type { GuardRequest } from '../../types'
 import { loadDecisions, noteChecked, wasChecked, type Decision } from '../guard/decisions'
-import { paneIsFree, scanOnly, showScan, showUnverified } from '../guard/run'
+import { scanOnly, showScan, showUnverified } from '../guard/run'
 import { modHost } from '../mod-host'
 import type { Host } from '../scan/host'
 import { takeInventory } from '../scan/inventory'
@@ -165,12 +165,12 @@ export async function checkAtStart($: EngineInterface, options: { held: readonly
   $.ui.status('AI Install Guard: checking the plugins that are on')
   try {
     const check = await checkInstalled($, { skip: new Set(options.held.map(mod => mod.root)), own: options.own, lookups: options.lookups })
-    const first = options.paneTaken || check.baseline ? undefined : toReviewFound(check.found)
-    const opens = first !== undefined && (await paneIsFree($))
     $.ui.status(undefined)
+    const first = options.paneTaken || check.baseline ? undefined : toReviewFound(check.found)
+    // Opened only on a free pane, so the toast says what the pane shows.
+    const opens = first !== undefined && (await reviewFound($, first, options.lookups, true))
     const toast = checkToast(check, opens)
     if (toast !== undefined) $.ui.toast(toast)
-    if (opens) await reviewFound($, first, options.lookups)
     return check.found
   } catch (error) {
     $.ui.status(undefined)
@@ -224,15 +224,16 @@ export function toReviewFound(found: readonly FoundPlugin[]): FoundPlugin | unde
   return found.find(plugin => plugin.rejected !== true && plugin.quiet !== true)
 }
 
-/** Shows one found plugin in the pane: its scan, with Keep and Turn off; Could not verify when it could not be read. */
-export async function reviewFound($: EngineInterface, plugin: FoundPlugin, lookups: boolean): Promise<void> {
+/**
+ * Shows one found plugin in the pane: its scan, with Keep and Turn off;
+ * Could not verify when it could not be read. Only when the pane holds no
+ * verdict still waiting for you; says whether the pane shows it.
+ */
+export async function reviewFound($: EngineInterface, plugin: FoundPlugin, lookups: boolean, ifFree = true): Promise<boolean> {
   const request: GuardRequest = { origin: 'command', args: plugin.id, label: plugin.label, subject: 'installed', display: `On in this session, not approved: ${plugin.label}` }
-  const options = { action: 'approve' as const, request, lookups, report: plugin.report }
-  if (plugin.treeHash === undefined) {
-    await showUnverified($, plugin.label, plugin.why, options)
-    return
-  }
-  await showScan($, plugin.label, { folder: plugin.root }, options)
+  const options = { action: 'approve' as const, request, lookups, report: plugin.report, ifFree }
+  if (plugin.treeHash === undefined) return !(await showUnverified($, plugin.label, plugin.why, options)).superseded
+  return !(await showScan($, plugin.label, { folder: plugin.root }, options)).superseded
 }
 
 /**
@@ -252,14 +253,12 @@ export async function waitingReport($: EngineInterface, held: readonly HeldMod[]
   const parts: string[] = []
   if (held.length > 0) parts.push(`AI Install Guard kept ${held.length === 1 ? '1 mod' : `${held.length} mods`} from loading in this session:\n${mods.lines.join('\n')}`)
   parts.push(`${held.length > 0 ? 'It' : 'AI Install Guard'} found ${count(current.length)} on in this session that you have not approved:\n${plugins.lines.join('\n')}`)
-  if ((mods.next !== undefined || plugins.next !== undefined) && !(await paneIsFree($))) {
-    parts.push(PANE_BUSY)
-  } else if (mods.next !== undefined) {
-    await reviewHeld($, mods.next, lookups)
-    parts.push(`${mods.next.label} is in the guard's pane. Approve it there, then run /reload-plugins to load it. Run /guard held again for the next one.`)
+  if (mods.next !== undefined) {
+    const shown = await reviewHeld($, mods.next, lookups, true)
+    parts.push(shown ? `${mods.next.label} is in the guard's pane. Approve it there, then run /reload-plugins to load it. Run /guard held again for the next one.` : PANE_BUSY)
   } else if (plugins.next !== undefined) {
-    await reviewFound($, plugins.next, lookups)
-    parts.push(`${plugins.next.label} is in the guard's pane: keep it, or turn it off there. Run /guard held again for the next one.`)
+    const shown = await reviewFound($, plugins.next, lookups, true)
+    parts.push(shown ? `${plugins.next.label} is in the guard's pane: keep it, or turn it off there. Run /guard held again for the next one.` : PANE_BUSY)
   } else {
     parts.push('Each is decided.')
   }

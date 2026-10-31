@@ -52,6 +52,12 @@ export type ShowOptions = {
   lookups: boolean
   /** A scan of the same thing already made, shown as it is rather than made again. */
   report?: ScanReport
+  /**
+   * A review the guard opens by itself (a held mod, a plugin found on at a
+   * session's start): it takes the pane only when the pane is free, in the
+   * same step that looks, and never over a verdict still waiting for you.
+   */
+  ifFree?: boolean
 }
 
 export type Shown =
@@ -74,9 +80,14 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
   // Named before anything waits, so a scan asked for later is always the newer one.
   const scanId = newScanId()
   const host = modHost($)
-  const opened = await openPane($)
   const scanning = { ...withRequest(scanningView(target, options.action), options.request), scanId }
-  if (!(await takePane($, scanning))) {
+  const ifFree = options.ifFree === true
+  // A review the guard opens by itself takes the pane before showing it, and only a free one.
+  if (ifFree && !(await takePane($, scanning, true))) {
+    return { kind: 'failed', reason: `Could not verify ${safeLine(target)}: the pane holds a verdict still waiting`, view: scanning, placed: false, superseded: true }
+  }
+  const opened = await openPane($)
+  if (!ifFree && !(await takePane($, scanning))) {
     return { kind: 'failed', reason: `Could not verify ${safeLine(target)}: a newer scan has the pane`, view: scanning, placed: opened, superseded: true }
   }
   $.ui.status(`AI Install Guard: scanning ${safeLine(target)}`)
@@ -123,9 +134,11 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
  */
 export async function showUnverified($: EngineInterface, target: string, reason: string, options: ShowOptions): Promise<{ view: GuardView; placed: boolean; superseded: boolean }> {
   const scanId = newScanId()
-  const placed = await openPane($)
   const scanning = { ...withRequest(scanningView(target, options.action), options.request), scanId }
-  if (!(await takePane($, scanning))) return { view: scanning, placed, superseded: true }
+  const ifFree = options.ifFree === true
+  if (ifFree && !(await takePane($, scanning, true))) return { view: scanning, placed: false, superseded: true }
+  const placed = await openPane($)
+  if (!ifFree && !(await takePane($, scanning))) return { view: scanning, placed, superseded: true }
   // The banner already says Could not verify and the title names the target: the pane shows the reason itself.
   const failed = await showFailure($, target, `Could not verify ${safeLine(target)}: ${safeLine(reason)}`, options, scanId, sentence(reason))
   return { view: failed.view, placed, superseded: !failed.shown }
@@ -155,17 +168,24 @@ async function showFailure($: EngineInterface, target: string, reason: string, o
 }
 
 /**
- * Whether the pane may open on a held mod or a plugin found on at a session's
- * start: never over a scan still running or a verdict still waiting for you
- * (a held install, a write, your own scan), so neither the session-start
- * check, which ends whenever it ends, nor /guard held takes the pane from it.
- * Another such review may be replaced: /guard held still lists it.
+ * Whether a review the guard opens by itself may take the pane: one showing
+ * nothing, a decision already made, or another such review. Never a scan
+ * still running or a verdict still waiting for you (a held install, a write,
+ * your own scan), so neither the session-start check, which ends whenever it
+ * ends, nor /guard held takes the pane from it.
  */
-export async function paneIsFree($: EngineInterface): Promise<boolean> {
-  const view = await read($, viewAtom).catch(() => null)
-  if (view === null || view.decision !== undefined) return true
+function isFree(view: GuardView | null): boolean {
+  return view === null || view.decision !== undefined || yields(view)
+}
+
+/**
+ * A review the guard opened by itself, of a held mod or a plugin found on,
+ * that no press is deciding: any scan may take its place, even one started
+ * a moment before it, and /guard held still lists it.
+ */
+function yields(view: GuardView): boolean {
   const subject = view.request?.subject
-  return view.verdict !== undefined && (subject === 'installed' || subject === 'load')
+  return view.decision === undefined && view.deciding !== true && (subject === 'installed' || subject === 'load')
 }
 
 /** Whether the pane still shows this scan. */
@@ -173,11 +193,15 @@ async function owns($: EngineInterface, scanId: string): Promise<boolean> {
   return (await read($, viewAtom))?.scanId === scanId
 }
 
-/** Takes the pane for a scan just started, unless a newer scan already has it. */
-async function takePane($: EngineInterface, view: GuardView): Promise<boolean> {
+/**
+ * Takes the pane for a scan just started, unless a newer scan already has it;
+ * a review the guard opened by itself gives way to any scan. With `ifFree`,
+ * only a free pane is taken, in the same step that looks at it.
+ */
+async function takePane($: EngineInterface, view: GuardView, ifFree = false): Promise<boolean> {
   let taken = false
   await update($, viewAtom, current => {
-    taken = current === null || current.scanId === undefined || view.scanId === undefined || current.scanId <= view.scanId
+    taken = ifFree ? isFree(current) : current === null || current.scanId === undefined || view.scanId === undefined || current.scanId <= view.scanId || yields(current)
     return taken ? view : current
   })
   return taken

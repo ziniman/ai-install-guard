@@ -125,7 +125,8 @@ describe('gate F: the plugins on at the start of a session', () => {
     const ui = serveUi(on)
 
     const held = await start($)
-    expect(ui.toasts[0]).toBe('AI Install Guard found 1 plugin on that you have not approved: notes@acme. The pane shows the first: keep it, or turn it off. /guard held lists them all.')
+    // After the pane's own verdict, so it is the note left showing.
+    expect(ui.toasts.slice(0, 2)).toEqual(['AI Install Guard: Worth a look for notes@acme', 'AI Install Guard found 1 plugin on that you have not approved: notes@acme. The pane shows the first: keep it, or turn it off. /guard held lists them all.'])
     expect(ui.opened).toContain(PANE_ID)
     expect(held).toContain('notes@acme: Worth a look')
 
@@ -241,6 +242,23 @@ describe('gate F: the plugins on at the start of a session', () => {
     expect(ui.toasts[before]).toBe('AI Install Guard found 1 plugin on that you have not approved: notes@acme. /guard held lists them and opens the first in the pane.')
     expect(held).toContain("The guard's pane holds a verdict still waiting for you: decide it (/guard report reopens it), then run /guard held again to open the next one.")
     expect(ui.opened.length).toBe(opened)
+  })
+
+  test('a review the check opened gives way to a scan you ask for', async ($, on) => {
+    world(on, [
+      { id: 'notes@acme', files: FLAGGED },
+      { id: 'other@acme', files: CLEAN, enabled: false },
+    ])
+    store(on)
+    serveUi(on)
+
+    await start($)
+    const answer = (await $.command.run(typed('guard', `scan ${rootOf('other@acme')}`))).text
+    expect(answer).not.toContain('a newer scan has the pane')
+    const pane = await mountPane($)
+    expect(await pane.find({ type: 'Text', text: /other/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: 'On in this session, not approved: notes@acme' })).toBeUndefined()
+    await pane.unmount()
   })
 
   test('a listing that fails is named, and nothing is held', async ($, on) => {

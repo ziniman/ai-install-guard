@@ -145,7 +145,20 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     const decided = { ...current, decision, decidedAt, confirming: false, deciding: false }
     // The decision is saved for its version either way; the pane, the
     // reopened report and the install are this scan's only while it has the pane.
-    if (!(await replaceOwn(decided))) {
+    const ours = await replaceOwn(decided)
+    // A plugin found on stays on when kept, and is turned off once its
+    // rejection is saved, whichever scan has the pane by then.
+    const subject = current.request?.subject
+    if (subject === 'installed' && current.request !== undefined) {
+      if (ours) {
+        await saveOwn(decided)
+        await closeOwn($, decided)
+      }
+      if (decision === 'rejected') await turnOff($, current.request)
+      else $.ui.toast(`AI Install Guard: kept ${current.target}; it stays on`)
+      return
+    }
+    if (!ours) {
       $.ui.toast(`AI Install Guard: ${decision} ${current.target}, but ${movedOn}${held !== undefined && decision === 'approved' ? '; run the install again and it goes through' : ''}`)
       return
     }
@@ -155,14 +168,6 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
     // again, now goes through: the gate looks the version up again first.
     if (held !== undefined && decision === 'approved') {
       await carryOut($, held, decided)
-      return
-    }
-    // A plugin found on stays on when kept, and is turned off when rejected.
-    const subject = current.request?.subject
-    if (subject === 'installed' && current.request !== undefined) {
-      await closeOwn($, decided)
-      if (decision === 'rejected') await turnOff($, current.request)
-      else $.ui.toast(`AI Install Guard: kept ${current.target}; it stays on`)
       return
     }
     // A mod kept from loading loads once the plugins are read again; a held skill, once it is used again.

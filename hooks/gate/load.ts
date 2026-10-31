@@ -7,7 +7,7 @@ import type { EngineInterface, PluginRegisterInput } from 'claude-code'
 
 import type { GuardRequest } from '../../types'
 import { loadDecisions, type Decision } from '../guard/decisions'
-import { paneIsFree, showScan, showUnverified } from '../guard/run'
+import { showScan, showUnverified } from '../guard/run'
 import { modHost } from '../mod-host'
 import { takeInventory } from '../scan/inventory'
 import { safeLine } from '../scan/safe-text'
@@ -90,15 +90,17 @@ export function release(held: HeldMod[], root: string): void {
   if (at !== -1) held.splice(at, 1)
 }
 
-/** Shows one held mod in the pane: its folder scanned, with Approve and Reject; Could not verify when it could not be read. */
-export async function reviewHeld($: EngineInterface, mod: HeldMod, lookups: boolean): Promise<void> {
+/**
+ * Shows one held mod in the pane: its folder scanned, with Approve and
+ * Reject; Could not verify when it could not be read. With `ifFree`, only
+ * when the pane holds no verdict still waiting for you. Says whether the
+ * pane shows it.
+ */
+export async function reviewHeld($: EngineInterface, mod: HeldMod, lookups: boolean, ifFree = false): Promise<boolean> {
   const request: GuardRequest = { origin: 'command', args: '', label: mod.label, subject: 'load', display: `Kept from loading until you decide: ${mod.label}` }
-  const options = { action: 'approve' as const, request, lookups }
-  if (mod.treeHash === undefined) {
-    await showUnverified($, mod.label, mod.why, options)
-    return
-  }
-  await showScan($, mod.label, { folder: mod.root }, options)
+  const options = { action: 'approve' as const, request, lookups, ifFree }
+  if (mod.treeHash === undefined) return !(await showUnverified($, mod.label, mod.why, options)).superseded
+  return !(await showScan($, mod.label, { folder: mod.root }, options)).superseded
 }
 
 /**
@@ -110,8 +112,7 @@ export async function heldReport($: EngineInterface, held: readonly HeldMod[], l
   if (held.length === 0) return 'AI Install Guard: no mod was kept from loading in this session, and no plugin on waits for a decision.'
   const { lines, next } = heldStatus(held, await loadDecisions($))
   if (next === undefined) return `AI Install Guard kept ${count(held.length)} from loading in this session, and each is decided:\n${lines.join('\n')}`
-  if (!(await paneIsFree($))) return `AI Install Guard kept ${count(held.length)} from loading in this session:\n${lines.join('\n')}\n\n${PANE_BUSY}`
-  await reviewHeld($, next, lookups)
+  if (!(await reviewHeld($, next, lookups, true))) return `AI Install Guard kept ${count(held.length)} from loading in this session:\n${lines.join('\n')}\n\n${PANE_BUSY}`
   return `AI Install Guard kept ${count(held.length)} from loading in this session:\n${lines.join('\n')}\n\n${next.label} is in the guard's pane. Approve it there, then run /reload-plugins to load it. Run /guard held again for the next one.`
 }
 
