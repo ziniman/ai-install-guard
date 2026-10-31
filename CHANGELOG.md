@@ -4,7 +4,7 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
-## v0.8.5 &nbsp;·&nbsp; 2026-10-30
+## v0.8.6 &nbsp;·&nbsp; 2026-10-31
 
 **A skill's first use** - A skill or command that came with no install (a repository's own, one copied into `~/.claude/skills`, one synced from your account) is scanned before it runs, when you type `/name` or Claude calls the Skill tool, since its inline commands run as Claude Code expands it. One with no red flags runs, named once; one with a red flag is held in the pane with Approve and Reject, and nothing in it runs. It is checked again as its instructions load, for a skill found anywhere else. A plugin's skills are left to the plugin's install, since a skill's folder read alone is cut off from the rest of its plugin
 
@@ -13,6 +13,14 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 **Claude writing a skill** - A skill Claude writes with no red flags is remembered as checked, so its first use does not name it again
 
 **`/guard scan`** - A file the guard may not read is reported as one it could not read, not as one that changed during the scan
+
+---
+
+## v0.8.5 &nbsp;·&nbsp; 2026-10-30
+
+**Claude's shell commands** - `command -v` and `command -V` are read as a lookup that runs nothing, so a loop that checks which tools are installed no longer counts as running a program only known as it runs. `perl -i` and `ruby -i` are read as `sed -i` is: each file after the code is an edit judged by where it lands, with the copy a suffix such as `-i.bak` keeps, so editing a file Claude Code does not load goes on and editing a skill or a settings file still waits. A replacement of plain text (Perl's with no `e` flag, `$` or `@`; Ruby's `gsub` string with no `#`) is read as the text it writes, so words such as "write" or "require" in it hold nothing. Both commands were held as Could not verify beside a mention of `.claude`. An in-place edit beside a module (`-M`, `-r`), code that picks its own files or changes folder, and Perl's and Ruby's other ways to run a program (`qx`, `%x`, a pipe opened as a file) stay held
+
+---
 
 ## v0.8.4 &nbsp;·&nbsp; 2026-10-29
 
