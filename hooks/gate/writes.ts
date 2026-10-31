@@ -165,7 +165,7 @@ export async function claudeConfigDir(host: Host): Promise<string | undefined> {
 /** The most of a skill, command or agent file the guard reads, as the scan does. */
 export const MAX_PROMPT_BYTES = 4 * 1024 * 1024
 /** The most of an MCP configuration it reads: the user's own holds every project's settings. */
-const MAX_CONFIG_BYTES = 16 * 1024 * 1024
+export const MAX_CONFIG_BYTES = 16 * 1024 * 1024
 
 /** The file as it is now, as text (undefined when there is none), or its size when it is over `limit`, or that it is there but cannot be read. */
 export async function readText(host: Host, path: string, limit: number): Promise<{ text: string | undefined } | { tooLarge: number } | { unreadable: true }> {
@@ -220,7 +220,7 @@ function settingsWrite(shown: string, path: string, before: string | undefined, 
   return { kind: 'settings', label: `the settings in ${shown}`, path, content: after, evidence }
 }
 
-function parseObject(text: string): Record<string, unknown> | undefined {
+export function parseObject(text: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(text.trim() === '' ? '{}' : text)
     return isRecord(parsed) ? parsed : undefined
@@ -253,7 +253,7 @@ function mcpWrite(kind: 'mcp-project' | 'mcp-user', shown: string, before: strin
  * under that project's `folder`), and the user's `.claude.json` its own and each project's. Undefined when the text is
  * no JSON object; a server that is no object is kept as one to be refused.
  */
-function serversIn(text: string, kind: 'mcp-project' | 'mcp-user', folder: string): McpEntry[] | undefined {
+export function serversIn(text: string, kind: 'mcp-project' | 'mcp-user', folder: string): McpEntry[] | undefined {
   let parsed: unknown
   try {
     parsed = JSON.parse(text === '' ? '{}' : text)

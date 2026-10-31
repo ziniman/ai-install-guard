@@ -17,7 +17,7 @@ import { sha256Hex, treeHash } from '../scan/hash'
 import type { InventoryEntry } from '../scan/inventory'
 import type { ScanReport } from '../scan/scan'
 import { decide } from '../scan/verdict'
-import { row, type CheckResult } from '../scan/checks/types'
+import { row, type CheckResult, type Evidence } from '../scan/checks/types'
 import { sourceRoot } from '../guard/view'
 import { modHost } from '../mod-host'
 import { resolvePin } from '../scan/remote'
@@ -104,7 +104,8 @@ export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReadi
   // A settings change that widens what Claude may do always waits, judged by what it widens.
   if (reading.kind === 'settings') {
     const how: ScanHow = { files: {}, root: reading.path, kind: 'settings change' }
-    return afterScan(request, reading.label, await showScan($, reading.label, how, { ...options, report: await settingsReport(reading) }))
+    const report = await settingsReport(reading.label, reading.path, reading.content, reading.evidence, 'What the change lets Claude do')
+    return afterScan(request, reading.label, await showScan($, reading.label, how, { ...options, report }))
   }
   // Text Claude writes itself goes on when it has no red flags; text copied from elsewhere is always shown.
   return scanThenHold($, reading.label, await promptCandidate(modHost($), reading), request, options, !copied)
@@ -154,22 +155,33 @@ export async function judgeShell($: EngineInterface, change: Exclude<ShellChange
  * the verdict that row gives, and a tree of the one file the change makes,
  * its path included, so an approval covers that exact file.
  */
-async function settingsReport(reading: Extract<WriteReading, { kind: 'settings' }>): Promise<ScanReport> {
-  const bytes = new TextEncoder().encode(reading.content)
-  const entries: InventoryEntry[] = [{ kind: 'file', path: 'settings.json', size: bytes.length, sha256: await sha256Hex(`${reading.path}\u0000${reading.content}`), isText: true }]
+/**
+ * A settings file's report, built from what a change to it widens or
+ * narrows, pinned to `content` at `path`: the whole file Claude writes, or,
+ * at the start of a session, only the parts of it that run something.
+ */
+export async function settingsReport(label: string, path: string, content: string, evidence: Evidence[], title: string): Promise<ScanReport> {
+  const { entries, bytes, hash } = await settingsTree(path, content)
   const results = [
     row(
       {
         id: 'settings.change',
         group: 'structure',
-        title: 'What the change lets Claude do',
+        title,
         advice: 'Settings decide what Claude runs without asking, what runs on its own, and where its traffic goes. Approve a change only if you asked for it.',
       },
-      reading.evidence,
+      evidence,
     ),
   ]
   // Kept under the file's own path, so /guard forget <path> finds this file's decisions and no other's.
-  return { target: reading.label, inventory: { root: reading.path, entries, totalBytes: bytes.length, treeHash: await treeHash(entries), skipped: [] }, results, verdict: decide(results) }
+  return { target: label, inventory: { root: path, entries, totalBytes: bytes, treeHash: hash, skipped: [] }, results, verdict: decide(results) }
+}
+
+/** The one-file tree a settings file's decisions are pinned to: its path and `content` together. */
+export async function settingsTree(path: string, content: string): Promise<{ entries: InventoryEntry[]; bytes: number; hash: string }> {
+  const bytes = new TextEncoder().encode(content).length
+  const entries: InventoryEntry[] = [{ kind: 'file', path: 'settings.json', size: bytes, sha256: await sha256Hex(`${path}\u0000${content}`), isText: true }]
+  return { entries, bytes, hash: await treeHash(entries) }
 }
 
 /** Where a prompt Claude writes is scanned: a skill as its real folder once the write lands, a command or agent as the one file. */
@@ -203,7 +215,7 @@ const MCP_ROOT = '/ai-install-guard/mcp-server'
  * A note says what the scan cannot read: the program it starts, or the
  * server at the other end of its address.
  */
-function mcpCandidate(servers: readonly { name: string; scope?: string; server: Record<string, unknown> }[]): ScanHow {
+export function mcpCandidate(servers: readonly { name: string; scope?: string; server: Record<string, unknown> }[]): Extract<ScanHow, { files: unknown }> {
   // Where each is kept is part of what is approved: local (the default), project (shared through .mcp.json) or user (every project).
   const only = servers.length === 1 ? servers[0] : undefined
   const keys = servers.map(item => (servers.filter(other => other.name === item.name).length > 1 ? `${item.name} (${item.scope ?? 'local'})` : item.name))

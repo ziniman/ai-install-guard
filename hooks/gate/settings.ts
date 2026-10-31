@@ -49,6 +49,15 @@ const HELPERS: Record<string, string> = {
   otelHeadersHelper: 'to make telemetry headers',
 }
 
+/**
+ * The parts of a settings file that run something on their own: its hooks,
+ * its status line and its helper commands. Empty when it runs nothing.
+ */
+export function runsOf(settings: Record<string, unknown>): Record<string, unknown> {
+  const empty = (value: unknown): boolean => value === undefined || value === null || (typeof value === 'object' && Object.keys(value).length === 0)
+  return Object.fromEntries(Object.entries(settings).filter(([key, value]) => !empty(value) && (key === 'hooks' || key === 'statusLine' || Object.hasOwn(HELPERS, key))))
+}
+
 /** Environment variables that change where Claude's traffic goes, or what code runs. */
 const REDIRECTS = /^(?:ANTHROPIC_(?:BEDROCK_|VERTEX_)?BASE_URL|[A-Z_]*_BASE_URL|HTTPS?_PROXY|ALL_PROXY|NODE_EXTRA_CA_CERTS|NODE_TLS_REJECT_UNAUTHORIZED|SSL_CERT_FILE|REQUESTS_CA_BUNDLE)$/i
 const RUNS = /^(?:NODE_OPTIONS|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|PATH|PYTHONPATH|PYTHONSTARTUP|BASH_ENV|ENV|PERL5OPT|RUBYOPT|JAVA_TOOL_OPTIONS|CLAUDE_CODE_SHELL_PREFIX|SHELL)$/i
