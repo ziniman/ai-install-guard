@@ -151,8 +151,9 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       await carryOut($, held, decided)
       return
     }
-    // A mod kept from loading loads once the plugins are read again.
-    const loads = current.request?.subject === 'load' ? (decision === 'approved' ? '; run /reload-plugins to load it' : '; it stays off') : ''
+    // A mod kept from loading loads once the plugins are read again; a held skill, once it is used again.
+    const subject = current.request?.subject
+    const loads = subject === 'load' ? (decision === 'approved' ? '; run /reload-plugins to load it' : '; it stays off') : subject === 'skill' ? (decision === 'approved' ? '; ask Claude to use it again' : '; it stays off') : ''
     $.ui.toast(`AI Install Guard: ${decision === 'approved' ? 'approved' : 'rejected'} ${current.target}${held === undefined ? loads : '; nothing was installed'}`)
     await closeOwn($, decided)
   }

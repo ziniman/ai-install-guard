@@ -25,6 +25,7 @@ import { safeLine } from '../scan/safe-text'
 import type { VerdictKind } from '../scan/verdict'
 import type { InstallRequest, Reading } from './requests'
 import { targetOf } from './resolve'
+import { noteChecked } from './skill'
 
 export type Judgement =
   /** The install goes through; `note` says why, for a toast. */
@@ -116,7 +117,11 @@ export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReadi
  */
 async function scanThenHold($: EngineInterface, label: string, how: ScanHow, request: GuardRequest, options: ShowOptions, quiet: boolean): Promise<Judgement> {
   const first = await scanOnly(modHost($), label, how, { lookups: options.lookups }).catch(() => undefined)
-  if (quiet && first?.verdict.kind === 'safe') return { kind: 'allow', note: `AI Install Guard: checked ${label}: No red flags` }
+  if (quiet && first?.verdict.kind === 'safe') {
+    // Named now, so its first use does not name it again.
+    if (first.inventory !== undefined) await noteChecked($, first.inventory.treeHash).catch(() => false)
+    return { kind: 'allow', note: `AI Install Guard: checked ${label}: No red flags` }
+  }
   if (first?.inventory !== undefined) {
     const earlier = await decisionFor($, { treeHash: first.inventory.treeHash }, first.verdict.kind).catch(() => undefined)
     if (earlier?.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${label} on ${day(earlier.decidedAt)}; writing it` }

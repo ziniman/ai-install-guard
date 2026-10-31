@@ -6,7 +6,7 @@
 
 **A Claude Code mod that runs in the background. Install it once, and every `/plugin install`, marketplace and MCP server, yours or Claude's, and every skill or settings change Claude makes, is checked before it lands: nothing to run, nothing to remember.**
 
-[![AI Install Guard: No red flags at 583db03e899c](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_583db03e899c-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:583db03e899c2ad40002f2b62c611d63e8a6371c1a191f611ce529b60a9192cd, read without this badge")
+[![AI Install Guard: No red flags at 356b518865b5](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_356b518865b5-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:356b518865b51fdc60fcc3a1a8cc11b57c0f2879f8fd67f7fb0dcaf1f2a02d55, read without this badge")
 
 [![npm version](https://img.shields.io/npm/v/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
 [![npm downloads](https://img.shields.io/npm/dm/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
@@ -31,7 +31,7 @@ AI Install Guard lives inside Claude Code instead. When something new is about t
 - **Pinned.** A verdict belongs to one commit and content hash, and only that version installs.
 - **Local and open.** No account or server, and every check is in this repository.
 
-It holds `/plugin install` and `/plugin marketplace add`, and, when Claude does them: plugin installs, MCP servers it adds, skills, commands and agents it writes with a red flag, settings changes that widen what it may run, and the same changes made with a shell command. A mod that loads with files you never approved (picked from the `/plugin` menu, updated on its own, changed in place) is kept off until you approve it. A plugin picked from the menu is not scanned before it installs, so type `/plugin install <name>@<marketplace>` instead. [Where it steps in](docs/gates.md) has every case.
+It holds `/plugin install` and `/plugin marketplace add`, and, when Claude does them: plugin installs, MCP servers it adds, skills, commands and agents it writes with a red flag, settings changes that widen what it may run, and the same changes made with a shell command. A mod that loads with files you never approved (picked from the `/plugin` menu, updated on its own, changed in place) is kept off until you approve it, and a skill that came with no install (from a repository you cloned, copied in by hand) is checked as it is first used. A plugin picked from the menu is not scanned before it installs, so type `/plugin install <name>@<marketplace>` instead. [Where it steps in](docs/gates.md) has every case.
 
 ## Using it
 
@@ -68,10 +68,11 @@ A security tool should be held to its own rules. Everything this mod uses, as `c
 |------------|-----|
 | `process.run` | Runs `git` to fetch the exact commit being scanned into its own temporary folder, the `claude` command to validate a candidate and to find where a plugin comes from, `readlink` to see where a link points, and `printenv` to find your home folder. It never runs anything from a candidate. |
 | `fs.read`, `fs.list`, `fs.stat` | Reads the files it scans, and where a file Claude is about to write would really land. It writes no files itself. |
-| `command.run` | Intercepts `/plugin` to hold an install, and runs your own `/plugin` command again once you approve it. |
-| `tool.call` | Reads each shell command and file write Claude is about to make, and refuses only those that add something where Claude Code loads from, until you approve. |
+| `command.run` | Intercepts `/plugin` to hold an install, and runs your own `/plugin` command again once you approve it. Sees every other slash command too, to check a skill or command by that name before it runs, and answers only one it holds. |
+| `tool.call` | Reads each shell command and file write Claude is about to make, and refuses only those that add something where Claude Code loads from, until you approve. Checks each skill Claude is about to run the same way. |
 | `classic.CwdChanged` | Notes the folder Claude's shell commands run in, so a relative path is read where it lands. |
 | `plugin.register` | Checks each mod Claude Code is about to load, and keeps out one whose files are not a version you approved. |
+| `skill.prompt` | Checks a skill that came with no install (yours, a repository's) again as its instructions load, for one found where the slash command and the Skill tool did not look, and holds one with a red flag until you approve it. |
 | `http.fetch` | Reads a GitHub repository's public details (age, stars, whether the commit is signed) and, only if you turn them on, the [outside lookups](docs/permissions.md#outside-lookups). |
 | `store`, `state`, `ui`, `command.register` | Remembers your decisions, draws the pane, and adds the `/guard` command. |
 
@@ -93,7 +94,7 @@ More, including your stored decisions and installs for one project only: [Uninst
 
 ## Status
 
-Early development. The gates above work today; a gate on a skill's first use and a check at session start come next. See the [roadmap](docs/roadmap.md).
+Early development. The gates above work today; a check at session start comes next. See the [roadmap](docs/roadmap.md).
 
 ## Contributing
 

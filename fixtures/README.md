@@ -36,6 +36,7 @@ note on its row.
 | `skill-credentials` | `prompts.credentials` | Do not install |
 | `skill-bash-wildcard` | `prompts.tools`, as "It can: run any shell command without asking, in the build skill" | No red flags |
 | `skill-remote-instructions` | `prompts.remote` | Worth a look |
+| `skill-inline-fetch` | `prompts.remote` (a command in `` !`…` `` that puts text from a URL into the skill as it loads) | Worth a look |
 | `command-name-collision` | `prompts.names`, as a note (Claude Code's own `/help` keeps the bare name) | No red flags |
 | `scanner-pass-readme` | `prompts.scanner`, and its `curl` hook still fails | Do not install |
 | `script-exec` | `code.execution`, as "It can: start git" | No red flags |
