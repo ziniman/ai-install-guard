@@ -51,11 +51,15 @@ const HELPERS: Record<string, string> = {
 
 /**
  * The parts of a settings file that run something on their own: its hooks,
- * its status line and its helper commands. Empty when it runs nothing.
+ * its status line, its helper commands, and the environment variables that
+ * change what code runs or where Claude's traffic goes. Empty when it runs
+ * nothing.
  */
 export function runsOf(settings: Record<string, unknown>): Record<string, unknown> {
   const empty = (value: unknown): boolean => value === undefined || value === null || (typeof value === 'object' && Object.keys(value).length === 0)
-  return Object.fromEntries(Object.entries(settings).filter(([key, value]) => !empty(value) && (key === 'hooks' || key === 'statusLine' || Object.hasOwn(HELPERS, key))))
+  const out = Object.fromEntries(Object.entries(settings).filter(([key, value]) => !empty(value) && (key === 'hooks' || key === 'statusLine' || Object.hasOwn(HELPERS, key))))
+  const env = Object.fromEntries(Object.entries(record(settings.env)).filter(([name]) => RUNS.test(name) || REDIRECTS.test(name)))
+  return Object.keys(env).length === 0 ? out : { ...out, env }
 }
 
 /** Environment variables that change where Claude's traffic goes, or what code runs. */

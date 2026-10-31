@@ -65,6 +65,8 @@ export type GuardView = {
   scanId?: string
   target: string
   action: GuardAction
+  /** For several MCP servers written at once, each one's own tree hash: a decision on them all is kept for each, as the check at a session's start judges them one at a time. */
+  parts?: string[]
   /** What the scan is doing now; empty once it is done. */
   stage: string
   verdict?: GuardVerdict

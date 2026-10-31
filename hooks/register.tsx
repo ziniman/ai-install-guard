@@ -2,7 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
-import { servingTool, toolRefusal } from './gate/configured'
+import { configuredServers, servingTool, toolRefusal, type ServerTools } from './gate/configured'
 import { checkAtStart, waitingReport, type StartCheck } from './gate/installed'
 import { failedLoad, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
 import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
@@ -59,6 +59,8 @@ export const register: Register = (on, options) => {
   let found: StartCheck = { plugins: [], configs: [] }
   /** The session-start check once it has begun, so a reload, which starts the session's hooks again, does not run it twice, and /guard held can wait for it. */
   let checking: Promise<void> | undefined
+  /** The MCP servers in your configuration as their tools are named, read at the session's first MCP tool call. */
+  let servers: Promise<ServerTools[]> | undefined
 
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
@@ -231,16 +233,22 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => (next.called ? next(e) : { text: failedSkill(e, next.error) }))
 
-  // A server you rejected started with the session, before the guard could
-  // look: its tools are refused from then on, by the start of their names.
+  // A server you rejected starts with the session all the same, before the
+  // guard can look: its tools are refused, by the start of their names, from
+  // the session's first call, whether or not the check has run.
   on('tool.call', async ($, e, next) => {
-    if (servingTool(found.configs, e.tool).length === 0) return next(e)
-    const refused = toolRefusal(found.configs, e.tool, await loadDecisions($))
+    if (!e.tool.startsWith('mcp__') || projectDir === undefined) return next(e)
+    const place = { cwd: projectDir, configDir: await claudeFolder($) }
+    servers ??= configuredServers($, place)
+    const serving = servingTool(await servers, e.tool)
+    if (serving.length === 0) return next(e)
+    const refused = toolRefusal(serving, await loadDecisions($))
     return refused === undefined ? next(e) : { deny: refused }
   }).catch(($, e, next) => {
     if (next.called) return next(e)
-    // A tool a server found unapproved may serve is refused when the guard cannot tell whether you rejected it.
-    if (servingTool(found.configs, e.tool).length === 0) return next(e)
+    if (!e.tool.startsWith('mcp__')) return next(e)
+    // Read again at the next call; this one is refused, since the guard cannot tell whether you rejected its server.
+    servers = undefined
     return { deny: 'AI Install Guard stopped this tool: it may come from an MCP server the person rejected, and the guard failed before it could check. Tell the person.' }
   })
 

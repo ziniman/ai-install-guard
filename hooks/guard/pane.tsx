@@ -120,9 +120,10 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
         await turnOff($, current.request)
         return
       }
+      // Nothing could be recorded, so nothing is refused either: only how to remove it.
       if (current.request?.subject === 'configured' && decision === 'rejected') {
         if (await release(current)) await closeOwn($, current)
-        $.ui.toast(rejectedNote(current.request))
+        $.ui.toast(rejectedNote(current.request, false))
         return
       }
       $.ui.toast(held !== undefined ? 'AI Install Guard: rejected; nothing was installed' : 'AI Install Guard: closed; the scan read nothing, so there is no decision to remember')
@@ -130,18 +131,21 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       return
     }
     const decidedAt = Date.now()
+    const record = {
+      target: current.target,
+      root: current.root,
+      sha: current.sha,
+      treeHash: current.treeHash,
+      verdict: current.verdict.recommendation,
+      verdictKind: current.verdict.kind,
+      decision,
+      overridden,
+      decidedAt,
+    }
     try {
-      await recordDecision($, {
-        target: current.target,
-        root: current.root,
-        sha: current.sha,
-        treeHash: current.treeHash,
-        verdict: current.verdict.recommendation,
-        verdictKind: current.verdict.kind,
-        decision,
-        overridden,
-        decidedAt,
-      })
+      await recordDecision($, record)
+      // Several servers written at once: kept for each, as the check at a session's start finds them one at a time.
+      for (const part of current.parts ?? []) await recordDecision($, { ...record, treeHash: part })
     } catch {
       // Nothing was saved: say so, and leave the pane open to try again.
       $.ui.toast('AI Install Guard: could not save the decision; nothing was recorded')
@@ -163,7 +167,7 @@ export async function drawPane($: EngineInterface, e: PaneInput): Promise<Render
       // A server you rejected has its tools refused from now on; the guard never changes your configuration itself.
       if (decision === 'approved') $.ui.toast(`AI Install Guard: kept ${current.target}${subject === 'installed' ? '; it stays on' : ''}`)
       else if (subject === 'installed') await turnOff($, current.request)
-      else $.ui.toast(rejectedNote(current.request))
+      else $.ui.toast(rejectedNote(current.request, true))
       return
     }
     if (!ours) {

@@ -58,6 +58,8 @@ export type ShowOptions = {
    * same step that looks, and never over a verdict still waiting for you.
    */
   ifFree?: boolean
+  /** For several MCP servers written at once, each one's own tree hash: the decision is kept for each too. */
+  parts?: string[]
 }
 
 export type Shown =
@@ -106,7 +108,7 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
     const kind = 'remote' in resolved ? undefined : resolved.kind
     const built = kind === undefined ? {} : { kind }
     const shownReport = 'kind' in built ? { ...report, badgeHash: undefined } : report
-    const base = { ...withRequest(viewOf(shownReport, options.action), options.request), ...built, scanId }
+    const base = { ...withRequest(viewOf(shownReport, options.action), options.request), ...built, scanId, ...(options.parts === undefined ? {} : { parts: options.parts }) }
     const view = earlier === undefined ? base : { ...base, decision: earlier.decision, decidedAt: earlier.decidedAt }
     const text = formatReport(report, { details: true, version: await ownVersion($) })
     // A scan started since owns the pane now: this one leaves it, its report

@@ -14,7 +14,8 @@ import { landsAt, readWrite, type WriteReading } from './writes'
 import type { ShellChange } from './shell-change'
 import type { RemoteSpec } from '../scan/remote'
 import { sha256Hex, treeHash } from '../scan/hash'
-import type { InventoryEntry } from '../scan/inventory'
+import { takeInventory, type InventoryEntry } from '../scan/inventory'
+import { virtualHost } from '../scan/virtual-host'
 import type { ScanReport } from '../scan/scan'
 import { decide } from '../scan/verdict'
 import { row, type CheckResult, type Evidence } from '../scan/checks/types'
@@ -100,7 +101,11 @@ export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReadi
     const shown = await showUnverified($, reading.label, reading.reason, options)
     return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed, { why: reading.reason, toClaude: true })
   }
-  if (reading.kind === 'mcp') return afterScan(request, reading.label, await showScan($, reading.label, mcpCandidate(reading.servers), options))
+  if (reading.kind === 'mcp') {
+    // Several servers written at once are decided together, and the decision holds for each, as the check at a session's start judges them one at a time.
+    const parts = reading.servers.length < 2 ? undefined : await Promise.all(reading.servers.map(server => laidHash(mcpCandidate([server]))))
+    return afterScan(request, reading.label, await showScan($, reading.label, mcpCandidate(reading.servers), { ...options, ...(parts === undefined ? {} : { parts }) }))
+  }
   // A settings change that widens what Claude may do always waits, judged by what it widens.
   if (reading.kind === 'settings') {
     const how: ScanHow = { files: {}, root: reading.path, kind: 'settings change' }
@@ -207,6 +212,11 @@ function nameOf(request: InstallRequest): string {
  * its name and `/guard forget <name>` finds them.
  */
 const MCP_ROOT = '/ai-install-guard/mcp-server'
+
+/** The tree hash of files the guard laid out in memory, as a scan of them would pin its decision. */
+export async function laidHash(how: Extract<ScanHow, { files: unknown }>): Promise<string> {
+  return (await takeInventory(virtualHost(how.root, how.files), how.root)).inventory.treeHash
+}
 
 /**
  * The files an MCP server being added is scanned as: an `.mcp.json` holding

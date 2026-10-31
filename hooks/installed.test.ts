@@ -51,9 +51,10 @@ function decision(id: string, treeHash: string, decision: 'approved' | 'rejected
  */
 function world(on: On, plugins: Plugin[], options: { listing?: 'fails'; unreadable?: (path: string) => boolean } = {}): { commands: string[]; listed: () => number } {
   const files: FixtureFiles = {}
-  for (const plugin of plugins) for (const [rel, file] of Object.entries(plugin.files)) files[`${folderOf(plugin.id)}/${rel}`] = file
+  // Laid out in the home folder, so the configuration the check reads next is there to be found missing.
+  for (const plugin of plugins) for (const [rel, file] of Object.entries(plugin.files)) files[`${CACHE.slice(HOME.length + 1)}/${folderOf(plugin.id)}/${rel}`] = file
   let listings = 0
-  serveFixture(on, CACHE, files, {
+  serveFixture(on, HOME, files, {
     unreadable: options.unreadable,
     run: argv => {
       if (argv.join(' ') === 'claude plugin list --json') {

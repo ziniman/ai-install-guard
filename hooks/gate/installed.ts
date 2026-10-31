@@ -267,7 +267,7 @@ export async function waitingReport($: EngineInterface, held: readonly HeldMod[]
   const plugins = on === undefined ? found.plugins : found.plugins.filter(plugin => on.has(trimmed(plugin.root)))
   const now = found.configs.length === 0 ? undefined : await configuredNow($, place).catch(() => undefined)
   // One that could not be read is named until it can be.
-  const configs = now === undefined ? found.configs : found.configs.filter(item => item.treeHash === undefined || now.has(item.treeHash))
+  const configs = now === undefined ? found.configs : found.configs.filter(item => (item.treeHash === undefined ? now.unreadable.has(item.key) : now.hashes.has(item.treeHash)))
   if (plugins.length === 0 && configs.length === 0) return heldReport($, held, lookups)
   const decisions = await loadDecisions($)
   const mods = heldStatus(held, decisions)

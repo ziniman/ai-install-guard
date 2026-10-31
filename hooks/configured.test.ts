@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, test, type Engine } from 'claude-code/testing'
 
-import { configToast } from './gate/configured'
+import { configToast, rejectedNote } from './gate/configured'
 import { mcpCandidate, settingsTree } from './gate/gate'
 import { runsOf, stable } from './gate/settings'
 import { PANE_ID } from './guard/view'
@@ -43,9 +43,10 @@ function decision(target: string, treeHash: string, decision: 'approved' | 'reje
  * what the engine answers beneath the plugins. `tools` records each tool
  * call that reached the engine.
  */
-function world(on: On, files: FixtureFiles, options: { unreadable?: (path: string) => boolean } = {}): { tools: string[] } {
+function world(on: On, files: FixtureFiles, options: { unreadable?: (path: string) => boolean; statFails?: (path: string) => boolean } = {}): { tools: string[] } {
   serveFixture(on, HOME, files, {
     unreadable: options.unreadable,
+    statFails: options.statFails,
     run: argv => {
       if (argv.join(' ') === 'claude plugin list --json') return { exitCode: 0, stdout: '[]', stderr: '' }
       if (argv[0] === 'claude') return { exitCode: 127, stdout: '', stderr: 'test: no claude here' }
@@ -219,6 +220,71 @@ describe('gate F: your configuration at the start of a session', () => {
     expect(ui.opened).toContain(PANE_ID)
   })
 
+  test("a rejected server's tools are refused from a session's first call, before any check, and in a headless run", async ($, on) => {
+    const hash = await serverHash('notes', 'user', LOOSE)
+    const { tools } = world(on, { '.claude.json': b64({ mcpServers: { notes: LOOSE } }) })
+    store(on, { decisions: [decision('MCP server notes', hash, 'rejected')] })
+    serveUi(on)
+
+    await $.session.start({ cwd: PROJECT, surface: null, isInteractive: false })
+    expect((await $.tool.call(mcpTool('mcp__notes__search'))).deny).toContain('it comes from the MCP server notes (user scope), which the person rejected')
+    // Plugins' servers and Claude Code's own tools go on, with nothing read for them.
+    expect((await $.tool.call(mcpTool('mcp__plugin_notes_notes__search'))).deny).toBeUndefined()
+    expect(tools).toEqual(['mcp__plugin_notes_notes__search'])
+  })
+
+  test('a server approved as `claude mcp add` added it, or under the real name of a linked folder, counts as approved', async ($, on) => {
+    const added = { command: 'npx', args: ['-y', '@acme/notes'] }
+    // As Claude Code saves it: its type named, and an empty environment.
+    const saved = { type: 'stdio', ...added, env: {} }
+    world(on, { proj: { link: 'real' }, 'real/README.md': b64('A project.'), '.claude.json': b64({ projects: { [`${HOME}/real`]: { mcpServers: { notes: saved, search: LOOSE } } } }) })
+    store(on, { decisions: [decision('MCP server notes', await serverHash('notes', 'local', added), 'approved')] })
+    const ui = serveUi(on)
+
+    await start($)
+    // Found under the folder's real name, and only the one never approved waits.
+    expect(ui.toasts).toContain('AI Install Guard found 1 MCP server in your configuration that you have not approved: MCP server search (local scope). The pane shows the first: keep it, or reject it. /guard held lists them all.')
+  })
+
+  test('several servers Claude writes at once are approved for each, as the check finds them one at a time', async ($, on) => {
+    world(on, {})
+    const stored = store(on)
+    serveUi(on)
+
+    const config = { mcpServers: { notes: LOOSE, search: { command: 'npx', args: ['-y', '@acme/search'] } } }
+    const refused = await $.tool.call({ tool: 'Write', file_path: `${PROJECT}/.mcp.json`, content: JSON.stringify(config) })
+    expect(refused.deny).toContain('held this')
+    const pane = await mountPane($)
+    await pane.press({ key: 'install' })
+    const kept = (stored.get('decisions') as { treeHash: string; decision: string }[]).filter(item => item.decision === 'approved').map(item => item.treeHash)
+    expect(kept).toEqual(expect.arrayContaining([await serverHash('notes', `project ${PROJECT}`, LOOSE), await serverHash('search', `project ${PROJECT}`, config.mcpServers.search)]))
+  })
+
+  test('a settings file whose last approved hook is taken away, or that sets a variable that changes what runs, waits', async ($, on) => {
+    world(on, { '.claude/settings.json': b64({ theme: 'dark' }), 'proj/.claude/settings.json': b64({ env: { NODE_OPTIONS: '--require /tmp/x.js', EDITOR: 'vim' } }) })
+    store(on, { 'settings-kept': [{ path: USER_SETTINGS, runs: stable(runsOf(HOOKED)) }] })
+    serveUi(on)
+
+    const answer = await start($)
+    expect(answer).toContain(`settings file ${USER_SETTINGS}: Worth a look`)
+    expect(answer).toContain(`settings file ${PROJECT_SETTINGS}: Do not install`)
+    const pane = await mountPane($)
+    expect(await pane.find({ type: 'Text', text: /no longer runs echo checked on PreToolUse/ })).toBeDefined()
+  })
+
+  test('a file the guard may not look at is named, not taken as missing, and one readable again is no longer listed', async ($, on) => {
+    let broken = true
+    world(on, { '.claude.json': b64({ mcpServers: { notes: PLAIN } }) }, { statFails: path => broken && path === USER_CONFIG })
+    store(on, { 'skills-checked': [await serverHash('notes', 'user', PLAIN)] })
+    serveUi(on)
+
+    const answer = await start($)
+    expect(answer).toContain(`${USER_CONFIG}: the guard could not look at it (`)
+    expect(answer).toContain('EACCES: permission denied')
+    broken = false
+    expect(await held($)).toBe('AI Install Guard: no mod was kept from loading in this session, and no plugin or configuration waits for a decision.')
+  })
+
   test('a headless run checks nothing', async ($, on) => {
     world(on, { '.claude.json': b64({ mcpServers: { search: LOOSE } }) })
     const stored = store(on)
@@ -227,6 +293,29 @@ describe('gate F: your configuration at the start of a session', () => {
     await $.session.start({ cwd: PROJECT, surface: null, isInteractive: false })
     expect(ui.toasts).toEqual([])
     expect(stored.has('skills-checked')).toBe(false)
+  })
+})
+
+describe('what Reject says, and what the guard keeps', () => {
+  test('a server the guard could not check claims no refusal', () => {
+    const request = { origin: 'command' as const, args: 'mcp user notes', label: 'MCP server notes (user scope)', subject: 'configured' as const }
+    expect(rejectedNote(request, true)).toBe('AI Install Guard: rejected MCP server notes (user scope); the guard refuses its tools; claude mcp remove notes -s user removes it')
+    expect(rejectedNote(request, false)).toBe('AI Install Guard: closed MCP server notes (user scope); the guard could not check it, so nothing was recorded and nothing is refused; claude mcp remove notes -s user removes it')
+  })
+
+  test('over the limit, the oldest approval goes before any rejection', async ($, on) => {
+    const at = (n: number, kind: 'approved' | 'rejected') => ({ ...decision(`d${n}`, `sha256:${n}`, kind), decidedAt: n })
+    world(on, { 'proj/.claude/settings.json': b64(HOOKED) })
+    const stored = store(on, { decisions: [...Array.from({ length: 499 }, (_, n) => at(1000 - n, 'approved')), at(1, 'rejected')] })
+    serveUi(on)
+
+    await start($)
+    await (await mountPane($)).press({ key: 'install' })
+    const kept = stored.get('decisions') as { treeHash: string }[]
+    expect(kept.length).toBe(500)
+    expect(kept[0]?.treeHash).toBe(await settingsHash(PROJECT_SETTINGS, HOOKED))
+    expect(kept.at(-1)?.treeHash).toBe('sha256:1')
+    expect(kept.some(item => item.treeHash === `sha256:${1000 - 498}`)).toBe(false)
   })
 })
 

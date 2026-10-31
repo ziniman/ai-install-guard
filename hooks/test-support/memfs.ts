@@ -131,6 +131,8 @@ export function serveFixture(
     moved?: (path: string) => string
     /** Paths whose reading fails, as a file the guard may not read. */
     unreadable?: (path: string) => boolean
+    /** Paths the guard may not even look at: their stat fails, though they may be there. */
+    statFails?: (path: string) => boolean
   } = {},
 ): void {
   const isWindows = options.platform === 'windows'
@@ -144,6 +146,7 @@ export function serveFixture(
 
   on('fs.stat', async ($, e, next) => {
     const path = trimSlash(at(e.path))
+    if (options.statFails?.(path) === true) return { deny: `EACCES: permission denied, stat '${e.path}'` }
     if (host.owns(path)) return { value: { ...(await host.stat(at(e.path), { resolve: e.resolve })), mtimeMs: 0 } }
     // A path under the fixture's root that it does not hold is missing, which the engine reports as ENOENT.
     if (path === root || path.startsWith(`${root}/`)) return { deny: `ENOENT: no such file or directory, stat '${e.path}'` }
