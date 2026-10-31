@@ -86,10 +86,10 @@ Claude Code adds plugins no gate sees: an update it makes on its own, a plugin i
 
 - **Files you approved** (through an install it held, a `/guard scan`, the mod loading gate, or this check) are left alone, and so are files it checked before with no red flags.
 - **No red flags:** a note names it once.
-- **A red flag, or a mod whose files you never approved:** it waits in the pane with **Keep** and **Turn off**. Keep records your approval for those exact files. Turn off records the rejection and runs `/plugin disable <name>@<marketplace>` for you. It waits again each session until you decide; `/guard held` lists what waits and opens the next. A plugin you rejected that is on all the same is named once.
+- **A red flag, or a mod whose files you never approved:** it waits in the pane with **Keep** and **Turn off**. Keep records your approval for those exact files. Turn off records the rejection and runs `/plugin disable <name>@<marketplace>` for you. It waits again each session until you decide; `/guard held` lists what waits and is still on, and opens the next, unless the pane holds a verdict still waiting for you. A plugin you rejected that is on all the same is named once for each rejection.
 - **A folder it cannot read** waits as Could not verify; Turn off still turns it off.
 
-The first check on a machine names everything already on in one note and opens no pane, since you chose those plugins before the guard looked at them; `/guard held` opens each one to look at. From then on, a plugin that is new or has changed is checked as a session starts.
+The first check on a machine names everything already on in one note and opens no pane, since you chose those plugins before the guard looked at them; `/guard held` opens each one to look at, in that session or a later one, without the guard naming them again. From then on, a plugin that is new or has changed is checked as a session starts.
 
 By the time the check runs, the plugin's classic hooks and MCP servers have started for this session: the check tells you, and Turn off keeps them from the next. It leaves out the mods the loading gate already kept out, an administrator's plugins and the guard itself. A headless run (`claude -p`) is not checked, since no pane can show what it finds.
 

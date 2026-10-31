@@ -49,11 +49,12 @@ function decision(id: string, treeHash: string, decision: 'approved' | 'rejected
  * and what the engine answers beneath the plugins. `commands` records each
  * slash command the guard runs as the person; `listed` counts the listings.
  */
-function world(on: On, plugins: Plugin[], options: { listing?: 'fails' } = {}): { commands: string[]; listed: () => number } {
+function world(on: On, plugins: Plugin[], options: { listing?: 'fails'; unreadable?: (path: string) => boolean } = {}): { commands: string[]; listed: () => number } {
   const files: FixtureFiles = {}
   for (const plugin of plugins) for (const [rel, file] of Object.entries(plugin.files)) files[`${folderOf(plugin.id)}/${rel}`] = file
   let listings = 0
   serveFixture(on, CACHE, files, {
+    unreadable: options.unreadable,
     run: argv => {
       if (argv.join(' ') === 'claude plugin list --json') {
         listings += 1
@@ -193,7 +194,8 @@ describe('gate F: the plugins on at the start of a session', () => {
 
   test('a folder that cannot be read waits as Could not verify, and Turn off still turns it off', async ($, on) => {
     // Listed where nothing is: the folder is gone.
-    const { commands } = world(on, [{ id: 'notes@acme', files: {} }])
+    const notes: Plugin = { id: 'notes@acme', files: {} }
+    const { commands } = world(on, [notes])
     store(on)
     const ui = serveUi(on)
 
@@ -204,6 +206,22 @@ describe('gate F: the plugins on at the start of a session', () => {
     expect(commands).toEqual(['/plugin disable notes@acme'])
     expect(ui.toasts).toContain('AI Install Guard: rejected notes@acme; turning it off')
     await pane.unmount()
+    // Turned off, it waits no more: /guard held leaves it out and opens nothing.
+    notes.enabled = false
+    const opened = ui.opened.length
+    expect((await $.command.run(typed('guard', 'held'))).text).toBe('AI Install Guard: no mod was kept from loading in this session, and no plugin on waits for a decision.')
+    expect(ui.opened.length).toBe(opened)
+  })
+
+  test('files that cannot be read as they are scanned wait as Could not verify, never named as checked', async ($, on) => {
+    let reads = 0
+    world(on, [{ id: 'notes@acme', files: CLEAN }], { unreadable: path => path === `${rootOf('notes@acme')}/README.md` && ++reads > 1 })
+    const stored = store(on)
+    serveUi(on)
+
+    const held = await start($)
+    expect(held).toContain('notes@acme: the scan could not read it (ai-install-guard: $.fs.read: the file cannot be read)')
+    expect(stored.get('skills-checked')).toBeUndefined()
   })
 
   test('the pane is never taken from a verdict still waiting for you: the toast points to /guard held', async ($, on) => {
@@ -216,9 +234,13 @@ describe('gate F: the plugins on at the start of a session', () => {
     // A scan you asked for, its verdict in the pane and not yet decided.
     await $.command.run(typed('guard', `scan ${rootOf('other@acme')}`))
     const before = ui.toasts.length
+    const opened = ui.opened.length
 
-    await start($)
+    // Nor does /guard held take it: it says to decide it first.
+    const held = await start($)
     expect(ui.toasts[before]).toBe('AI Install Guard found 1 plugin on that you have not approved: notes@acme. /guard held lists them and opens the first in the pane.')
+    expect(held).toContain("The guard's pane holds a verdict still waiting for you: decide it (/guard report reopens it), then run /guard held again to open the next one.")
+    expect(ui.opened.length).toBe(opened)
   })
 
   test('a listing that fails is named, and nothing is held', async ($, on) => {
@@ -255,9 +277,27 @@ describe('gate F: the plugins on at the start of a session', () => {
     expect(ui.toasts[0]).toBe(
       'AI Install Guard looked at the 3 plugins already on that it had not checked: 1 with no red flags, and 2 worth your look when you like: tips@acme, watch@acme. /guard held opens them one at a time. From now on, it checks a plugin that is new or changed as a session starts.',
     )
-    expect(stored.get('plugins-baseline')).toEqual(expect.any(Number))
-    // Each named once: the next session goes by them in silence.
-    expect(stored.get('skills-checked')).toEqual(expect.arrayContaining([await treeOf(CLEAN), await treeOf(FLAGGED), await treeOf(MOD)]))
+    // Each named once: the next session goes by them in silence, and /guard held still lists the two that wait.
+    expect(stored.get('skills-checked')).toEqual([await treeOf(CLEAN)])
+    expect(stored.get('plugins-baseline')).toEqual({
+      at: expect.any(Number),
+      waiting: [
+        { treeHash: await treeOf(FLAGGED), why: 'Worth a look' },
+        { treeHash: await treeOf(MOD), why: 'a mod whose files you have not approved' },
+      ],
+    })
+  })
+
+  test('what the first check named waits quietly in later sessions: no toast, no pane, but /guard held opens it', async ($, on) => {
+    world(on, [{ id: 'tips@acme', files: FLAGGED }])
+    store(on, { 'plugins-baseline': { at: Date.UTC(2026, 9, 1), waiting: [{ treeHash: await treeOf(FLAGGED), why: 'Worth a look' }] } })
+    const ui = serveUi(on)
+
+    await $.session.start({ cwd: PROJECT, surface: 'terminal', isInteractive: true })
+    const held = (await $.command.run(typed('guard', 'held'))).text
+    expect(ui.toasts.filter(toast => toast.startsWith('AI Install Guard found') || toast.startsWith('AI Install Guard looked'))).toEqual([])
+    expect(held).toContain('tips@acme: Worth a look')
+    expect(held).toContain("tips@acme is in the guard's pane: keep it, or turn it off there.")
   })
 
   test('the first check opens no pane of its own, though /guard held opens the first to look at', async ($, on) => {
@@ -279,7 +319,16 @@ describe('gate F: the plugins on at the start of a session', () => {
     serveUi(on)
 
     await start($)
-    expect(stored.get('skills-checked')).toEqual([`rejected ${await treeOf(FLAGGED)}`])
+    expect(stored.get('skills-checked')).toEqual([`rejected ${await treeOf(FLAGGED)} ${Date.UTC(2026, 9, 20)}`])
+  })
+
+  test('the same files rejected again, after an approval, are named again', async ($, on) => {
+    world(on, [{ id: 'notes@acme', files: FLAGGED }])
+    store(on, { 'skills-checked': [`rejected ${await treeOf(FLAGGED)} ${Date.UTC(2026, 9, 2)}`], decisions: [decision('notes@acme', await treeOf(FLAGGED), 'rejected')] })
+    const ui = serveUi(on)
+
+    await start($)
+    expect(ui.toasts).toEqual(['AI Install Guard found 1 plugin on that you have not approved: notes@acme. You rejected its files: turn it off in /plugin. /guard held lists it.'])
   })
 
   test('files checked before with no red flags, and rejected since, are named once all the same', async ($, on) => {
@@ -290,7 +339,7 @@ describe('gate F: the plugins on at the start of a session', () => {
     const held = await start($)
     expect(ui.toasts).toEqual(['AI Install Guard found 1 plugin on that you have not approved: notes@acme. You rejected its files: turn it off in /plugin. /guard held lists it.'])
     expect(held).toContain('notes@acme: you rejected these files on 2026-10-20')
-    expect(stored.get('skills-checked')).toEqual([`rejected ${await treeOf(CLEAN)}`, await treeOf(CLEAN)])
+    expect(stored.get('skills-checked')).toEqual([`rejected ${await treeOf(CLEAN)} ${Date.UTC(2026, 9, 20)}`, await treeOf(CLEAN)])
   })
 
   test('a second start in the same session, at a reload, does not check again', async ($, on) => {

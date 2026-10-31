@@ -7,7 +7,7 @@ import type { EngineInterface, PluginRegisterInput } from 'claude-code'
 
 import type { GuardRequest } from '../../types'
 import { loadDecisions, type Decision } from '../guard/decisions'
-import { showScan, showUnverified } from '../guard/run'
+import { paneIsFree, showScan, showUnverified } from '../guard/run'
 import { modHost } from '../mod-host'
 import { takeInventory } from '../scan/inventory'
 import { safeLine } from '../scan/safe-text'
@@ -74,6 +74,9 @@ function keptOut(label: string, why: string): string {
   return `AI Install Guard kept ${label} from loading: ${why}. Review it in the guard's pane (/guard held), approve it, then run /reload-plugins.`
 }
 
+/** What /guard held says in place of opening the next review, while the pane holds a verdict still waiting. */
+export const PANE_BUSY = "The guard's pane holds a verdict still waiting for you: decide it (/guard report reopens it), then run /guard held again to open the next one."
+
 /** Adds a held mod to the session's list, replacing an earlier entry for the same folder. */
 export function remember(held: HeldMod[], mod: HeldMod): void {
   const at = held.findIndex(item => item.root === mod.root)
@@ -107,6 +110,7 @@ export async function heldReport($: EngineInterface, held: readonly HeldMod[], l
   if (held.length === 0) return 'AI Install Guard: no mod was kept from loading in this session, and no plugin on waits for a decision.'
   const { lines, next } = heldStatus(held, await loadDecisions($))
   if (next === undefined) return `AI Install Guard kept ${count(held.length)} from loading in this session, and each is decided:\n${lines.join('\n')}`
+  if (!(await paneIsFree($))) return `AI Install Guard kept ${count(held.length)} from loading in this session:\n${lines.join('\n')}\n\n${PANE_BUSY}`
   await reviewHeld($, next, lookups)
   return `AI Install Guard kept ${count(held.length)} from loading in this session:\n${lines.join('\n')}\n\n${next.label} is in the guard's pane. Approve it there, then run /reload-plugins to load it. Run /guard held again for the next one.`
 }

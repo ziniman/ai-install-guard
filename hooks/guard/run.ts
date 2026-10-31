@@ -154,6 +154,20 @@ async function showFailure($: EngineInterface, target: string, reason: string, o
   return { view: failed, shown: await showOwn($, failed).catch(() => false) }
 }
 
+/**
+ * Whether the pane may open on a held mod or a plugin found on at a session's
+ * start: never over a scan still running or a verdict still waiting for you
+ * (a held install, a write, your own scan), so neither the session-start
+ * check, which ends whenever it ends, nor /guard held takes the pane from it.
+ * Another such review may be replaced: /guard held still lists it.
+ */
+export async function paneIsFree($: EngineInterface): Promise<boolean> {
+  const view = await read($, viewAtom).catch(() => null)
+  if (view === null || view.decision !== undefined) return true
+  const subject = view.request?.subject
+  return view.verdict !== undefined && (subject === 'installed' || subject === 'load')
+}
+
 /** Whether the pane still shows this scan. */
 async function owns($: EngineInterface, scanId: string): Promise<boolean> {
   return (await read($, viewAtom))?.scanId === scanId
