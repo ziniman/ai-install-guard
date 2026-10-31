@@ -236,6 +236,12 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand(`python3 -c "import os; os.system('claude plugin i x@y')"`)).toMatchObject({ kind: 'unreadable' })
     expect(readShellCommand(`ACTION=install python3 -c 'import os; os.system("claude mcp " + os.environ["ACTION"])'`)).toMatchObject({ kind: 'unreadable' })
     expect(readShellCommand(`python3 -c "import os; os.system('CLAUDE PLUGIN INSTALL X'.lower())"`)).toMatchObject({ kind: 'unreadable' })
+    // Local review: a name or a verb as a string of its own, whose case code may change, and the command named by its path.
+    expect(readShellCommand(`ACTION=install python3 -c 'import os,subprocess; subprocess.run(["Claude".lower(),"plugin",os.environ["ACTION"],"evil@m"])'`)).toMatchObject({ kind: 'unreadable' })
+    expect(readShellCommand(`python3 -c 'import os; os.system("/usr/local/bin/claude plugin " + "I".lower() + " evil@m")'`)).toMatchObject({ kind: 'unreadable' })
+    expect(readShellCommand(`ACTION=install python3 -c 'import os; os.system("/usr/local/bin/claude mcp " + os.environ["ACTION"])'`)).toMatchObject({ kind: 'unreadable' })
+    // A folder named like it, inside a path, is still no command.
+    expect(readShellCommand('python3 ~/.claude/plugins/x/run.py')).toEqual(pass)
   })
 
   test('splits like a shell: quotes, separators, redirections and here-documents', () => {
