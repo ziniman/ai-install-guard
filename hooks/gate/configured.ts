@@ -179,14 +179,13 @@ export async function configuredServers($: EngineInterface, place: ConfigPlace):
  * now, or undefined. A refusal too many, never one too few.
  */
 export function refusalByName(tool: string, decisions: readonly Decision[]): string | undefined {
+  // Several servers decided at once are joined by `+`, which a name of one may hold too: each reading counts.
+  const names = (root: string): string[] => [root, ...root.split('+')]
   const rejected = decisions.find(
     decision =>
       decision.decision === 'rejected' &&
       decision.root?.startsWith(`${MCP_ROOT}/`) === true &&
-      decision.root
-        .slice(MCP_ROOT.length + 1)
-        .split('+')
-        .some(name => tool.startsWith(toolsOf(name))),
+      names(decision.root.slice(MCP_ROOT.length + 1)).some(name => tool.startsWith(toolsOf(name))),
   )
   if (rejected === undefined) return undefined
   return `AI Install Guard refused this tool: the person rejected an MCP server by this name (${safeLine(rejected.target)}), and the guard could not read the configuration to tell whether this tool comes from it. Tell the person.`

@@ -247,13 +247,16 @@ describe('gate F: your configuration at the start of a session', () => {
 
   test('when the configuration cannot be read, a server you rejected is refused by its name, and no other', async ($, on) => {
     const { tools } = world(on, { '.claude.json': b64({ mcpServers: { notes: LOOSE } }) }, { statFails: path => path === USER_CONFIG })
-    store(on, { decisions: [decision('MCP server notes', await serverHash('notes', 'user', LOOSE), 'rejected')] })
+    // A name that holds `+`, which also joins several servers decided at once.
+    const joined = { ...decision('MCP server a+b', 'sha256:joined', 'rejected'), root: '/ai-install-guard/mcp-server/a+b' }
+    store(on, { decisions: [decision('MCP server notes', await serverHash('notes', 'user', LOOSE), 'rejected'), joined] })
     serveUi(on)
 
     await $.session.start({ cwd: PROJECT, surface: null, isInteractive: false })
     expect((await $.tool.call(mcpTool('mcp__notes__search'))).deny).toBe(
       'AI Install Guard refused this tool: the person rejected an MCP server by this name (MCP server notes), and the guard could not read the configuration to tell whether this tool comes from it. Tell the person.',
     )
+    for (const tool of ['mcp__a_b__x', 'mcp__a__x', 'mcp__b__x']) expect((await $.tool.call(mcpTool(tool))).deny).toContain('(MCP server a+b)')
     expect((await $.tool.call(mcpTool('mcp__search__find'))).deny).toBeUndefined()
     expect(tools).toEqual(['mcp__search__find'])
   })
