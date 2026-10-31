@@ -211,7 +211,7 @@ function nameOf(request: InstallRequest): string {
  * scanned: a folder named after the server, so its decisions are kept under
  * its name and `/guard forget <name>` finds them.
  */
-const MCP_ROOT = '/ai-install-guard/mcp-server'
+export const MCP_ROOT = '/ai-install-guard/mcp-server'
 
 /** The tree hash of files the guard laid out in memory, as a scan of them would pin its decision. */
 export async function laidHash(how: Extract<ScanHow, { files: unknown }>): Promise<string> {

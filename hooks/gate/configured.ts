@@ -20,7 +20,7 @@ import { row } from '../scan/checks/types'
 import type { Host } from '../scan/host'
 import { safeLine } from '../scan/safe-text'
 import type { ScanReport } from '../scan/scan'
-import { laidHash, mcpCandidate, settingsReport, settingsTree } from './gate'
+import { laidHash, MCP_ROOT, mcpCandidate, settingsReport, settingsTree } from './gate'
 import { day } from './load'
 import { mcpServerProblem } from './requests'
 import { expandHome } from './resolve'
@@ -164,10 +164,37 @@ export async function configuredNow($: EngineInterface, place: ConfigPlace): Pro
  * The MCP servers in your configuration, as their tools are named, for the
  * tool hook: read when a session's first MCP tool is called, whether or not
  * the check has run, so a server you rejected before is refused from the
- * start, in any session.
+ * start, in any session. `blind` says a file that holds servers is there but
+ * could not be read, so a tool may come from a server not listed.
  */
-export async function configuredServers($: EngineInterface, place: ConfigPlace): Promise<ServerTools[]> {
-  return (await readUnits(modHost($), place)).units.flatMap(unit => (unit.kind === 'mcp' ? [{ key: unit.key, label: unit.label, tools: unit.tools, hashes: unit.hashes }] : []))
+export async function configuredServers($: EngineInterface, place: ConfigPlace): Promise<{ servers: ServerTools[]; blind: boolean }> {
+  const { units, unreadable } = await readUnits(modHost($), place)
+  const servers = units.flatMap(unit => (unit.kind === 'mcp' ? [{ key: unit.key, label: unit.label, tools: unit.tools, hashes: unit.hashes }] : []))
+  return { servers, blind: unreadable.some(item => /(?:^|\/)\.(?:claude|mcp)\.json$/.test(item.key)) }
+}
+
+/**
+ * When the configuration could not be read: the refusal for a tool whose
+ * name matches a server you rejected by name, whatever its configuration
+ * now, or undefined. A refusal too many, never one too few.
+ */
+export function refusalByName(tool: string, decisions: readonly Decision[]): string | undefined {
+  const rejected = decisions.find(
+    decision =>
+      decision.decision === 'rejected' &&
+      decision.root?.startsWith(`${MCP_ROOT}/`) === true &&
+      decision.root
+        .slice(MCP_ROOT.length + 1)
+        .split('+')
+        .some(name => tool.startsWith(toolsOf(name))),
+  )
+  if (rejected === undefined) return undefined
+  return `AI Install Guard refused this tool: the person rejected an MCP server by this name (${safeLine(rejected.target)}), and the guard could not read the configuration to tell whether this tool comes from it. Tell the person.`
+}
+
+/** How Claude Code begins the names of a server's tools: every character but a letter, digit, `_` or `-` made `_`. */
+function toolsOf(name: string): string {
+  return `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`
 }
 
 /**
@@ -211,8 +238,7 @@ async function readUnits(host: Host, place: ConfigPlace): Promise<{ units: Unit[
     const problem = mcpServerProblem(entry.name, entry.server)
     const how = problem === undefined ? laid : { ...laid, notes: [...(laid.notes ?? []), problemRow(problem)] }
     const hashes = await serverHashes(entry, folders)
-    // Claude Code names a server's tools with every other character made `_`.
-    units.push({ kind: 'mcp', key: `mcp ${scope} ${entry.name}`, label, treeHash: hashes[0] as string, hashes, how, tools: `mcp__${entry.name.replace(/[^A-Za-z0-9_-]/g, '_')}__` })
+    units.push({ kind: 'mcp', key: `mcp ${scope} ${entry.name}`, label, treeHash: hashes[0] as string, hashes, how, tools: toolsOf(entry.name) })
   }
   const files = new Set<string>()
   // Your own folder's settings, then this folder's shared and personal ones.

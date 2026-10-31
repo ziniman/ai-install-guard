@@ -233,6 +233,31 @@ describe('gate F: your configuration at the start of a session', () => {
     expect(tools).toEqual(['mcp__plugin_notes_notes__search'])
   })
 
+  test('a session started in another folder reads its servers again', async ($, on) => {
+    const hash = await serverHash('notes', `project ${HOME}/other`, LOOSE)
+    world(on, { 'other/.mcp.json': b64({ mcpServers: { notes: LOOSE } }) })
+    store(on, { decisions: [decision('MCP server notes', hash, 'rejected')] })
+    serveUi(on)
+
+    await $.session.start({ cwd: PROJECT, surface: null, isInteractive: false })
+    expect((await $.tool.call(mcpTool('mcp__notes__search'))).deny).toBeUndefined()
+    await $.session.start({ cwd: `${HOME}/other`, surface: null, isInteractive: false })
+    expect((await $.tool.call(mcpTool('mcp__notes__search'))).deny).toContain('which the person rejected')
+  })
+
+  test('when the configuration cannot be read, a server you rejected is refused by its name, and no other', async ($, on) => {
+    const { tools } = world(on, { '.claude.json': b64({ mcpServers: { notes: LOOSE } }) }, { statFails: path => path === USER_CONFIG })
+    store(on, { decisions: [decision('MCP server notes', await serverHash('notes', 'user', LOOSE), 'rejected')] })
+    serveUi(on)
+
+    await $.session.start({ cwd: PROJECT, surface: null, isInteractive: false })
+    expect((await $.tool.call(mcpTool('mcp__notes__search'))).deny).toBe(
+      'AI Install Guard refused this tool: the person rejected an MCP server by this name (MCP server notes), and the guard could not read the configuration to tell whether this tool comes from it. Tell the person.',
+    )
+    expect((await $.tool.call(mcpTool('mcp__search__find'))).deny).toBeUndefined()
+    expect(tools).toEqual(['mcp__search__find'])
+  })
+
   test('a server approved as `claude mcp add` added it, or under the real name of a linked folder, counts as approved', async ($, on) => {
     const added = { command: 'npx', args: ['-y', '@acme/notes'] }
     // As Claude Code saves it: its type named, and an empty environment.

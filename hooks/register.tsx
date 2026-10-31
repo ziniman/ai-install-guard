@@ -2,7 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
-import { configuredServers, servingTool, toolRefusal, type ServerTools } from './gate/configured'
+import { configuredServers, refusalByName, servingTool, toolRefusal, type ServerTools } from './gate/configured'
 import { checkAtStart, waitingReport, type StartCheck } from './gate/installed'
 import { failedLoad, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
 import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
@@ -60,11 +60,13 @@ export const register: Register = (on, options) => {
   /** The session-start check once it has begun, so a reload, which starts the session's hooks again, does not run it twice, and /guard held can wait for it. */
   let checking: Promise<void> | undefined
   /** The MCP servers in your configuration as their tools are named, read at the session's first MCP tool call. */
-  let servers: Promise<ServerTools[]> | undefined
+  let servers: Promise<{ servers: ServerTools[]; blind: boolean }> | undefined
 
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
     projectDir = e.cwd
+    // A session in another folder has other servers: read them again at its first MCP tool call.
+    servers = undefined
     await $.command.register({
       name: 'guard',
       description: 'Scan a plugin, mod, skill or MCP server without installing it',
@@ -240,9 +242,13 @@ export const register: Register = (on, options) => {
     if (!e.tool.startsWith('mcp__') || projectDir === undefined) return next(e)
     const place = { cwd: projectDir, configDir: await claudeFolder($) }
     servers ??= configuredServers($, place)
-    const serving = servingTool(await servers, e.tool)
-    if (serving.length === 0) return next(e)
-    const refused = toolRefusal(serving, await loadDecisions($))
+    const read = await servers
+    const serving = servingTool(read.servers, e.tool)
+    // A file of servers it could not read is read again at the next call; meanwhile a server you rejected is refused by its name.
+    if (read.blind) servers = undefined
+    if (serving.length === 0 && !read.blind) return next(e)
+    const decisions = await loadDecisions($)
+    const refused = toolRefusal(serving, decisions) ?? (read.blind ? refusalByName(e.tool, decisions) : undefined)
     return refused === undefined ? next(e) : { deny: refused }
   }).catch(($, e, next) => {
     if (next.called) return next(e)
