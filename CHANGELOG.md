@@ -4,6 +4,14 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.7 &nbsp;·&nbsp; 2026-10-31
+
+**Session start** - As a session starts, the guard checks every plugin installed and on, beside the session so the first prompt does not wait. That catches what no gate sees: an update Claude Code made on its own, a plugin installed from a terminal while no session ran, a mod that loaded before the guard. Files you approved, or checked before with no red flags, are left alone. A new or changed plugin with no red flags is named once; one with a red flag, or a mod you never approved, waits in the pane with Keep and Turn off, which runs `/plugin disable` for it. The first check on a machine names what was already on in one note and opens no pane, since you chose those plugins before the guard looked
+
+**`/guard held`** - Also lists the plugins on that wait for your decision, and opens the next one in the pane
+
+---
+
 ## v0.8.6 &nbsp;·&nbsp; 2026-10-31
 
 **A skill's first use** - A skill or command that came with no install (a repository's own, one copied into `~/.claude/skills`, one synced from your account) is scanned before it runs, when you type `/name` or Claude calls the Skill tool, since its inline commands run as Claude Code expands it. One with no red flags runs, named once; one with a red flag is held in the pane with Approve and Reject, and nothing in it runs. It is checked again as its instructions load, for a skill found anywhere else. A plugin's skills are left to the plugin's install, since a skill's folder read alone is cut off from the rest of its plugin
