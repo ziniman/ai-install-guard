@@ -48,9 +48,20 @@ function sameVersion(a: { treeHash: string; sha?: string }, b: { treeHash: strin
   return a.treeHash === b.treeHash && (a.sha ?? '') === (b.sha ?? '')
 }
 
+/**
+ * Keeps a decision, newest first. Over the limit, the oldest approval goes
+ * first: one forgotten is asked about again, while a rejection forgotten
+ * would let through what you turned away (a server whose tools are refused).
+ * The decision just made always stays.
+ */
 export async function recordDecision($: EngineInterface, decision: Decision): Promise<void> {
-  const others = (await loadDecisions($)).filter(item => !sameVersion(item, decision))
-  await $.store.set(DECISIONS, [decision, ...others].slice(0, MAX_DECISIONS))
+  const kept = [decision, ...(await loadDecisions($)).filter(item => !sameVersion(item, decision))]
+  while (kept.length > MAX_DECISIONS) {
+    let oldest = kept.length - 1
+    while (oldest > 0 && kept[oldest]?.decision !== 'approved') oldest -= 1
+    kept.splice(oldest === 0 ? kept.length - 1 : oldest, 1)
+  }
+  await $.store.set(DECISIONS, kept)
 }
 
 /**

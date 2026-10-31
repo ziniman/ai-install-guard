@@ -93,4 +93,14 @@ The first check on a machine names everything already on in one note and opens n
 
 By the time the check runs, the plugin's classic hooks and MCP servers have started for this session: the check tells you, and Turn off keeps them from the next. It leaves out the mods the loading gate already kept out, an administrator's plugins and the guard itself. A headless run (`claude -p`) is not checked, since no pane can show what it finds.
 
+### Your configuration
+
+The same check then reads your configuration, which changes outside Claude too: a `git pull` that brings a project's `.mcp.json` or `.claude/settings.json`, another program's installer writing to `~/.claude.json` or `~/.claude/settings.json`, an edit made in a terminal. It reads the files and runs nothing; `claude mcp list` would start each server to check on it, so the guard does not use it.
+
+- **MCP servers:** each server in your `~/.claude.json`, yours and this folder's, and in this folder's `.mcp.json`, laid out and hashed as the gates lay out one Claude adds, so a server you approved then (with `claude mcp add`, or in a configuration Claude wrote, several servers at once included) counts as approved here. One with no red flags is named once; one with a red flag waits in the pane with **Keep** and **Reject**. The server started with the session, so Reject cannot stop it there: the guard refuses its tools, from the first call in every session after, headless runs included, and tells you the command that removes it (`claude mcp remove <name> -s <scope>`). It never changes your configuration itself.
+- **Settings files:** what your `~/.claude/settings.json` and this folder's `.claude/settings.json` and `.claude/settings.local.json` run on their own: their hooks, status line and helper commands, and the environment variables that change what code runs or where Claude's traffic goes (`NODE_OPTIONS`, `LD_PRELOAD`, a proxy). Anything that runs is worth a look, so a file that runs something you have not approved waits in the pane, and Keep approves what it runs, not the whole file: a theme changed later asks nothing. Once you have approved a file, a later change shows only what it adds or takes away, and a file that no longer runs what you approved (its last hook taken away, or the file gone) waits too, since a hook can guard as well as act. A settings change you approved as Claude made it counts as approved here. One hook cannot be held back on its own, so Reject tells you to remove what you do not want from the file.
+- **A file that is there but cannot be read** is named as Could not verify each session until it can.
+
+An administrator's managed settings and servers are theirs, and left out. The first check on a machine names what is already there in one note and opens no pane, as it does for plugins.
+
 [Back to the documentation](README.md)

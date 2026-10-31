@@ -2,7 +2,8 @@ import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
-import { checkAtStart, waitingReport, type FoundPlugin } from './gate/installed'
+import { configuredServers, refusalByName, servingTool, toolRefusal, type ServerTools } from './gate/configured'
+import { checkAtStart, waitingReport, type StartCheck } from './gate/installed'
 import { failedLoad, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
 import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
 import { failedSkill, judgeByName, judgeSkill } from './gate/skill'
@@ -35,7 +36,7 @@ const USAGE = [
   '  /guard report                 Reopen the last report',
   '  /guard badge                  A README badge for the last scan (No red flags or Worth a look)',
   '  /guard list                   Your approved and rejected versions',
-  '  /guard held                   The mods kept from loading and the plugins on that wait for you, the next one in the pane',
+  '  /guard held                   The mods kept from loading, and the plugins and configuration that wait for you, the next one in the pane',
   '  /guard forget <name>          Forget decisions about a name, so it is judged again',
 ].join('\n')
 
@@ -54,14 +55,18 @@ export const register: Register = (on, options) => {
   const announced = new Set<string>()
   /** Whether the session has started, so a mod kept out at a reload can be shown at once. */
   let started = false
-  /** The plugins on in this session whose files you have not approved, as the session-start check found them. */
-  let found: FoundPlugin[] = []
+  /** The plugins on in this session, and the parts of your configuration, that you have not approved, as the session-start check found them. */
+  let found: StartCheck = { plugins: [], configs: [] }
   /** The session-start check once it has begun, so a reload, which starts the session's hooks again, does not run it twice, and /guard held can wait for it. */
   let checking: Promise<void> | undefined
+  /** The MCP servers in your configuration as their tools are named, read at the session's first MCP tool call. */
+  let servers: Promise<{ servers: ServerTools[]; blind: boolean }> | undefined
 
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
     projectDir = e.cwd
+    // A session in another folder has other servers: read them again at its first MCP tool call.
+    servers = undefined
     await $.command.register({
       name: 'guard',
       description: 'Scan a plugin, mod, skill or MCP server without installing it',
@@ -74,11 +79,13 @@ export const register: Register = (on, options) => {
     if (fresh.length > 0) $.ui.toast(heldToast(fresh))
     const first = toReview(fresh)
     if (first !== undefined) await reviewHeld($, first, lookups).catch(() => undefined)
-    // Gate F: every plugin installed and on, compared with what you approved,
-    // beside the session rather than before its first prompt. Only with a
-    // person at the prompt: a headless run has no pane to show what it finds.
+    // Gate F: every plugin installed and on, and every MCP server and settings
+    // file in your configuration, compared with what you approved, beside the
+    // session rather than before its first prompt. Only with a person at the
+    // prompt: a headless run has no pane to show what it finds.
     if (e.isInteractive && checking === undefined) {
-      checking = checkAtStart($, { held, own: $.plugin.root, paneTaken: first !== undefined, lookups }).then(check => {
+      const place = async () => ({ cwd: e.cwd, configDir: await claudeFolder($) })
+      checking = checkAtStart($, { held, own: $.plugin.root, paneTaken: first !== undefined, lookups, place }).then(check => {
         found = check
       })
     }
@@ -128,7 +135,7 @@ export const register: Register = (on, options) => {
     if (sub === 'held') {
       // A check still running at the start of the session is waited for, so the list is whole.
       await checking
-      return { text: await waitingReport($, held, found, lookups) }
+      return { text: await waitingReport($, held, found, lookups, { cwd: projectDir ?? '', configDir: await claudeFolder($) }) }
     }
     if (sub === 'forget' && rest !== '') {
       const count = (await forgetDecisions($, rest, await landedName($, rest))).length
@@ -227,6 +234,29 @@ export const register: Register = (on, options) => {
     if (judged.note !== undefined) $.ui.toast(judged.note)
     return next(e)
   }).catch(($, e, next) => (next.called ? next(e) : { text: failedSkill(e, next.error) }))
+
+  // A server you rejected starts with the session all the same, before the
+  // guard can look: its tools are refused, by the start of their names, from
+  // the session's first call, whether or not the check has run.
+  on('tool.call', async ($, e, next) => {
+    if (!e.tool.startsWith('mcp__') || projectDir === undefined) return next(e)
+    const place = { cwd: projectDir, configDir: await claudeFolder($) }
+    servers ??= configuredServers($, place)
+    const read = await servers
+    const serving = servingTool(read.servers, e.tool)
+    // A file of servers it could not read is read again at the next call; meanwhile a server you rejected is refused by its name.
+    if (read.blind) servers = undefined
+    if (serving.length === 0 && !read.blind) return next(e)
+    const decisions = await loadDecisions($)
+    const refused = toolRefusal(serving, decisions) ?? (read.blind ? refusalByName(e.tool, decisions) : undefined)
+    return refused === undefined ? next(e) : { deny: refused }
+  }).catch(($, e, next) => {
+    if (next.called) return next(e)
+    if (!e.tool.startsWith('mcp__')) return next(e)
+    // Read again at the next call; this one is refused, since the guard cannot tell whether you rejected its server.
+    servers = undefined
+    return { deny: 'AI Install Guard stopped this tool: it may come from an MCP server the person rejected, and the guard failed before it could check. Tell the person.' }
+  })
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($, e) => drawPane($, e))
 }
