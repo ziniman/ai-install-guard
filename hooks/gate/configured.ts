@@ -194,8 +194,10 @@ async function readUnits(host: Host, place: ConfigPlace): Promise<{ units: Unit[
     units.push({ kind: 'mcp', key: `mcp ${scope} ${entry.name}`, label, treeHash: inventory.treeHash, how, tools: `mcp__${entry.name.replace(/[^A-Za-z0-9_-]/g, '_')}__` })
   }
   const files = new Set<string>()
-  const settings = [`${place.configDir ?? `${home}/.claude`}/settings.json`, `${place.cwd}/.claude/settings.json`, `${place.cwd}/.claude/settings.local.json`]
-  for (const raw of settings) {
+  // Your own folder's settings, then this folder's shared and personal ones.
+  const yours = place.configDir ?? `${home}/.claude`
+  const folder = `${place.cwd}/.claude`
+  for (const raw of [`${yours}/settings.json`, `${folder}/settings.json`, `${folder}/settings.local.json`]) {
     const { path, text } = await read(raw)
     // Started in the home folder, the folder's settings are your own: read once.
     if (files.has(path) || text === undefined) continue
