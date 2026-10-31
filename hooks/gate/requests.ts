@@ -114,11 +114,12 @@ function mayInstall(text: string): boolean {
 }
 
 /**
- * The `claude` command's names as words of their own, at the end of a path
- * (`/usr/local/bin/claude`) but not inside one (`~/.claude/`), spelled as
- * the command is: `Claude Code` in a sentence names the product, not a command.
+ * The `claude` command's names as words of their own, or at the end of a
+ * path (`/usr/local/bin/claude`, `./claude`) but not inside one
+ * (`~/.claude/`), spelled as the command is: `Claude Code` in a sentence
+ * names the product, and `/claude` alone in one is no path, not a command.
  */
-const CLAUDE_WORD = /(?<![\w.-])claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?(?![\w./-])/
+const CLAUDE_WORD = /(?:(?<![\w./-])|(?<=[\w.~-]\/))claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?(?![\w./-])/
 /** A name of the command as a string of its own in code, in any case, which code may change as it runs (`"Claude".lower()`). */
 const CLAUDE_STRING = /(["'`])claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?\1/i
 
