@@ -28,9 +28,10 @@ const LAST_VIEW = 'last-view'
 /** The store is capped at 4 MiB in all: keep the newest decisions only. */
 const MAX_DECISIONS = 500
 /**
- * What was checked with no red flags and named, by tree hash, so each is
- * named once: skills, and plugins found on at the start of a session. The
- * key keeps its first name, so what was named before is not named again.
+ * What was checked and named, by tree hash, so each is named once: skills,
+ * and plugins found on at the start of a session; `rejected <hash>` for a
+ * plugin on although you rejected its files. The key keeps its first name,
+ * so what was named before is not named again.
  */
 const CHECKED = 'skills-checked'
 const MAX_CHECKED = 300

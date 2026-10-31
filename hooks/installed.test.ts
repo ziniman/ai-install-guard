@@ -279,7 +279,18 @@ describe('gate F: the plugins on at the start of a session', () => {
     serveUi(on)
 
     await start($)
-    expect(stored.get('skills-checked')).toEqual([await treeOf(FLAGGED)])
+    expect(stored.get('skills-checked')).toEqual([`rejected ${await treeOf(FLAGGED)}`])
+  })
+
+  test('files checked before with no red flags, and rejected since, are named once all the same', async ($, on) => {
+    world(on, [{ id: 'notes@acme', files: CLEAN }])
+    const stored = store(on, { 'skills-checked': [await treeOf(CLEAN)], decisions: [decision('notes@acme', await treeOf(CLEAN), 'rejected')] })
+    const ui = serveUi(on)
+
+    const held = await start($)
+    expect(ui.toasts).toEqual(['AI Install Guard found 1 plugin on that you have not approved: notes@acme. You rejected its files: turn it off in /plugin. /guard held lists it.'])
+    expect(held).toContain('notes@acme: you rejected these files on 2026-10-20')
+    expect(stored.get('skills-checked')).toEqual([`rejected ${await treeOf(CLEAN)}`, await treeOf(CLEAN)])
   })
 
   test('a second start in the same session, at a reload, does not check again', async ($, on) => {

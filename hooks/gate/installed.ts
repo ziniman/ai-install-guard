@@ -92,12 +92,12 @@ export async function checkInstalled($: EngineInterface, options: { skip: Readon
     // Decisions are kept newest first: the newest for these files stands.
     const decided = decisions.find(item => item.treeHash === tree.treeHash)
     if (decided?.decision === 'approved') continue
-    if (await wasChecked($, tree.treeHash)) continue
+    // A rejection is named once on its own, so files checked before with no red flags and rejected since are still named.
     if (decided?.decision === 'rejected') {
-      await noteChecked($, tree.treeHash)
-      found.push({ id, label, root: plugin.root, treeHash: tree.treeHash, why: `you rejected these files on ${day(decided.decidedAt)}`, rejected: true })
+      if (await noteChecked($, `rejected ${tree.treeHash}`)) found.push({ id, label, root: plugin.root, treeHash: tree.treeHash, why: `you rejected these files on ${day(decided.decidedAt)}`, rejected: true })
       continue
     }
+    if (await wasChecked($, tree.treeHash)) continue
     const report = await scanOnly(host, label, { folder: plugin.root }, { lookups: options.lookups }).catch((error: unknown) => error instanceof Error ? error.message : String(error))
     if (typeof report === 'string') {
       found.push({ id, label, root: plugin.root, why: `the scan failed (${safeLine(report)})` })
