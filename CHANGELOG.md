@@ -4,6 +4,10 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.8 &nbsp;·&nbsp; 2026-10-31
+
+**Claude's shell commands** - A command with code the guard does not read, such as a `sed` edit or an inline Python script, is no longer held because its text names Claude Code and MCP servers or plugins in a sentence. Only the `claude` command as the shell spells it, and `plugin i` in lowercase, count as a sign of an install there, so editing docs or source that talk about Claude Code goes through
+
 ## v0.8.7 &nbsp;·&nbsp; 2026-10-31
 
 **Session start** - As a session starts, the guard checks every plugin installed and on, beside the session so the first prompt does not wait. That catches what no gate sees: an update Claude Code made on its own, a plugin installed from a terminal while no session ran, a mod that loaded before the guard. Files you approved, or checked before with no red flags, are left alone. A new or changed plugin with no red flags is named once; one with a red flag, or a mod you never approved, waits in the pane with Keep and Turn off, which runs `/plugin disable` for it. The first check on a machine names what was already on in one note and opens no pane, since you chose those plugins before the guard looked
