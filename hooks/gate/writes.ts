@@ -41,7 +41,7 @@ type Place =
 const PASS: WriteReading = { kind: 'pass' }
 
 /** A path as written, with `\` read as `/` and nothing resolved: what the system follows. */
-function slashed(path: string): string {
+export function slashed(path: string): string {
   return path.replace(/\\/g, '/')
 }
 
@@ -163,12 +163,12 @@ export async function claudeConfigDir(host: Host): Promise<string | undefined> {
 }
 
 /** The most of a skill, command or agent file the guard reads, as the scan does. */
-const MAX_PROMPT_BYTES = 4 * 1024 * 1024
+export const MAX_PROMPT_BYTES = 4 * 1024 * 1024
 /** The most of an MCP configuration it reads: the user's own holds every project's settings. */
 const MAX_CONFIG_BYTES = 16 * 1024 * 1024
 
 /** The file as it is now, as text (undefined when there is none), or its size when it is over `limit`, or that it is there but cannot be read. */
-async function readText(host: Host, path: string, limit: number): Promise<{ text: string | undefined } | { tooLarge: number } | { unreadable: true }> {
+export async function readText(host: Host, path: string, limit: number): Promise<{ text: string | undefined } | { tooLarge: number } | { unreadable: true }> {
   const stat = await host.stat(path).catch(() => undefined)
   if (stat === undefined) return { text: undefined }
   if (stat.size > limit) return { tooLarge: stat.size }

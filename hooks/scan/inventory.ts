@@ -202,8 +202,10 @@ function checkSizes(files: readonly { path: string; size: number }[], total?: nu
  */
 async function assertPlainFile(host: Host, full: string, rel: string): Promise<void> {
   const stat = await host.stat(full, { resolve: true }).catch(() => undefined)
-  const real = stat?.realPath === undefined ? undefined : normalize(stat.realPath)
-  if (stat === undefined || stat.isLink || stat.kind !== 'file' || real !== normalize(full)) {
+  // Gone, or kept from being read (no permission): said as such, not as a change.
+  if (stat === undefined) throw new ScanError(`${rel} could not be read`)
+  const real = stat.realPath === undefined ? undefined : normalize(stat.realPath)
+  if (stat.isLink || stat.kind !== 'file' || real !== normalize(full)) {
     throw new ScanError(`${rel} changed while it was being scanned`)
   }
 }
