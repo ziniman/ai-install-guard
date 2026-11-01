@@ -1,6 +1,6 @@
 import { languageOf, secretName } from './code'
 import { isCodeFile, isLive, type ScanContext } from './context'
-import { CREDENTIAL_PATH, DOWNLOAD_AND_RUN, NETWORK_COMMAND, NETWORK_CODE, SECRET_ENV, UNPINNED_RUNNER } from './patterns'
+import { CREDENTIAL_PATH, DOWNLOAD_AND_RUN, NETWORK_COMMAND, NETWORK_CODE, READS_DOWNLOAD, SECRET_ENV, UNPINNED_RUNNER } from './patterns'
 import { belongsTo } from './mcp'
 import { basename, dirname, findAll, findFirst, judgedMatches, lineIndex, spanKinds, type Match } from './text'
 import { row, type CheckResult, type Evidence, type Status } from './types'
@@ -253,14 +253,19 @@ export function promptChecks(ctx: ScanContext): CheckResult[] {
     // against it ("never run curl | sh") is still a warning, since negation
     // is easy to fake ("don't hesitate to run ..."). A well-known installer
     // (Homebrew's, rustup's) is a step down: worth a look, not a red flag.
+    // A page piped into a Python program that only reads it, standing alone in a fenced block, is data.
+    const readsDownload = new RegExp(READS_DOWNLOAD.source, 'y')
     const downloadAt = (index: number) => {
+      readsDownload.lastIndex = index
+      const reads = readsDownload.test(text) && standsAlone(text, index)
       const warnsAgainst = isNegated(text, index)
       const installer = knownInstaller(text.slice(index, index + 600).split('\n')[0] ?? '')
-      return { warnsAgainst, installer, status: cap(installer === undefined ? (warnsAgainst ? 'warn' : 'fail') : warnsAgainst ? 'info' : 'warn') }
+      return { reads, warnsAgainst, installer, status: reads ? 'info' : cap(installer === undefined ? (warnsAgainst ? 'warn' : 'fail') : warnsAgainst ? 'info' : 'warn') }
     }
     for (const { match, judgement } of judgedMatches(text, DOWNLOAD_AND_RUN, downloadAt, 3)) {
       const what = judgement.installer === undefined ? 'download and run code' : `download and run ${judgement.installer}`
-      remote.push({ file: path, line: match.line, excerpt: `${judgement.warnsAgainst ? 'mentions' : 'tells the model to'} ${what}: ${match.excerpt}`, status: judgement.status })
+      const excerpt = judgement.reads ? `reads a download as data, not code: ${match.excerpt}` : `${judgement.warnsAgainst ? 'mentions' : 'tells the model to'} ${what}: ${match.excerpt}`
+      remote.push({ file: path, line: match.line, excerpt, status: judgement.status })
     }
     // An unpinned package runner counts only as a command (in a code span or
     // block), not prose about one ("npx is a package runner"). It runs the
@@ -454,6 +459,54 @@ function isNegated(text: string, index: number): boolean {
   const rest = before.slice(last.index ?? 0)
   if (/^(?:never|not|don['’]t|do not)\s+(?:ever\s+)?(?:hesitate|forget|fail|neglect|wait)\b/i.test(rest)) return false
   return /^(?:never|not|don['’]t|do not|avoid|instead of)(?:\W+\w+){0,3}\W*$/i.test(rest)
+}
+
+/** How much of a fenced block `standsAlone` reads before a command; past it, the command does not stand alone. */
+const MAX_BLOCK_READ = 20_000
+
+/**
+ * Whether the shell command at `index` stands alone at the top of a fenced
+ * code block, so nothing can take its output and run it: nothing before it
+ * in the block leaves a quote, a group, a substitution, a loop, an if, a case
+ * or a here-document open, and the line before it does not run on into it
+ * (`\`, `|`, `&&`). Outside a fenced block, or past what it reads, it does not.
+ */
+function standsAlone(text: string, index: number): boolean {
+  const fences = Array.from(text.slice(0, index).matchAll(/^[ \t]*(?:```|~~~)/gm), match => match.index ?? 0)
+  if (fences.length % 2 === 0) return false
+  const from = text.indexOf('\n', fences[fences.length - 1] as number) + 1
+  if (from === 0 || index - from > MAX_BLOCK_READ) return false
+  const before = text.slice(from, index)
+  if (before.includes('<<') || /(?:\\|\||&&)[ \t]*(?:#[^\n]*)?(?:\n[ \t]*)+[^\n]*$/.test(before)) return false
+  let depth = 0
+  let ticks = false
+  for (let i = 0; i < before.length && depth >= 0; i += 1) {
+    const char = before[i] as string
+    if (char === '\\') i += 1
+    else if (char === "'" || char === '"') {
+      // `$'…'` and double quotes take backslash escapes; a quote still open at the command holds it.
+      const escapes = char === '"' || before[i - 1] === '$'
+      let j = i + 1
+      while (j < before.length && before[j] !== char) j += escapes && before[j] === '\\' ? 2 : 1
+      if (j >= before.length) return false
+      i = j
+    } else if (char === '#' && (i === 0 || /\s/.test(before[i - 1] as string))) {
+      const end = before.indexOf('\n', i)
+      if (end === -1) return false
+      i = end - 1
+    } else if (char === '`') ticks = !ticks
+    else if (char === '(' || char === '{') depth += 1
+    else if (char === ')' || char === '}') depth -= 1
+    else if (/[a-z]/.test(char) && (i === 0 || /[\s;&|(){}]/.test(before[i - 1] as string))) {
+      const word = /^[a-z]+/.exec(before.slice(i, i + 8))?.[0] ?? char
+      if (/^[\s;&|()]?$/.test(before[i + word.length] ?? '')) {
+        if (word === 'if' || word === 'do' || word === 'case') depth += 1
+        else if (word === 'fi' || word === 'done' || word === 'esac') depth -= 1
+      }
+      i += word.length - 1
+    }
+  }
+  return depth === 0 && !ticks
 }
 
 /**
