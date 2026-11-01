@@ -716,6 +716,8 @@ const RUN_CALL: Record<'js' | 'python', RegExp> = {
   js: /^(?:(?:child_process|cp)\.)?(?:execSync|exec|execFile|execFileSync|spawn|spawnSync)$/,
   python: /^(?:subprocess\.(?:run|call|check_call|check_output|Popen)|os\.system)$/,
 }
+/** Node's calls that read a whole file, whose options may name a `flag` that opens it to write. */
+const READ_FILE_CALL = /(?:^|\.)readFile(?:Sync)?$/
 const PATH_CALL = /^(?:path(?:\.posix|\.win32)?\.(?:join|resolve|normalize)|os\.path\.(?:join|expanduser|abspath|normpath|realpath)|(?:pathlib\.)?(?:Path|PurePath|PosixPath))$/
 /** Python path methods that read or check the file. */
 const READ_METHOD = /^\s*\.\s*(?:exists|is_file|is_dir|is_symlink|read_text|read_bytes|stat|lstat)\s*\(/
@@ -813,11 +815,44 @@ function pathFlow(file: CodeFile): (index: number) => Flow {
     if (PRINT_CALL.test(callee)) return 'mention'
     const close = closeOf(open)
     if (close === -1) return 'write'
-    // Node's read calls take a `flag` that may open the file to write (`'w'` empties it): only `'r'` and `'rs'` only read.
-    if (READ_CALL.test(callee)) return /\bflags?\b(?!['"`]?\s*:\s*(['"`])rs?\1)/.test(text.slice(open, close)) ? 'write' : 'mention'
+    if (READ_CALL.test(callee)) {
+      // The path is what a read call takes first; Node's readFile also takes options whose `flag` may write (`'w'` empties the file).
+      if (text.slice(open + 1, start).trim() !== '') return 'write'
+      return !READ_FILE_CALL.test(callee) || partsOf(open + 1, close - 1).slice(1).every((part, i, rest) => readsOnly(part, i === rest.length - 1)) ? 'mention' : 'write'
+    }
     if (RUN_CALL[language as 'js' | 'python'].test(callee)) return script && text.slice(open + 1, start).trim() === '' ? 'mention' : 'write'
     // A path built from it: follow the call's own value.
     return PATH_CALL.test(callee) ? flowOf(from + (name?.index ?? 0), close, script, depth + 1) : 'write'
+  }
+
+  /** The parts of the code at [from, to) split at its own commas, each trimmed. */
+  const partsOf = (from: number, to: number): string[] => {
+    const parts: string[] = []
+    let level = 0
+    let begin = from
+    for (let i = from; i <= to; i += 1) {
+      budget -= 1
+      const char = text[i]
+      if (i === to || (char === ',' && level === 0 && isCode(i))) {
+        parts.push(text.slice(begin, i).trim())
+        begin = i + 1
+      } else if (!isCode(i)) continue
+      else if (char === '(' || char === '[' || char === '{') level += 1
+      else if (char === ')' || char === ']' || char === '}') level -= 1
+    }
+    return parts.filter((part, i) => part !== '' || i < parts.length - 1)
+  }
+
+  /** Whether an argument after a readFile's path only reads: an encoding, `{ encoding, flag: 'r' }`, or, last, a callback. */
+  const readsOnly = (part: string, last: boolean): boolean => {
+    if (/^(?:(['"`])[\w-]*\1|null|undefined)$/.test(part)) return true
+    if (last && /^(?:async\s+)?(?:function\b|\([^()]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(part)) return true
+    const object = /^\{([^{}]*)\}$/.exec(part)?.[1]
+    if (object === undefined) return false
+    return object.split(',').every(pair => {
+      const entry = /^\s*(['"]?)(encoding|flag)\1\s*:\s*(['"`])([\w-]*)\3\s*$/.exec(pair)
+      return pair.trim() === '' || (entry !== null && (entry[2] === 'encoding' || /^rs?$/.test(entry[4] ?? '')))
+    })
   }
 
   /** The index just past the `)` that closes the call opened at `open`, or -1. */

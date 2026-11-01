@@ -2156,7 +2156,10 @@ describe('a download a program only reads, and a Claude path that is only printe
       ],
       ['scripts/logo.py', 'import sys\nopen("out.txt", "w").write("x")\nprint(f"   python ~/.claude/skills/design/logo.py --brand \\"{sys.argv[1]}\\"")\n'],
       ['scripts/check.py', "import os\nopen('log.txt', 'a').write('x')\ndef check():\n    target = os.path.expanduser('~/.claude/skills/x')\n    if os.path.exists(target):\n        print('found', target)\n"],
-      ['scripts/read.js', "const fs = require('fs')\nfs.writeFileSync('a.md', 'x')\nconst text = fs.readFileSync('.claude/skills/x/SKILL.md', 'utf8')\nconst same = fs.readFileSync('.claude/skills/x/SKILL.md', { encoding: 'utf8', flag: 'r' })\n"],
+      [
+        'scripts/read.js',
+        "const fs = require('fs')\nfs.writeFileSync('a.md', 'x')\nconst text = fs.readFileSync('.claude/skills/x/SKILL.md', 'utf8')\nconst same = fs.readFileSync('.claude/skills/flag/SKILL.md', { encoding: 'utf8', flag: 'r' })\nfs.readFile('.claude/skills/x/SKILL.md', (error, data) => console.log(data))\n",
+      ],
     ]
     for (const [path, text] of files) {
       const report = await scanFiles(code(path, text))
@@ -2179,6 +2182,8 @@ describe('a download a program only reads, and a Claude path that is only printe
       ['scripts/j.js', `const fs = require('fs')\n${"console.log('see .claude/skills')\n".repeat(5)}fs.writeFileSync('.claude/skills/x/SKILL.md', 'x')\n`],
       ['scripts/k.js', "const fs = require('fs')\nfs.writeFileSync('a.md', 'x')\nfs.readFileSync('.claude/skills/x/SKILL.md', { flag: 'w' })\n"],
       ['scripts/l.js', "const fs = require('fs')\nconst how = 'a+'\nfs.writeFileSync('a.md', 'x')\nfs.readFileSync('.claude/skills/x/SKILL.md', { 'flag': how })\n"],
+      ['scripts/m.js', "const fs = require('fs')\nconst options = { flag: 'w' }\nfs.writeFileSync('a.md', 'x')\nfs.readFileSync('.claude/skills/x/SKILL.md', { flag: 'r', ...options })\n"],
+      ['scripts/n.js', "const fs = require('fs')\nconst options = { flag: 'w' }\nfs.writeFileSync('a.md', 'x')\nfs.readFileSync('.claude/skills/x/SKILL.md', options)\n"],
     ]
     const passing: string[] = []
     for (const [path, text] of files) if (status(await scanFiles(code(path, text)), 'code.persistence') !== 'fail') passing.push(path)
