@@ -152,7 +152,12 @@ function judged(file: CodeFile, match: Match, status: Status, excerpt: string, s
   return { file: file.path, line: match.line, excerpt, status }
 }
 
-/** Matches of `pattern` in the file's code and strings, not its comments or patterns. */
+/** Whether a match only describes: in a comment, a pattern or (unless `strict`) prose. Prose is a note too, so it comes after real code and cannot crowd it out. */
+function describesOnly(file: CodeFile, index: number, strict: boolean): boolean {
+  const kind = file.kindAt(index)
+  return kind === 'comment' || kind === 'regex' || kind === 'trailing-comment' || (!strict && file.inProse(index))
+}
+
 /**
  * Matches of `pattern` that may run: everything but whole-line comments and
  * real patterns. A trailing comment counts here, since a tokenizer can be
@@ -169,13 +174,10 @@ function active(file: CodeFile, pattern: RegExp, limit = 20): Match[] {
  * Every match of `pattern`, judged: live matches first (up to `limit`),
  * then at most two inert ones, so comments cannot crowd out real code.
  */
-function evidenceFor(file: CodeFile, pattern: RegExp, status: Status, describe: (match: Match) => string, limit = 5, strict = false): Evidence[] {
-  // Prose is judged a note too, so it comes after real code and cannot crowd it out.
-  const isInert = (index: number): boolean => {
-    const kind = file.kindAt(index)
-    return kind === 'comment' || kind === 'regex' || kind === 'trailing-comment' || (!strict && file.inProse(index))
-  }
-  const live = findAll(file.text, pattern, limit, index => !isInert(index))
+function evidenceFor(file: CodeFile, pattern: RegExp, status: Status, describe: (match: Match) => string, limit = 5, strict = false, only?: (index: number) => boolean): Evidence[] {
+  const isInert = (index: number): boolean => describesOnly(file, index, strict)
+  // `only` narrows the live matches, so the ones it leaves out cannot crowd out the rest.
+  const live = findAll(file.text, pattern, limit, index => !isInert(index) && (only === undefined || only(index)))
   const inert = findAll(file.text, pattern, 2, isInert)
   // Several matches on one line that read the same are one finding.
   const seen = new Set<string>()
@@ -702,6 +704,159 @@ function liveHosts(file: CodeFile): string[] {
   return [...hosts]
 }
 
+/**
+ * Calls that only print what they are given, read or check a file, start a
+ * program, or build a path, by the name they are called by.
+ */
+const PRINT_CALL =
+  /^(?:console\.(?:log|info|warn|error|debug|trace|print)|print|(?:process|sys)\.(?:stdout|stderr)\.write|(?:logging|logger|log)\.(?:debug|info|warning|warn|error|critical|exception)|(?:click|typer)\.echo)$/
+const READ_CALL =
+  /^(?:(?:fs|fsp|fs\.promises)\.)?(?:existsSync|readFileSync|statSync|lstatSync|accessSync|readdirSync|realpathSync)$|^(?:fs|fsp|fs\.promises)\.(?:readFile|stat|lstat|access|readdir|realpath)$|^os\.path\.(?:exists|lexists|isfile|isdir|islink|getsize|getmtime)$|^os\.(?:stat|lstat|listdir|scandir|access)$|^glob\.i?glob$/
+const RUN_CALL: Record<'js' | 'python', RegExp> = {
+  js: /^(?:(?:child_process|cp)\.)?(?:execSync|exec|execFile|execFileSync|spawn|spawnSync)$/,
+  python: /^(?:subprocess\.(?:run|call|check_call|check_output|Popen)|os\.system)$/,
+}
+const PATH_CALL = /^(?:path(?:\.posix|\.win32)?\.(?:join|resolve|normalize)|os\.path\.(?:join|expanduser|abspath|normpath|realpath)|(?:pathlib\.)?(?:Path|PurePath|PosixPath))$/
+/** Python path methods that read or check the file. */
+const READ_METHOD = /^\s*\.\s*(?:exists|is_file|is_dir|is_symlink|read_text|read_bytes|stat|lstat)\s*\(/
+/** What may come before a script's path in a command that runs it: nothing, or the interpreter. */
+const SCRIPT_RUNNER = /^\s*(?:(?:node|deno|bun|python[23]?|ruby|perl|bash|sh|zsh)\s+)?$/
+const QUOTES = new Set(["'", '"', '`'])
+
+/** How many characters `pathFlow` may walk in one file before it counts what is left as a write. */
+const FLOW_BUDGET = 200_000
+const FLOW_WINDOW = 2000
+const MAX_FLOW_DEPTH = 4
+const MAX_USES = 20
+
+type Flow = 'mention' | 'write'
+
+/**
+ * Where a Claude Code path at `index` in a file that writes can go. It is a
+ * mention when it only reaches calls that print it, read or check the file, or
+ * start it as a script, followed through the names it is given and the calls
+ * that build a path from it. Anything else, a call to the file's own function
+ * included, counts as a write, as does every path in a shell script.
+ */
+function pathFlow(file: CodeFile): (index: number) => Flow {
+  const { text, language } = file
+  if (language !== 'js' && language !== 'python') return () => 'write'
+  let budget = FLOW_BUDGET
+  const named = new Map<string, Flow>()
+  const isCode = (i: number) => file.kindAt(i) === 'code'
+
+  /** The string literal around `index` (one run of string text), and what it says before `upTo`, if it opens there. */
+  const literalAround = (index: number, upTo: number) => {
+    let start = index
+    let end = index
+    while (start > 0 && file.kindAt(start - 1) === 'string') start -= 1
+    while (end < text.length && file.kindAt(end) === 'string') end += 1
+    budget -= end - start
+    const quote = text[start] ?? ''
+    const opens = QUOTES.has(quote) && !(language === 'js' && quote === '`' && start > 0 && text[start - 1] === '}')
+    const triple = language === 'python' && text.startsWith(quote.repeat(3), start)
+    // A path is a script when it is the first word, or follows its interpreter; its word starts after the last blank.
+    const word = text.slice(start, upTo).search(/\S*$/) + start
+    const before = opens ? text.slice(start + (triple ? 3 : 1), word) : undefined
+    return { start, end, script: before !== undefined && SCRIPT_RUNNER.test(before) }
+  }
+
+  /** Where the value of the expression at [start, end) goes. */
+  const flowOf = (start: number, end: number, script: boolean, depth: number): Flow => {
+    if (depth > MAX_FLOW_DEPTH || budget <= 0) return 'write'
+    const lineStart = text.lastIndexOf('\n', start - 1) + 1
+    const lineEnd = text.indexOf('\n', end) === -1 ? text.length : text.indexOf('\n', end)
+    const after = text.slice(end, lineEnd)
+    if (language === 'python' && READ_METHOD.test(after)) return 'mention'
+    // `NAME = <value>` on a line of its own: follow NAME.
+    const binding = /^\s*(export\s+(?:default\s+)?)?(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*(?::[^=\n]{1,80})?(?<![=!<>])=\s*[rRbBfFuU]{0,2}$/.exec(text.slice(lineStart, start))
+    if (binding?.[2] !== undefined && /^\s*;?\s*(?:(?:\/\/|#).*)?$/.test(after)) {
+      // Exported, or a Python module's own name, other files may write to it: not followed.
+      if (binding[1] !== undefined || (language === 'python' && !/^\s/.test(binding[0]))) return 'write'
+      return usesOf(binding[2], lineStart, end, script, depth)
+    }
+    let level = 0
+    for (let i = start - 1; i >= 0 && start - i < FLOW_WINDOW; i -= 1) {
+      budget -= 1
+      const kind = file.kindAt(i)
+      const char = text[i]
+      if (kind === 'string') {
+        // The `${` of a template, which code follows: inside one, the value is the template's text.
+        if (language === 'js' && char === '{' && text[i - 1] === '$' && file.kindAt(i + 1) !== 'string') {
+          if (level === 0) {
+            const literal = literalAround(i, i - 1)
+            return flowOf(literal.start, literal.end, script && literal.script, depth + 1)
+          }
+          level -= 1
+        }
+        continue
+      }
+      if (kind !== 'code') continue
+      if (char === ')' || char === ']' || char === '}') level += 1
+      else if (char === '(' || char === '[' || char === '{') {
+        if (level > 0) {
+          level -= 1
+          continue
+        }
+        // In an array, an object or a block: anything may be done with it.
+        return char === '(' ? callFlow(i, start, script, depth) : 'write'
+      } else if (char === ';' && level === 0) return 'write'
+    }
+    return 'write'
+  }
+
+  /** Where a value given to the call whose `(` is at `open` goes, the value starting at `start`. */
+  const callFlow = (open: number, start: number, script: boolean, depth: number): Flow => {
+    const from = Math.max(0, open - 200)
+    const name = /[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*$/.exec(text.slice(from, open).trimEnd())
+    const callee = name?.[0].replace(/\s+/g, '') ?? ''
+    if (PRINT_CALL.test(callee) || READ_CALL.test(callee)) return 'mention'
+    if (RUN_CALL[language as 'js' | 'python'].test(callee)) return script && text.slice(open + 1, start).trim() === '' ? 'mention' : 'write'
+    if (!PATH_CALL.test(callee)) return 'write'
+    // A path built from it: follow the call's own value.
+    let level = 0
+    for (let i = open; i < text.length && i - open < FLOW_WINDOW; i += 1) {
+      budget -= 1
+      if (!isCode(i)) continue
+      if (text[i] === '(') level += 1
+      else if (text[i] === ')' && --level === 0) return flowOf(from + (name?.index ?? 0), i + 1, script, depth + 1)
+    }
+    return 'write'
+  }
+
+  /** Where the value a name is given goes: everywhere the name is used, but where it is given. */
+  const usesOf = (name: string, from: number, to: number, script: boolean, depth: number): Flow => {
+    const key = `${name}\u0000${script}`
+    const known = named.get(key)
+    if (known !== undefined) return known
+    // Until it is known, a name that reaches itself is a write.
+    named.set(key, 'write')
+    const uses = findAll(text, new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}(?![\\w$])`), MAX_USES + 1, index => (index < from || index >= to) && !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(index)))
+    let flow: Flow = uses.length > MAX_USES ? 'write' : 'mention'
+    for (const use of uses) {
+      if (flow === 'write') break
+      const end = use.index + name.length
+      if (file.kindAt(use.index) === 'string') {
+        const literal = literalAround(use.index, use.index)
+        flow = flowOf(literal.start, literal.end, script && literal.script, depth + 1)
+      } else if (/^\s*(?:[.[(]|=(?![=>]))/.test(text.slice(end, end + 40))) {
+        // Called, indexed, read a property of or given a new value: not followed.
+        flow = 'write'
+      } else {
+        flow = flowOf(use.index, end, script, depth + 1)
+      }
+    }
+    named.set(key, flow)
+    return flow
+  }
+
+  return index => {
+    if (file.kindAt(index) !== 'string') return flowOf(index, index, false, 0)
+    const literal = literalAround(index, index)
+    return flowOf(literal.start, literal.end, literal.script, 0)
+  }
+}
+
 function persistenceCheck(ctx: ScanContext): CheckResult {
   const evidence: Evidence[] = []
   for (const file of codeFiles(ctx)) {
@@ -710,7 +865,14 @@ function persistenceCheck(ctx: ScanContext): CheckResult {
     evidence.push(...evidenceFor(file, PERSISTENCE_TARGET, writes ? 'fail' : 'warn', match => `${writes ? 'writes to' : 'names'} a startup location: ${match.excerpt}`, 3))
     evidence.push(...evidenceFor(file, CLAUDE_SETTINGS, writes ? 'fail' : 'warn', match => `Claude Code permission setting: ${match.excerpt}`, 3))
     if (writes) {
-      evidence.push(...evidenceFor(file, CLAUDE_LOAD_DIR, 'fail', match => `writes where Claude Code loads plugins, skills or memory: ${match.excerpt}`, 3))
+      // A path that is only printed, read or run as a script is named, not written.
+      const flowAt = pathFlow(file)
+      const flows = new Map<number, Flow>()
+      const flow = (index: number): Flow => flows.get(index) ?? flows.set(index, flowAt(index)).get(index) ?? 'write'
+      evidence.push(...evidenceFor(file, CLAUDE_LOAD_DIR, 'fail', match => `writes where Claude Code loads plugins, skills or memory: ${match.excerpt}`, 3, false, index => flow(index) === 'write'))
+      for (const match of findAll(file.text, CLAUDE_LOAD_DIR, 2, index => !describesOnly(file, index, false) && flow(index) === 'mention')) {
+        evidence.push({ file: file.path, line: match.line, excerpt: `names where Claude Code loads plugins, skills or memory, only to print, read or run it: ${match.excerpt}`, status: 'info' })
+      }
     }
   }
   return row(
