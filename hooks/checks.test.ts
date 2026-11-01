@@ -1321,7 +1321,8 @@ describe('PR review round eight', () => {
     for (const name of names) files[name] = b64('notes\n')
     const started = performance.now()
     await scanFiles(files)
-    expect(performance.now() - started).toBeLessThan(5000)
+    // About 1.5 s on a laptop and 5 s on a CI runner; a scan that grows with the square of what it reads takes far longer.
+    expect(performance.now() - started).toBeLessThan(10_000)
   })
 })
 
