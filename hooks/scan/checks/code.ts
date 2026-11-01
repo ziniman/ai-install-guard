@@ -810,18 +810,26 @@ function pathFlow(file: CodeFile): (index: number) => Flow {
     const from = Math.max(0, open - 200)
     const name = /[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*$/.exec(text.slice(from, open).trimEnd())
     const callee = name?.[0].replace(/\s+/g, '') ?? ''
-    if (PRINT_CALL.test(callee) || READ_CALL.test(callee)) return 'mention'
+    if (PRINT_CALL.test(callee)) return 'mention'
+    const close = closeOf(open)
+    if (close === -1) return 'write'
+    // Node's read calls take a `flag` that opens the file to write (`'w'` empties it).
+    if (READ_CALL.test(callee)) return /\bflags?\b/.test(text.slice(open, close)) ? 'write' : 'mention'
     if (RUN_CALL[language as 'js' | 'python'].test(callee)) return script && text.slice(open + 1, start).trim() === '' ? 'mention' : 'write'
-    if (!PATH_CALL.test(callee)) return 'write'
     // A path built from it: follow the call's own value.
+    return PATH_CALL.test(callee) ? flowOf(from + (name?.index ?? 0), close, script, depth + 1) : 'write'
+  }
+
+  /** The index just past the `)` that closes the call opened at `open`, or -1. */
+  const closeOf = (open: number): number => {
     let level = 0
     for (let i = open; i < text.length && i - open < FLOW_WINDOW; i += 1) {
       budget -= 1
       if (!isCode(i)) continue
       if (text[i] === '(') level += 1
-      else if (text[i] === ')' && --level === 0) return flowOf(from + (name?.index ?? 0), i + 1, script, depth + 1)
+      else if (text[i] === ')' && --level === 0) return i + 1
     }
-    return 'write'
+    return -1
   }
 
   /** Where the value a name is given goes: everywhere the name is used, but where it is given. */
