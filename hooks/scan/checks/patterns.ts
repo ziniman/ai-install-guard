@@ -35,28 +35,21 @@ const RUNS_TEXT =
 const COMMAND_END = /[ \t]*(?:$|\r?\n|;|&&)/
 
 /**
- * What follows a Python program that only reads a download, as in
+ * A download piped into a Python program that only reads it, as in
  * `curl … | python3 -c "import sys, json; print(json.load(sys.stdin)['name'])"`
- * or `python3 -m json.tool`: nothing earlier on its line opens a group, a
- * substitution or a code span that its output could leave by, its code is one
- * quoted word with nothing in RUNS_TEXT (and, double-quoted, no `$` or
- * backquote, which the shell runs first), and the command ends there.
+ * or `curl … | python3 -m json.tool`: the code is one quoted word with nothing
+ * in RUNS_TEXT (and, double-quoted, no `$` or backquote, which the shell runs
+ * first), and the command ends there. Whether its output can still reach
+ * something that runs it, from a group or a substitution around it, is for
+ * the caller to tell; DOWNLOAD_AND_RUN still matches it.
  */
-const READS_ONLY = new RegExp(
-  String.raw`(?<![({\x60][^\n]*)(?:\s+-c\s+(?:'(?:(?!${RUNS_TEXT.source})[^'\n])*'|"(?:(?!${RUNS_TEXT.source})(?:\\[\\"$\x60]|\\(?![\\"$\x60])|[^"\\\n$\x60]))*")|\s+-m\s+json\.tool\b)${COMMAND_END.source}`,
+export const READS_DOWNLOAD = new RegExp(
+  String.raw`${DOWNLOAD_PIPE.source}python[23]?(?:\s+-c\s+(?:'(?:(?!${RUNS_TEXT.source})[^'\n])*'|"(?:(?!${RUNS_TEXT.source})(?:\\[\\"$\x60]|\\(?![\\"$\x60])|[^"\\\n$\x60]))*")|\s+-m\s+json\.tool\b)${COMMAND_END.source}`,
 )
 
-/**
- * Downloading code and running it, or decoding text and running it. A
- * download piped into a Python program that only reads it is data.
- */
-export const DOWNLOAD_AND_RUN = new RegExp(
-  [
-    `${DOWNLOAD_PIPE.source}(?:ba|z|da|k)?sh\\b`,
-    `${DOWNLOAD_PIPE.source}(?:python[23]?\\b(?!${READS_ONLY.source})|(?:node|perl|ruby|php)\\b)`,
-    /\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)|(?:\b(?:source|(?:ba|z|da|k)?sh)|(?:^|(?<=[\s;&|(]))\.)\s+<\(\s*(?:curl|wget)|\bbase64\s+(?:-d|--decode|-D)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da)?sh\b|\bpython[23]?\s+-c\s+["'][^"'\n]{0,500}urllib|\beval\s+["']?\$\(\s*(?:curl|wget|echo|base64)/.source,
-  ].join('|'),
-)
+/** Downloading code and running it, or decoding text and running it. */
+export const DOWNLOAD_AND_RUN =
+  /\b(?:curl|wget)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da|k)?sh\b|\b(?:curl|wget)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:python[23]?|node|perl|ruby|php)\b|\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)|(?:\b(?:source|(?:ba|z|da|k)?sh)|(?:^|(?<=[\s;&|(]))\.)\s+<\(\s*(?:curl|wget)|\bbase64\s+(?:-d|--decode|-D)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da)?sh\b|\bpython[23]?\s+-c\s+["'][^"'\n]{0,500}urllib|\beval\s+["']?\$\(\s*(?:curl|wget|echo|base64)/
 
 /**
  * Fetching and running a package that is not pinned to an exact version
