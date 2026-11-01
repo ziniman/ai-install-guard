@@ -813,8 +813,8 @@ function pathFlow(file: CodeFile): (index: number) => Flow {
     if (PRINT_CALL.test(callee)) return 'mention'
     const close = closeOf(open)
     if (close === -1) return 'write'
-    // Node's read calls take a `flag` that opens the file to write (`'w'` empties it).
-    if (READ_CALL.test(callee)) return /\bflags?\b/.test(text.slice(open, close)) ? 'write' : 'mention'
+    // Node's read calls take a `flag` that may open the file to write (`'w'` empties it): only `'r'` and `'rs'` only read.
+    if (READ_CALL.test(callee)) return /\bflags?\b(?!['"`]?\s*:\s*(['"`])rs?\1)/.test(text.slice(open, close)) ? 'write' : 'mention'
     if (RUN_CALL[language as 'js' | 'python'].test(callee)) return script && text.slice(open + 1, start).trim() === '' ? 'mention' : 'write'
     // A path built from it: follow the call's own value.
     return PATH_CALL.test(callee) ? flowOf(from + (name?.index ?? 0), close, script, depth + 1) : 'write'
