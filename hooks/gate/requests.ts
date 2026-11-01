@@ -147,11 +147,11 @@ export const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'no
 const JAVASCRIPT = new Set(['node', 'nodejs', 'deno', 'bun'])
 
 /**
- * JavaScript that may start a process: a template it hands to one may run as
- * a shell command (`` execSync(`${cmd}`) ``, `` Bun.$`…` ``), so its
- * backquotes are read as scripts.
+ * JavaScript that may start a process or run text as code: a template it
+ * hands to one may run as a command (`` execSync(`${cmd}`) ``, `` Bun.$`…` ``,
+ * `` eval(`${code}`) ``), so its backquotes are read as scripts.
  */
-const STARTS_PROCESS = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`/
+const MAY_RUN_TEXT = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`|\b(?:eval|Function|vm|Worker)\b|_compile|runIn\w*Context|compileFunction|\bimport\s*\(|\brequire\s*\(\s*`/
 
 /**
  * Programs that only print, read or wait: an install's words among their
@@ -354,10 +354,11 @@ function claudePlugin(words: readonly string[], index: number, expands: Readonly
  * what runs is unseen or opaque and how many other commands run beside it.
  * `asScript` is set for text a shell runs as commands; an argument of another
  * program, read only for installs it may run, cannot be opaque. `inCode` is
- * set for JavaScript that starts no process, where a backquote outside a
- * string opens a template, the code's own text, so what it holds, like every
- * word read from the code, is read as code too. One inside a string is still
- * read as a script, and so is a shell or eval named in the code.
+ * set for JavaScript that starts no process and runs no text as code, where
+ * a backquote outside a string opens a template, the code's own text, so what
+ * it holds, like every word read from the code, is read as code too. One
+ * inside a string is still read as a script, and so is a shell or eval named
+ * in the code.
  */
 function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean, inCode = false): Collected {
   const out: Collected = { unseen: false, opaque: false, others: 0, texts: [] }
@@ -455,7 +456,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       if (ran.hooks) out.unseen = true
       for (const script of ran.scripts) merge(collectInstalls(script, found, depth + 1, true), false)
     } else if (!TEXT_ARGUMENTS.has(program)) {
-      for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) merge(collectInstalls(text, found, depth + 1, false, inCode || (JAVASCRIPT.has(language) && !STARTS_PROCESS.test(text))), false)
+      for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) merge(collectInstalls(text, found, depth + 1, false, inCode || (JAVASCRIPT.has(language) && !MAY_RUN_TEXT.test(text))), false)
     }
     out.others += 1
   }

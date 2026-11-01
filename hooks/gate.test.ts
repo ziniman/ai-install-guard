@@ -255,7 +255,7 @@ describe("reading Claude's shell commands", () => {
     // What a shell runs from a variable is still held: a backquote in double quotes, which the shell runs first;
     // one in an argument another program may hand to a shell; and, from local review, one that runs a shell
     // command in Ruby, Perl or PHP, sits in a string that code may hand to a shell, or is in JavaScript that
-    // starts a process.
+    // may start a process or run text as code.
     for (const command of [
       'echo "$($CMD)"',
       'x=$($CMD arg)',
@@ -271,6 +271,9 @@ describe("reading Claude's shell commands", () => {
       `node -e 'require("child_process").execSync("echo \`$CMD\` x")'`,
       "node -e 'require(\"child_process\").execSync(`${process.env.CMD} `)'",
       "bun -e 'await Bun.$`${cmd} now`'",
+      "node -e 'eval( `${process.env.CODE}`)'",
+      "node -e 'new Function(`${code} x`)()'",
+      "node -e 'import(`data:text/javascript,${code} x`)'",
     ]) {
       expect(readShellCommand(command)).toMatchObject({ kind: 'unreadable', label: 'a command built as it runs' })
     }
