@@ -13,9 +13,6 @@ export const NETWORK_COMMAND =
 export const NETWORK_CODE =
   /\bfetch\s*\(|\bXMLHttpRequest\b|\bhttps?\.(?:request|get)\s*\(|\brequire\s*\(\s*['"](?:node:)?(?:http|https|net|dgram|tls|dns)['"]\s*\)|\bfrom\s+['"](?:node:)?(?:http|https|net|dgram|tls|dns)['"]|\baxios\b|\bundici\b|\brequests\.(?:get|post|put|patch|request|Session)\b|\burllib\b|\bhttpx\b|\bsocket\.(?:socket|create_connection)\b|\bnew\s+WebSocket\b|\$\s*\.\s*http\s*\.\s*fetch\b|\bdns\.(?:lookup|resolve\w*)\s*\(/
 
-/** A download piped on to a program: `curl … |`, then sudo, env or a path before the program's name. */
-const DOWNLOAD_PIPE = /\b(?:curl|wget)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?/
-
 /**
  * What lets a one-line Python program run the text it is fed: exec and its
  * kin, ways to reach them by a name made as it runs (`getattr`, `vars`,
@@ -37,14 +34,15 @@ const COMMAND_END = /[ \t]*(?:$|\r?\n|;|&&)/
 /**
  * A download piped into a Python program that only reads it, as in
  * `curl … | python3 -c "import sys, json; print(json.load(sys.stdin)['name'])"`
- * or `curl … | python3 -m json.tool`: the code is one quoted word with nothing
- * in RUNS_TEXT (and, double-quoted, no `$` or backquote, which the shell runs
- * first), and the command ends there. Whether its output can still reach
- * something that runs it, from a group or a substitution around it, is for
- * the caller to tell; DOWNLOAD_AND_RUN still matches it.
+ * or `curl … | python3 -m json.tool`: the download's own arguments are plain
+ * words (no `$`, backquote, group or redirection that runs something first),
+ * the code is one quoted word with nothing in RUNS_TEXT (and, double-quoted,
+ * no `$` or backquote), and the command ends there. Whether its output can
+ * still reach something that runs it, from a group or a substitution around
+ * it, is for the caller to tell; DOWNLOAD_AND_RUN still matches it.
  */
 export const READS_DOWNLOAD = new RegExp(
-  String.raw`${DOWNLOAD_PIPE.source}python[23]?(?:\s+-c\s+(?:'(?:(?!${RUNS_TEXT.source})[^'\n])*'|"(?:(?!${RUNS_TEXT.source})(?:\\[\\"$\x60]|\\(?![\\"$\x60])|[^"\\\n$\x60]))*")|\s+-m\s+json\.tool\b)${COMMAND_END.source}`,
+  String.raw`\b(?:curl|wget)\b[^\n|$\x60(){};&<>]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?python[23]?(?:\s+-c\s+(?:'(?:(?!${RUNS_TEXT.source})[^'\n])*'|"(?:(?!${RUNS_TEXT.source})(?:\\[\\"$\x60]|\\(?![\\"$\x60])|[^"\\\n$\x60]))*")|\s+-m\s+json\.tool\b)${COMMAND_END.source}`,
 )
 
 /** Downloading code and running it, or decoding text and running it. */
