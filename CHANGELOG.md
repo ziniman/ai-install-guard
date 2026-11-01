@@ -6,7 +6,7 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ## v0.8.10 &nbsp;·&nbsp; 2026-11-01
 
-**Checks** - Two false positives that flagged well-made plugins as Do not install, and so opened the pane at each of their updates, are now notes. A page downloaded into a one-line Python or Node program that only reads it (`curl … | python3 -c "…json.load(sys.stdin)…"`, `python3 -m json.tool`) is data, not code downloaded and run; one whose code could run what it reads (`exec`, `os.system`, a shell substitution, output piped on) still fails. And in a script that writes files, a path where Claude Code loads plugins, skills or memory now counts as written only when it can reach a write, followed through the names it is given and the calls that build a path: one only printed, read or run as a script is listed, not flagged
+**Checks** - Two false positives that flagged well-made plugins as Do not install, and so opened the pane at each of their updates, are now notes. A page downloaded into a one-line Python program that only reads it (`curl … | python3 -c "…json.load(sys.stdin)…"`, `python3 -m json.tool`) is data, not code downloaded and run; one whose code could run what it reads (`exec`, `os.system`, a shell substitution, output piped on or wrapped in a substitution) still fails, as does any download piped into Node. And in a script that writes files, a path where Claude Code loads plugins, skills or memory now counts as written only when it can reach a write, followed through the names it is given and the calls that build a path: one only printed, read or run as a script is listed, not flagged
 
 ---
 

@@ -17,36 +17,43 @@ export const NETWORK_CODE =
 const DOWNLOAD_PIPE = /\b(?:curl|wget)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?/
 
 /**
- * What lets a one-line Python or Node program run the text it is fed: eval
- * and its kin, ways to reach them by name (`getattr`, `__class__`,
- * `constructor`), other programs, files, the network, and loaders that build
- * objects from data. Matched inside longer words too, so it errs towards running.
+ * What lets a one-line Python program run the text it is fed: exec and its
+ * kin, ways to reach them by a name made as it runs (`getattr`, `vars`,
+ * `__class__`, `sys.modules`), other programs, files, the network, and loaders
+ * that build objects from data. Python names an attribute only as written,
+ * so these are what a name made as it runs needs. Matched inside longer words
+ * too, so it errs towards running. Node is not read this way: it reaches any
+ * module by a name made as it runs (`process.getBuiltinModule`).
  */
 const RUNS_TEXT =
-  /exec|eval|compile|__|attr|caller|globals|locals|vars|builtins|import_?module|importlib|runpy|subprocess|system|popen|spawn|fork|pickle|marshal|shelve|dill|joblib|torch|yaml|ctypes|\bcode\b|\bpty\b|\bos\b|open|write|unlink|remove|rename|chmod|shutil|socket|urllib|request|http|fetch|breakpoint|pdb|help|timeit|profile|trace|doctest|require|import\s*\(|Function|constructor|prototype|global|module|\bvm\b|child_process|binding|dlopen|Reflect|Proxy|WebAssembly|Worker|Deno|Bun/
-
-/** Where a command ends: its line, `;`, `&&`, or the `)` or backquote around it. Never a pipe or a redirection. */
-const COMMAND_END = /[ \t]*(?:$|\r?\n|;|&&|\)|`)/
+  /exec|eval|compile|__|attr|caller|globals|locals|vars|builtins|import_?module|importlib|runpy|subprocess|system|popen|spawn|fork|pickle|marshal|shelve|dill|joblib|torch|yaml|ctypes|\bcode\b|\bpty\b|\bos\b|open|write|unlink|remove|rename|chmod|shutil|socket|urllib|request|http|fetch|breakpoint|pdb|help|timeit|profile|trace|doctest|Function|global|module/
 
 /**
- * What follows a Python or Node program that only reads a download, as in
+ * Where the command ends: its line, `;` or `&&`. Never a pipe, a redirection,
+ * or a `)` or backquote that may close a substitution whose output runs.
+ */
+const COMMAND_END = /[ \t]*(?:$|\r?\n|;|&&)/
+
+/**
+ * What follows a Python program that only reads a download, as in
  * `curl … | python3 -c "import sys, json; print(json.load(sys.stdin)['name'])"`
- * or `python3 -m json.tool`: its code is one quoted word with nothing in
- * RUNS_TEXT (and, double-quoted, no `$` or backquote, which the shell runs
- * first), and the command ends there.
+ * or `python3 -m json.tool`: nothing earlier on its line opens a group, a
+ * substitution or a code span that its output could leave by, its code is one
+ * quoted word with nothing in RUNS_TEXT (and, double-quoted, no `$` or
+ * backquote, which the shell runs first), and the command ends there.
  */
 const READS_ONLY = new RegExp(
-  String.raw`(?:\s+(?:-c|-e|-p|--eval|--print)\s+(?:'(?:(?!${RUNS_TEXT.source})[^'\n])*'|"(?:(?!${RUNS_TEXT.source})(?:\\[\\"$\x60]|\\(?![\\"$\x60])|[^"\\\n$\x60]))*")|\s+-m\s+json\.tool\b)${COMMAND_END.source}`,
+  String.raw`(?<![({\x60][^\n]*)(?:\s+-c\s+(?:'(?:(?!${RUNS_TEXT.source})[^'\n])*'|"(?:(?!${RUNS_TEXT.source})(?:\\[\\"$\x60]|\\(?![\\"$\x60])|[^"\\\n$\x60]))*")|\s+-m\s+json\.tool\b)${COMMAND_END.source}`,
 )
 
 /**
  * Downloading code and running it, or decoding text and running it. A
- * download piped into a Python or Node program that only reads it is data.
+ * download piped into a Python program that only reads it is data.
  */
 export const DOWNLOAD_AND_RUN = new RegExp(
   [
     `${DOWNLOAD_PIPE.source}(?:ba|z|da|k)?sh\\b`,
-    `${DOWNLOAD_PIPE.source}(?:(?:python[23]?|node)\\b(?!${READS_ONLY.source})|(?:perl|ruby|php)\\b)`,
+    `${DOWNLOAD_PIPE.source}(?:python[23]?\\b(?!${READS_ONLY.source})|(?:node|perl|ruby|php)\\b)`,
     /\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)|(?:\b(?:source|(?:ba|z|da|k)?sh)|(?:^|(?<=[\s;&|(]))\.)\s+<\(\s*(?:curl|wget)|\bbase64\s+(?:-d|--decode|-D)\b[^\n|]{0,500}\|\s*(?:sudo\s+)?(?:\/[\w.\/-]*\/)?(?:env\s+)?(?:ba|z|da)?sh\b|\bpython[23]?\s+-c\s+["'][^"'\n]{0,500}urllib|\beval\s+["']?\$\(\s*(?:curl|wget|echo|base64)/.source,
   ].join('|'),
 )
