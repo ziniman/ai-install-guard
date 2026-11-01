@@ -140,6 +140,20 @@ export const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'])
 export const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'osascript', 'pwsh', 'powershell', 'lua', 'tclsh', 'rscript', 'julia', 'swift', 'groovy', 'jshell'])
 
 /**
+ * Interpreters of JavaScript, where a backquote opens a template. In Ruby,
+ * Perl and PHP one runs a shell command, and in Python one can only be in a
+ * string, which may be handed to a shell.
+ */
+const JAVASCRIPT = new Set(['node', 'nodejs', 'deno', 'bun'])
+
+/**
+ * JavaScript that may start a process: a template it hands to one may run as
+ * a shell command (`` execSync(`${cmd}`) ``, `` Bun.$`…` ``), so its
+ * backquotes are read as scripts.
+ */
+const STARTS_PROCESS = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`/
+
+/**
  * Programs that only print, read or wait: an install's words among their
  * arguments are text, and running one beside an install adds nothing to it.
  * `command` is one only as `command -v` or `-V`, which says what a name would
@@ -339,9 +353,13 @@ function claudePlugin(words: readonly string[], index: number, expands: Readonly
  * Adds every install `command` asks for to `found`, and says whether part of
  * what runs is unseen or opaque and how many other commands run beside it.
  * `asScript` is set for text a shell runs as commands; an argument of another
- * program, read only for installs it may run, cannot be opaque.
+ * program, read only for installs it may run, cannot be opaque. `inCode` is
+ * set for JavaScript that starts no process, where a backquote outside a
+ * string opens a template, the code's own text, so what it holds, like every
+ * word read from the code, is read as code too. One inside a string is still
+ * read as a script, and so is a shell or eval named in the code.
  */
-function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean): Collected {
+function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean, inCode = false): Collected {
   const out: Collected = { unseen: false, opaque: false, others: 0, texts: [] }
   if (depth > MAX_DEPTH) return { unseen: true, opaque: asScript, others: 0, texts: [command] }
   const merge = (inner: Collected, counts: boolean): void => {
@@ -351,9 +369,13 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     out.texts.push(...inner.texts)
   }
   const nested = (script: string): void => merge(collectInstalls(script, found, depth + 1, true), true)
-  for (const { words, input, scripts: substitutions, writes, expands, splits } of splitShell(command).commands) {
-    // What its substitutions run comes first, and is read as commands too.
-    substitutions?.forEach(nested)
+  for (const { words, input, scripts: substitutions, quotedScripts, writes, expands, splits } of splitShell(command).commands) {
+    // What its substitutions run comes first, and is read as commands too, but
+    // for a JavaScript template, which is the code's own text.
+    substitutions?.forEach((script, at) => {
+      const template = inCode && quotedScripts?.includes(at) !== true
+      merge(collectInstalls(script, found, depth + 1, !template, template), true)
+    })
     const own = out.texts.push([...words, input ?? ''].join(' ')) - 1
     // A write to a file is more than an install, whatever program makes it.
     if (writes === true) out.others += 1
@@ -412,7 +434,8 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       continue
     }
     // Code in another language, inline, from input or from a file, is not read.
-    if (INTERPRETERS.has(program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1'))) out.unseen = true
+    const language = program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1')
+    if (INTERPRETERS.has(language)) out.unseen = true
     if (QUIET.has(program) && !writesAnyway(program, words.slice(index + 1))) continue
     // Any other program may run an install among its arguments (`watch`,
     // `flock`), and may run it again and again: the program around it counts
@@ -432,7 +455,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       if (ran.hooks) out.unseen = true
       for (const script of ran.scripts) merge(collectInstalls(script, found, depth + 1, true), false)
     } else if (!TEXT_ARGUMENTS.has(program)) {
-      for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) merge(collectInstalls(text, found, depth + 1, false), false)
+      for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) merge(collectInstalls(text, found, depth + 1, false, inCode || (JAVASCRIPT.has(language) && !STARTS_PROCESS.test(text))), false)
     }
     out.others += 1
   }
@@ -736,6 +759,8 @@ export type ShellCommand = {
   words: string[]
   input?: string
   scripts?: string[]
+  /** Which of `scripts` were found inside double quotes. */
+  quotedScripts?: number[]
   writes?: boolean
   /** Which words the shell expands as the command runs: a variable, a substitution, a tilde, or an unquoted pattern or brace list. */
   expands?: number[]
@@ -823,10 +848,12 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     const end = close === -1 ? text.length : close
     // `$((…))` is arithmetic, not a command, but a substitution inside it still runs.
     const body = text.slice(open + 1, end)
+    const first = current.scripts?.length ?? 0
     if (text[open] === '(' && text[open + 1] === '(') {
       const inner = substitutionsIn(body)
       if (inner.length > 0) (current.scripts ??= []).push(...inner)
     } else (current.scripts ??= []).push(body)
+    if (inQuotes) for (let at = first; at < (current.scripts?.length ?? 0); at += 1) (current.quotedScripts ??= []).push(at)
     dynamic = true
     expands = true
     if (!inQuotes) splits = true

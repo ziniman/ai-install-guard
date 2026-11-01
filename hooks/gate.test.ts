@@ -246,6 +246,38 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand(`python3 -c "print('The /claude tool has plugins')"`)).toEqual(pass)
   })
 
+  test('a JavaScript template is the code\'s own text, not a command built as it runs', () => {
+    const pass = { kind: 'pass', browse: false }
+    // What the guard held while it was being worked on: a template, read as a substitution whose program was `${s.status}`.
+    expect(readShellCommand("node -e 'console.log(`${a} ${b}`)'")).toEqual(pass)
+    expect(readShellCommand("st=$(node -e 'const s = require(process.argv[1]); console.log(s ? `${s.status} ${s.sha}` : \"none\")' out.json)")).toEqual(pass)
+    expect(readShellCommand("bun -e 'const x = `${a} ${b}`; console.log(\"done\", x)'")).toEqual(pass)
+    // What a shell runs from a variable is still held: a backquote in double quotes, which the shell runs first;
+    // one in an argument another program may hand to a shell; and, from local review, one that runs a shell
+    // command in Ruby, Perl or PHP, sits in a string that code may hand to a shell, or is in JavaScript that
+    // starts a process.
+    for (const command of [
+      'echo "$($CMD)"',
+      'x=$($CMD arg)',
+      'node -e "console.log(`$CMD x`)"',
+      "sh -c 'echo `$CMD`'",
+      `su -c 'bash -c "$CMD"' me`,
+      "watch 'echo $($CMD)'",
+      "watch 'echo `$CMD`'",
+      "ruby -e 'puts `$CMD`'",
+      "perl -e 'print `$CMD`'",
+      "php -r 'echo `$CMD`;'",
+      `python3 -c 'import os; os.system("echo \`$CMD\`")'`,
+      `node -e 'require("child_process").execSync("echo \`$CMD\` x")'`,
+      "node -e 'require(\"child_process\").execSync(`${process.env.CMD} `)'",
+      "bun -e 'await Bun.$`${cmd} now`'",
+    ]) {
+      expect(readShellCommand(command)).toMatchObject({ kind: 'unreadable', label: 'a command built as it runs' })
+    }
+    // Install words in the template still count.
+    expect(readShellCommand("node -e 'require(\"child_process\").execSync(`claude plugin install ${x}`)'")).toMatchObject({ kind: 'unreadable' })
+  })
+
   test('splits like a shell: quotes, separators, redirections and here-documents', () => {
     expect(splitShell(`a 'b c' "d \\"e\\"" f\\ g; h && i | j 2>&1 > out < in`).commands.map(item => item.words)).toEqual([['a', 'b c', 'd "e"', 'f g'], ['h'], ['i'], ['j']])
     expect(splitShell('cat <<-END\n\tbody\n\tEND\nnext').commands).toEqual([{ words: ['cat'], input: 'body', feeds: 'body\n' }, { words: ['next'] }])
