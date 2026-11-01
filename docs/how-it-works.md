@@ -41,7 +41,7 @@ It can: intercept /plugin · see every Bash call and deny, rewrite or answer it 
 
 Quality notes (no license, a thin README, a brand-new repository) are listed on their rows and never change the verdict.
 
-Text that writes about an attack is not read as one. A skill that warns about comments like "ignore previous instructions", a `.env` example that names `ANTHROPIC_API_KEY`, `npx tsc` in a setup step, or a hook that sends its Anthropic key to Anthropic is listed as a note, not flagged. To keep this honest, CI scans Anthropic's own marketplace at a pinned commit on every change: 50 of its 53 plugins scan with no red flags, none as Do not install, and the build fails if a change flags more. To run the same count on any marketplace, run `npm run build:skill`, then `node scripts/benchmark.js <marketplace folder>`.
+Text that writes about an attack is not read as one. A skill that warns about comments like "ignore previous instructions", a `.env` example that names `ANTHROPIC_API_KEY`, `npx tsc` in a setup step, a page downloaded into a one-line Python or Node program that only reads it (`curl … | python3 -c "…json.load(sys.stdin)…"`, `python3 -m json.tool`), a script that prints, reads or runs a path in `~/.claude/skills` but never writes there, or a hook that sends its Anthropic key to Anthropic is listed as a note, not flagged. To keep this honest, CI scans Anthropic's own marketplace at a pinned commit on every change: 50 of its 53 plugins scan with no red flags, none as Do not install, and the build fails if a change flags more. To run the same count on any marketplace, run `npm run build:skill`, then `node scripts/benchmark.js <marketplace folder>`.
 
 ## What it checks
 
@@ -51,7 +51,7 @@ Text that writes about an attack is not read as one. A skill that warns about co
 | Data theft | Reads of `~/.ssh`, `~/.aws`, `.env`, keychains or secret env vars, combined with network calls; API keys an MCP server sends to a host that is not their own service |
 | Prompt injection | Hidden instructions in skills, commands, agents and tool descriptions, including invisible Unicode |
 | Permission escalation | Mods that auto-approve tools, writes to Claude settings or permissions, skills granting broad `Bash` |
-| Persistence | Writes to shell rc files, crontab, launchd, systemd, git hooks |
+| Persistence | Writes to shell rc files, crontab, launchd, systemd, git hooks, and where Claude Code loads plugins, skills and memory (`CLAUDE.md`) |
 | Supply chain | Brand-new repositories and accounts, commits that are not on the default branch (they may come from a fork), packages known to be malware or vulnerable (an optional lookup), names one letter away from an official plugin's (an optional lookup), marketplace plugins not pinned to a commit, branches named like a commit id or `FETCH_HEAD` (the Plugin4Shell trick), submodules and Git LFS files whose code is fetched at install, remote MCP servers, committed secrets, binaries, data hidden after the end of images |
 | Sneaky updates | An update that adds capabilities, hooks, domains or servers without saying so |
 
