@@ -68,15 +68,39 @@ function onlySkillFiles(text: string): string[] | undefined {
     files.push(path)
     return ' '
   })
-  return files.length > 0 && !NAMES_CLAUDE.test(rest) ? files : undefined
+  return files.length > 0 && !namesClaudeFolder(rest) ? files : undefined
 }
 
+/** An MCP or user configuration, an organization's settings, or the variable that moves Claude's folder. */
+const NAMES_CONFIG = /\.mcp\.json|\.claude\.json|managed-settings\.json|CLAUDE_CONFIG_DIR/i
+
 /**
- * Whether text names a place Claude Code loads from: a `.claude` folder, an
- * MCP or user configuration, an organization's settings, or the variable
- * that moves Claude's folder. `.claude-plugin` and `.claudeignore` are not.
+ * A `.claude` folder (not `.claude-plugin` or `.claudeignore`), the plain
+ * names after it in the same path, and the character that ends them.
  */
-export const NAMES_CLAUDE = /(?:^|[\s"'=:/\\~$({])\.claude(?![\w.-])|\.mcp\.json|\.claude\.json|managed-settings\.json|CLAUDE_CONFIG_DIR/i
+const CLAUDE_PATH = /(?:^|[\s"'=:/\\~$({])\.claude(?![\w.-])((?:[\\/]+[\w.*?-]+)*)[\\/]*(?=([\s\S]?))/gi
+
+/** What in a `.claude` folder Claude Code loads from, as `writePlace` reads it. */
+const LOAD_AREA = /^(?:skills|commands|agents|output-styles|plugins|settings(?:\.local)?\.json)$/i
+
+/**
+ * Whether text names a place Claude Code loads from: a `.claude` folder, or a
+ * path into one that reaches what it loads, climbs out through `..`, names a
+ * `.claude` folder again (a worktree's own) or is built further as it runs
+ * (`$`, `{`); or one of Claude Code's other configurations. A path to anything
+ * else there (a transcript and the tool results beside it, `CLAUDE.md`, a
+ * worktree's own files) is no more one than any other file, as for Write.
+ */
+export function namesClaudeFolder(text: string): boolean {
+  if (NAMES_CONFIG.test(text)) return true
+  for (const [, tail = '', next = ''] of text.matchAll(CLAUDE_PATH)) {
+    const names = tail.split(/[\\/]+/).filter(name => name !== '' && name !== '.')
+    const [first] = names
+    // A wildcard first may match what it loads.
+    if (first === undefined || LOAD_AREA.test(first) || /[*?]/.test(first) || names.some(name => name === '..' || name.toLowerCase() === '.claude') || /[$`{%#]/.test(next)) return true
+  }
+  return false
+}
 
 /** The most of a file the guard reads to know what a copy or an append makes, as it reads a configuration. */
 const MAX_TEXT_BYTES = 16 * 1024 * 1024
@@ -98,7 +122,7 @@ export async function readShellChange(host: Host, command: string, cwd: string |
   let hidden: Unseen | undefined
   let skills: { part: Unseen; files: string[] } | undefined
   const weigh = (text: string, part: Unseen): void => {
-    if (!NAMES_CLAUDE.test(text)) return
+    if (!namesClaudeFolder(text)) return
     // Only code can be an edit of the files it names; a path only known as it runs could be any file.
     const files = part.text === undefined ? undefined : onlySkillFiles(text)
     if (files === undefined) hidden ??= part
@@ -124,11 +148,11 @@ export async function readShellChange(host: Host, command: string, cwd: string |
     const base = await absolute({ path: named.cwd, cwd: undefined })
     return base === undefined ? undefined : `${base.replace(/\/+$/, '')}/${path}`
   }
-  /** Each file's full path, when every one is there now as a plain file: what an edit changes, rather than something brought in. */
-  const there = async (files: readonly string[]): Promise<string[] | undefined> => {
+  /** Each file's full path, read from `folder`, when every one is there now as a plain file: what an edit changes, rather than something brought in. */
+  const there = async (files: readonly string[], folder = cwd): Promise<string[] | undefined> => {
     const paths: string[] = []
     for (const file of files) {
-      const path = await absolute({ path: file, cwd })
+      const path = await absolute({ path: file, cwd: folder })
       const stat = path === undefined ? undefined : await host.stat(path).catch(() => undefined)
       if (path === undefined || stat?.kind !== 'file' || stat.isLink === true) return undefined
       paths.push(path)
@@ -137,7 +161,8 @@ export async function readShellChange(host: Host, command: string, cwd: string |
   }
   const settle = async (): Promise<void> => {
     if (skills === undefined) return
-    const paths = await there(skills.files)
+    // Read from where the code runs, after any `cd` before it.
+    const paths = await there(skills.files, skills.part.cwd)
     if (paths !== undefined) skills.files = paths
     else {
       hidden ??= skills.part

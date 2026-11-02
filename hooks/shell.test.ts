@@ -292,6 +292,10 @@ describe('what a shell command changes where Claude Code loads from', () => {
     // Code that names only skill and command files already there edits them.
     expect(await change(`python3 -c "p='/home/tester/.claude/skills/old/SKILL.md'; open(p,'w').write(open(p).read().replace('Old','New'))"`)).toMatchObject(note('the skill'))
     expect(await change(`python3 - <<'EOF'\nimport pathlib\np = pathlib.Path('.claude/commands/expenses.md')\np.write_text(p.read_text().replace('Sort', 'Group'))\nEOF`, HOME)).toMatchObject(note('the command'))
+    // The files code names are read from where it runs: after a `cd`, whatever the session's folder.
+    const edit = `cd /home/tester && python3 - <<'EOF'\np='.claude/commands/expenses.md'; s=open(p).read()\nopen(p,'w').write(s.replace('Sort', 'Group'))\nEOF`
+    expect(await change(edit)).toMatchObject({ ...note('the command'), label: `a change to ${HOME}/.claude/commands/expenses.md` })
+    expect(await change(edit.replace('cd /home/tester', 'cd "$X"'))).toMatchObject({ kind: 'unreadable' })
   })
 
   test('what is brought into a skill or command, and an edit anywhere else, is still held', async () => {
@@ -406,37 +410,37 @@ describe('what a shell command changes where Claude Code loads from', () => {
       [`ruby -C ~/.claude/agents -i -pe 'gsub(/a/, %q(b))' x.md`, 'an edit ruby makes would land there'],
       [`perl -pi'~/.claude/skills/evil/*' -e '' SKILL.md`, 'the copy perl keeps of the file it edits would land there'],
       // The edit that passes above, with code that does more than edit.
-      [`perl -pi -e 'system("x")' .claude/CLAUDE.md`, 'perl runs code that may write files or run programs'],
-      [`ruby -pi -e 'system("x")' .claude/CLAUDE.md`, 'ruby runs code that may write files or run programs'],
+      [`perl -pi -e 'system("x")' .claude/settings.json`, 'perl runs code that may write files or run programs'],
+      [`ruby -pi -e 'system("x")' .claude/settings.json`, 'ruby runs code that may write files or run programs'],
       [`perl -i -pe 's/x/qx(cp a ~\\/.claude\\/skills\\/x\\/SKILL.md)/e' notes.md`, 'perl runs code that may write files or run programs'],
-      [`perl -MFile::Copy -pi -e 's/a/b/' .claude/CLAUDE.md`, 'perl runs code that may write files or run programs'],
+      [`perl -MFile::Copy -pi -e 's/a/b/' .claude/settings.json`, 'perl runs code that may write files or run programs'],
       [`perl -MFile::Copy -e 'copy "a", ".claude/skills/x/SKILL.md"'`, 'perl runs code that may write files or run programs'],
-      [`perl -MList::Util=sum -pi -e 's/a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e'use File::Spec; s/a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`ruby -r json -pi -e 'gsub(/a/, %q(b))' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
+      [`perl -MList::Util=sum -pi -e 's/a/b/' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e'use File::Spec; s/a/b/' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`ruby -r json -pi -e 'gsub(/a/, %q(b))' .claude/settings.json`, 'ruby loads a module beside the files it edits in place'],
       // Local review: an open for writing with no parentheses, a module by a pragma, and the file list reached by another name.
       [`perl -pi -e 'open my $fh, "+<", ".claude/settings.json"; print $fh "x"' notes.md`, 'perl runs code that may write files or run programs'],
-      [`perl -pi -e 'use parent "Local::Module"; s/a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 'use parent "Local::Module"; s/a/b/' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
       [`perl -pi -e 'BEGIN { @{ "AR" . "GV" } = (".claude/settings.json") } s/a/b/'`, 'perl edits files in place that its code chooses as it runs'],
       [`perl -pi -e 'BEGIN { push @main::ARGV, ".claude/settings.json" } s/a/b/'`, 'perl edits files in place that its code chooses as it runs'],
       [`ruby -pi -e 'BEGIN { $*.replace([%q(.claude/settings.json)]) }; gsub(/a/, %q(b))'`, 'ruby edits files in place that its code chooses as it runs'],
       [`ruby -pi -e 'Object.const_get(%q(AR) + %q(GV)) << %q(.claude/settings.json)'`, 'ruby edits files in place that its code chooses as it runs'],
-      [`ruby -e 'Object.instance_eval(%q(1))' .claude/CLAUDE.md`, 'ruby runs code that may write files or run programs'],
-      [`ruby -i -e 'Kernel::require "/home/me/.claude/payload.rb"' notes.md`, 'ruby loads a module beside the files it edits in place'],
-      [`perl -pi -e 'my $ok = require "/home/me/.claude/payload.pl"; s/a/b/' notes.md`, 'perl loads a module beside the files it edits in place'],
+      [`ruby -e 'Object.instance_eval(%q(1))' .claude/settings.json`, 'ruby runs code that may write files or run programs'],
+      [`ruby -i -e 'Kernel::require "/home/me/.claude/plugins/payload.rb"' notes.md`, 'ruby loads a module beside the files it edits in place'],
+      [`perl -pi -e 'my $ok = require "/home/me/.claude/plugins/payload.pl"; s/a/b/' notes.md`, 'perl loads a module beside the files it edits in place'],
       // PR review: `do` runs a file however it is named; a replacement is only plain text with no flag, `$` or `@` that runs or fills it in.
-      [`perl -pi -e 'BEGIN { do q(/home/tester/.claude/payload.pl) } s/a/b/' notes.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e 's/a/require "x"/e' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e 's/a/$h{ require "x" }/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e 's/(?{ require "x" })a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e 'print "; s/a/"; require "x"; print "/"' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e 's/a/write/; unlink "x"' .claude/CLAUDE.md`, 'perl runs code that may write files or run programs'],
-      [`ruby -pi -e 'gsub(/a/, "#{require %q(x)}")' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
-      [`ruby -pi -e 'gsub(/#{require %q(x)}/, "b")' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
-      [`ruby -pi -e 'gsub(/a/, "b"); require "x"' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
+      [`perl -pi -e 'BEGIN { do q(/home/tester/.claude/plugins/payload.pl) } s/a/b/' notes.md`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/a/require "x"/e' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/a/$h{ require "x" }/' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/(?{ require "x" })a/b/' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 'print "; s/a/"; require "x"; print "/"' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/a/write/; unlink "x"' .claude/settings.json`, 'perl runs code that may write files or run programs'],
+      [`ruby -pi -e 'gsub(/a/, "#{require %q(x)}")' .claude/settings.json`, 'ruby loads a module beside the files it edits in place'],
+      [`ruby -pi -e 'gsub(/#{require %q(x)}/, "b")' .claude/settings.json`, 'ruby loads a module beside the files it edits in place'],
+      [`ruby -pi -e 'gsub(/a/, "b"); require "x"' .claude/settings.json`, 'ruby loads a module beside the files it edits in place'],
       // PR review: what reads as a string inside a regular expression, or one Ruby nests with `#{…}`, is never left out.
       [`ruby -e "gsub(/x, '#{system(%q(echo x > .mcp.json))}' )/, 'ok')"`, 'ruby runs code that may write files or run programs'],
-      [`ruby -pi -e "gsub(/#{\\"/, '#{system(%q(evil))}'); gsub(/a/, '\\"}/, %q(b)) #')" .claude/CLAUDE.md`, 'ruby runs code that may write files or run programs'],
+      [`ruby -pi -e "gsub(/#{\\"/, '#{system(%q(evil))}'); gsub(/a/, '\\"}/, %q(b)) #')" .claude/settings.json`, 'ruby runs code that may write files or run programs'],
       [`perl -pi -e 'BEGIN { @ARGV = ("/home/tester/.claude/settings.json") } s/a/b/'`, 'perl edits files in place that its code chooses as it runs'],
       [`ruby -pi -e 'BEGIN { Dir.chdir(%q(/home/tester/.claude/skills/x)) }; gsub(/a/, %q(b))' SKILL.md`, 'ruby edits files in place that its code chooses as it runs'],
       [`ls ~/.claude/skills/*/SKILL.md | xargs perl -pi -e 's/a/b/'`, 'perl is given paths from its input'],
@@ -483,6 +487,31 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `python3 -c 'import sys; print(sys.argv[1])' "$DATA" ~/.claude/settings.json`,
       `python3 -c 'import sys; print(sys.stdin.read())' <<< "$X" # ~/.claude`,
     ]) expect(await change(command)).toEqual({ kind: 'pass' })
+  })
+
+  test('a path into Claude\'s folder that reaches nothing it loads is any other file', async () => {
+    // What the guard held in a real session: code that reads a tool result kept beside a transcript.
+    const toolResult = `cd /tmp/scratch && python3 - <<'EOF'\nimport json,base64\nd=json.load(open('/home/tester/.claude/projects/-home-tester-notes/a19/tool-results/mcp-download-1.txt'))\nopen('exports/brief.pdf','wb').write(base64.b64decode(d['content']))\nEOF`
+    for (const command of [
+      toolResult,
+      `python3 - <<'EOF'\np='/home/tester/.claude/projects/-home-tester-notes/memory/MEMORY.md'; s=open(p).read()\nopen(p,'w').write(s + '- [x](x.md)\\n')\nEOF`,
+      `python3 -c "p='.claude/CLAUDE.md'; open(p,'w').write(open(p).read() + 'x')"`,
+      `python3 -c "import json; p='/home/tester/notes/.claude/launch.json'; d=json.load(open(p)); json.dump(d, open(p,'w'))"`,
+      `python3 -c "open('/home/tester/proj/.claude/worktrees/w/src/a.ts','w').write('x')"`,
+      `python3 -c "import glob; [open(p,'a') for p in glob.glob('/home/tester/.claude/projects/*/x.jsonl')]"`,
+      `perl -pi -e 'system("x")' .claude/CLAUDE.md`,
+    ]) expect(await change(command)).toEqual({ kind: 'pass' })
+    // What it loads, reached through such a path, by a name built as the code runs, or by the folder alone, still counts.
+    for (const command of [
+      `python3 -c "open('/home/tester/.claude/projects/x/../../skills/y/SKILL.md','w').write('x')"`,
+      `python3 -c "open('/home/tester/proj/.claude/worktrees/w/.claude/skills/y/SKILL.md','w').write('x')"`,
+      `python3 -c "open('/home/tester/proj/.claude/worktrees/w/.mcp.json','w').write('{}')"`,
+      `python3 - <<'EOF'\nopen(f'{home}/.claude/projects/{name}/x.md','w').write('x')\nEOF`,
+      `python3 -c "import os; open(os.path.join(os.path.expanduser('~/.claude'), area, 'x.md'), 'w')"`,
+      `python3 -c "import glob; [open(p,'w') for p in glob.glob('/home/tester/.claude/*/x.md')]"`,
+      `python3 -c "open('/home/tester/.claude/Settings.json','w').write('{}')"`,
+      `python3 -c "open('/home/tester/.claude/output-styles/a.md','w').write('x')"`,
+    ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
   })
 })
 
