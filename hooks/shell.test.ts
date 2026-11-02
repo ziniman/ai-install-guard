@@ -239,6 +239,10 @@ describe('what a shell command changes where Claude Code loads from', () => {
     '.claude/commands/.keep': b64(''),
     '.claude/commands/expenses.md': b64('Sort the expenses.\n'),
     '.claude/agents/helper.md': b64('Help.\n'),
+    '.claude/cache': { link: '../.claude' },
+    '.claude/log': { link: 'commands' },
+    '.claude/elsewhere': { link: '../cfg/skills' },
+    'cfg/skills/x/SKILL.md': b64(skill('Configured.')),
   }
   const host = memoryHost(HOME, files)
   const change = (command: string, cwd: string | undefined = PROJECT) => readShellChange(host, command, cwd)
@@ -292,6 +296,15 @@ describe('what a shell command changes where Claude Code loads from', () => {
     // Code that names only skill and command files already there edits them.
     expect(await change(`python3 -c "p='/home/tester/.claude/skills/old/SKILL.md'; open(p,'w').write(open(p).read().replace('Old','New'))"`)).toMatchObject(note('the skill'))
     expect(await change(`python3 - <<'EOF'\nimport pathlib\np = pathlib.Path('.claude/commands/expenses.md')\np.write_text(p.read_text().replace('Sort', 'Group'))\nEOF`, HOME)).toMatchObject(note('the command'))
+    // The files code names are read from where it runs: after a `cd`, whatever the session's folder.
+    const edit = `cd /home/tester && python3 - <<'EOF'\np='.claude/commands/expenses.md'; s=open(p).read()\nopen(p,'w').write(s.replace('Sort', 'Group'))\nEOF`
+    expect(await change(edit)).toMatchObject({ ...note('the command'), label: `a change to ${HOME}/.claude/commands/expenses.md` })
+    expect(await change(edit.replace('cd /home/tester', 'cd "$X"'))).toMatchObject({ kind: 'unreadable' })
+    // PR review: never from the session's folder instead, where a file of the same name says nothing of the one made here.
+    expect(await change(`cd /tmp && python3 -c "open('.claude/commands/expenses.md','w').write('x')"`, HOME)).toMatchObject({ kind: 'unreadable' })
+    // Every piece of code must edit files already there: a new skill beside an edit is brought in.
+    expect(await change(`${edit}; python3 -c "open('/home/tester/.claude/skills/new/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
+    expect(await change(`${edit}; python3 -c "p='/home/tester/.claude/skills/old/SKILL.md'; open(p,'w').write(open(p).read())"`)).toMatchObject(note('each one'))
   })
 
   test('what is brought into a skill or command, and an edit anywhere else, is still held', async () => {
@@ -406,37 +419,37 @@ describe('what a shell command changes where Claude Code loads from', () => {
       [`ruby -C ~/.claude/agents -i -pe 'gsub(/a/, %q(b))' x.md`, 'an edit ruby makes would land there'],
       [`perl -pi'~/.claude/skills/evil/*' -e '' SKILL.md`, 'the copy perl keeps of the file it edits would land there'],
       // The edit that passes above, with code that does more than edit.
-      [`perl -pi -e 'system("x")' .claude/CLAUDE.md`, 'perl runs code that may write files or run programs'],
-      [`ruby -pi -e 'system("x")' .claude/CLAUDE.md`, 'ruby runs code that may write files or run programs'],
+      [`perl -pi -e 'system("x")' .claude/settings.json`, 'perl runs code that may write files or run programs'],
+      [`ruby -pi -e 'system("x")' .claude/settings.json`, 'ruby runs code that may write files or run programs'],
       [`perl -i -pe 's/x/qx(cp a ~\\/.claude\\/skills\\/x\\/SKILL.md)/e' notes.md`, 'perl runs code that may write files or run programs'],
-      [`perl -MFile::Copy -pi -e 's/a/b/' .claude/CLAUDE.md`, 'perl runs code that may write files or run programs'],
+      [`perl -MFile::Copy -pi -e 's/a/b/' .claude/settings.json`, 'perl runs code that may write files or run programs'],
       [`perl -MFile::Copy -e 'copy "a", ".claude/skills/x/SKILL.md"'`, 'perl runs code that may write files or run programs'],
-      [`perl -MList::Util=sum -pi -e 's/a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e'use File::Spec; s/a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`ruby -r json -pi -e 'gsub(/a/, %q(b))' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
+      [`perl -MList::Util=sum -pi -e 's/a/b/' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e'use File::Spec; s/a/b/' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`ruby -r json -pi -e 'gsub(/a/, %q(b))' .claude/settings.json`, 'ruby loads a module beside the files it edits in place'],
       // Local review: an open for writing with no parentheses, a module by a pragma, and the file list reached by another name.
       [`perl -pi -e 'open my $fh, "+<", ".claude/settings.json"; print $fh "x"' notes.md`, 'perl runs code that may write files or run programs'],
-      [`perl -pi -e 'use parent "Local::Module"; s/a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 'use parent "Local::Module"; s/a/b/' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
       [`perl -pi -e 'BEGIN { @{ "AR" . "GV" } = (".claude/settings.json") } s/a/b/'`, 'perl edits files in place that its code chooses as it runs'],
       [`perl -pi -e 'BEGIN { push @main::ARGV, ".claude/settings.json" } s/a/b/'`, 'perl edits files in place that its code chooses as it runs'],
       [`ruby -pi -e 'BEGIN { $*.replace([%q(.claude/settings.json)]) }; gsub(/a/, %q(b))'`, 'ruby edits files in place that its code chooses as it runs'],
       [`ruby -pi -e 'Object.const_get(%q(AR) + %q(GV)) << %q(.claude/settings.json)'`, 'ruby edits files in place that its code chooses as it runs'],
-      [`ruby -e 'Object.instance_eval(%q(1))' .claude/CLAUDE.md`, 'ruby runs code that may write files or run programs'],
-      [`ruby -i -e 'Kernel::require "/home/me/.claude/payload.rb"' notes.md`, 'ruby loads a module beside the files it edits in place'],
-      [`perl -pi -e 'my $ok = require "/home/me/.claude/payload.pl"; s/a/b/' notes.md`, 'perl loads a module beside the files it edits in place'],
+      [`ruby -e 'Object.instance_eval(%q(1))' .claude/settings.json`, 'ruby runs code that may write files or run programs'],
+      [`ruby -i -e 'Kernel::require "/home/me/.claude/plugins/payload.rb"' notes.md`, 'ruby loads a module beside the files it edits in place'],
+      [`perl -pi -e 'my $ok = require "/home/me/.claude/plugins/payload.pl"; s/a/b/' notes.md`, 'perl loads a module beside the files it edits in place'],
       // PR review: `do` runs a file however it is named; a replacement is only plain text with no flag, `$` or `@` that runs or fills it in.
-      [`perl -pi -e 'BEGIN { do q(/home/tester/.claude/payload.pl) } s/a/b/' notes.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e 's/a/require "x"/e' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e 's/a/$h{ require "x" }/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e 's/(?{ require "x" })a/b/' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e 'print "; s/a/"; require "x"; print "/"' .claude/CLAUDE.md`, 'perl loads a module beside the files it edits in place'],
-      [`perl -pi -e 's/a/write/; unlink "x"' .claude/CLAUDE.md`, 'perl runs code that may write files or run programs'],
-      [`ruby -pi -e 'gsub(/a/, "#{require %q(x)}")' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
-      [`ruby -pi -e 'gsub(/#{require %q(x)}/, "b")' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
-      [`ruby -pi -e 'gsub(/a/, "b"); require "x"' .claude/CLAUDE.md`, 'ruby loads a module beside the files it edits in place'],
+      [`perl -pi -e 'BEGIN { do q(/home/tester/.claude/plugins/payload.pl) } s/a/b/' notes.md`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/a/require "x"/e' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/a/$h{ require "x" }/' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/(?{ require "x" })a/b/' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 'print "; s/a/"; require "x"; print "/"' .claude/settings.json`, 'perl loads a module beside the files it edits in place'],
+      [`perl -pi -e 's/a/write/; unlink "x"' .claude/settings.json`, 'perl runs code that may write files or run programs'],
+      [`ruby -pi -e 'gsub(/a/, "#{require %q(x)}")' .claude/settings.json`, 'ruby loads a module beside the files it edits in place'],
+      [`ruby -pi -e 'gsub(/#{require %q(x)}/, "b")' .claude/settings.json`, 'ruby loads a module beside the files it edits in place'],
+      [`ruby -pi -e 'gsub(/a/, "b"); require "x"' .claude/settings.json`, 'ruby loads a module beside the files it edits in place'],
       // PR review: what reads as a string inside a regular expression, or one Ruby nests with `#{…}`, is never left out.
       [`ruby -e "gsub(/x, '#{system(%q(echo x > .mcp.json))}' )/, 'ok')"`, 'ruby runs code that may write files or run programs'],
-      [`ruby -pi -e "gsub(/#{\\"/, '#{system(%q(evil))}'); gsub(/a/, '\\"}/, %q(b)) #')" .claude/CLAUDE.md`, 'ruby runs code that may write files or run programs'],
+      [`ruby -pi -e "gsub(/#{\\"/, '#{system(%q(evil))}'); gsub(/a/, '\\"}/, %q(b)) #')" .claude/settings.json`, 'ruby runs code that may write files or run programs'],
       [`perl -pi -e 'BEGIN { @ARGV = ("/home/tester/.claude/settings.json") } s/a/b/'`, 'perl edits files in place that its code chooses as it runs'],
       [`ruby -pi -e 'BEGIN { Dir.chdir(%q(/home/tester/.claude/skills/x)) }; gsub(/a/, %q(b))' SKILL.md`, 'ruby edits files in place that its code chooses as it runs'],
       [`ls ~/.claude/skills/*/SKILL.md | xargs perl -pi -e 's/a/b/'`, 'perl is given paths from its input'],
@@ -483,6 +496,74 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `python3 -c 'import sys; print(sys.argv[1])' "$DATA" ~/.claude/settings.json`,
       `python3 -c 'import sys; print(sys.stdin.read())' <<< "$X" # ~/.claude`,
     ]) expect(await change(command)).toEqual({ kind: 'pass' })
+  })
+
+  test('a path into Claude\'s folder that reaches nothing it loads is any other file', async () => {
+    // What the guard held in a real session: code that reads a tool result kept beside a transcript.
+    const toolResult = `cd /tmp/scratch && python3 - <<'EOF'\nimport json,base64\nd=json.load(open('/home/tester/.claude/projects/-home-tester-notes/a19/tool-results/mcp-download-1.txt'))\nopen('exports/brief.pdf','wb').write(base64.b64decode(d['content']))\nEOF`
+    for (const command of [
+      toolResult,
+      `python3 - <<'EOF'\np='/home/tester/.claude/projects/-home-tester-notes/memory/MEMORY.md'; s=open(p).read()\nopen(p,'w').write(s + '- [x](x.md)\\n')\nEOF`,
+      `python3 -c "p='.claude/CLAUDE.md'; open(p,'w').write(open(p).read() + 'x')"`,
+      `python3 -c "import json; p='/home/tester/notes/.claude/launch.json'; d=json.load(open(p)); json.dump(d, open(p,'w'))"`,
+      `python3 -c "open('/home/tester/proj/.claude/worktrees/w/src/a.ts','w').write('x')"`,
+      `python3 -c "import glob; [open(p,'a') for p in glob.glob('/home/tester/.claude/projects/*/x.jsonl')]"`,
+      `perl -pi -e 'system("x")' .claude/CLAUDE.md`,
+    ]) expect(await change(command)).toEqual({ kind: 'pass' })
+    // What it loads, reached through such a path, by a name built as the code runs, or by the folder alone, still counts.
+    for (const command of [
+      `python3 -c "open('/home/tester/.claude/projects/x/../../skills/y/SKILL.md','w').write('x')"`,
+      `python3 -c "open('/home/tester/proj/.claude/worktrees/w/.claude/skills/y/SKILL.md','w').write('x')"`,
+      `python3 -c "open('/home/tester/proj/.claude/worktrees/w/.mcp.json','w').write('{}')"`,
+      `python3 - <<'EOF'\nopen(f'{home}/.claude/projects/{name}/x.md','w').write('x')\nEOF`,
+      `python3 -c "import os; open(os.path.join(os.path.expanduser('~/.claude'), area, 'x.md'), 'w')"`,
+      `python3 -c "import glob; [open(p,'w') for p in glob.glob('/home/tester/.claude/*/x.md')]"`,
+      `python3 -c "open('/home/tester/.claude/Settings.json','w').write('{}')"`,
+      `python3 -c "open('/home/tester/.claude/output-styles/a.md','w').write('x')"`,
+      // Local review: a name the path is read past (`@`), and a link in Claude's folder that leads back into it.
+      `python3 -c "open('.claude/foo@bar/../settings.json','w').write('{}')"`,
+      `python3 -c "open('/home/tester/.claude/cache/settings.json','w').write('{}')"`,
+      `python3 -c "import os; open(os.environ['HOME'] + '/.claude/cache/settings.json','w').write('{}')"`,
+      `cd "$X" && python3 -c "open('.claude/CLAUDE.md','w').write('x')"`,
+      // A template literal is a string too.
+      `node -e 'require("fs").writeFileSync(\`.claude/settings.json\`, "{}")'`,
+      // PR review: a path joined onto past its quote, and a link made before the code runs.
+      `python3 -c "open('/home/tester/.claude/projects/x' + '/../../settings.json','w').write('{}')"`,
+      `python3 -c "import os; open(os.path.join('/home/tester/.claude/projects', name), 'w')"`,
+      `python3 -c "from pathlib import Path; (Path('/home/tester/.claude/projects') / name).write_text('x')"`,
+      `python3 -c "import os; p = '/home/tester/.claude/projects/x'; open(os.sep.join([p, '..', '..', 'settings.json']), 'w')"`,
+      `ln -s ~/.claude/skills .claude/shortcut && python3 -c "open('.claude/shortcut/new.md','w').write('x')"`,
+      `python3 -c "import os; os.symlink(target, '.claude/shortcut'); open('.claude/shortcut/new.md','w').write('x')"`,
+    ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    // PR review, round two: a character written as an escape, a root only known as it runs, and a link into the folder CLAUDE_CONFIG_DIR names.
+    for (const command of [
+      `python3 -c "open('/home/tester/.claude/projects\\x2f..\\x2fsettings.json','w').write('{}')"`,
+      `python3 -c "import os; open(os.environ['ROOT'] + '/.claude/cache/new.md','w').write('x')"`,
+      `python3 -c "open(f'{root}/.claude/cache/new.md','w').write('x')"`,
+      `python3 -c 'import os; open(os.path.expandvars("$HOME/.claude/cache/settings.json"), "w").write("{}")'`,
+    ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    // PR review, round three: a link moved into place first, by any of the ways code moves a file.
+    for (const command of [
+      `python3 -c "import os; os.rename('/tmp/incoming', '/home/tester/.claude/x'); open('/home/tester/.claude/x','w').write('{}')"`,
+      `python3 -c "import os; os.replace('/tmp/incoming', '/home/tester/.claude/x'); open('/home/tester/.claude/x','w').write('{}')"`,
+      `python3 -c "from pathlib import Path; Path('/tmp/incoming').replace(target); open('/home/tester/.claude/x','w').write('{}')"`,
+      `python3 -c "import shutil; shutil.move('/tmp/incoming', '/home/tester/.claude/x'); open('/home/tester/.claude/x','w').write('{}')"`,
+    ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    // Round four: strings written side by side are one string.
+    expect(await change(`python3 -c "open('.claude/ski' 'lls/new/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
+    expect(await change(`python3 -c "open('/home/tester/.claude/projects' f'/{x}/../../settings.json','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
+    // A string's own replace is no move.
+    expect(await change(`python3 -c "p='/home/tester/.claude/projects/x.md'; s=open(p).read(); open(p,'w').write(s.replace('a', 'b'))"`)).toEqual({ kind: 'pass' })
+    const configured = `python3 -c "open('/home/tester/.claude/elsewhere/new/SKILL.md','w').write('x')"`
+    expect(await readShellChange(host, configured, PROJECT, async () => `${HOME}/cfg`)).toMatchObject({ kind: 'unreadable' })
+    // A path given whole, from a root written out, reaches only what it names; another folder's `.claude` is not yours.
+    expect(await change(`python3 -c "import json; d = json.load(open('/home/tester/.claude/projects/x.json')); open('out.json','w').write('x')"`)).toEqual({ kind: 'pass' })
+    expect(await change(`python3 -c "open('/home/tester/proj/.claude/log','w').write('x')"`)).toEqual({ kind: 'pass' })
+    expect(await change(`python3 -c 'import os; d = open(os.path.expandvars("$HOME/.claude/projects/x.json")).read(); open("out.json", "w").write(d)'`)).toEqual({ kind: 'pass' })
+    expect(await change(`python3 -c "open('/home/tester/.claude/log','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
+    // A mode belongs to open only inside its own parentheses.
+    expect(await change(`python3 -c 'print(open(".claude/settings.json", "r"), "w")'`)).toEqual({ kind: 'pass' })
+    expect(await change(`python3 -c "print('x', file=open(os.path.join(home, '.claude/settings.json'), 'w'))"`)).toMatchObject({ kind: 'unreadable' })
   })
 })
 

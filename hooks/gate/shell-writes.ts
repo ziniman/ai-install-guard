@@ -34,10 +34,17 @@ export type ShellWrite =
    */
   | { kind: 'unknown'; to: Named; what: string; deep?: boolean; edit?: boolean }
 
-/** A part of the command only known as it runs; `text` is what to look for Claude's folder in, the whole command when unset. */
-export type Unseen = { reason: string; text?: string }
+/**
+ * A part of the command only known as it runs; `text` is what to look for
+ * Claude's folder in, the whole command when unset, and `cwd` the folder that
+ * code runs in, when known, which the files it names are read from.
+ */
+export type Unseen = { reason: string; text?: string; cwd?: string }
 
 export type ShellWrites = { writes: ShellWrite[]; unseen: Unseen[] }
+
+/** A command's own text, and the folder it runs in, for the parts of it the guard does not read. */
+type Own = { text: string; cwd?: string }
 
 /** How deep `sh -c "sh -c '…'"` is followed before the guard stops reading. */
 const MAX_DEPTH = 4
@@ -196,7 +203,7 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   /** Whether the argument at `at` is only known as the command runs; a home folder's `~` is known. */
   const unknown = (at: number): boolean => expands.has(placed.index + 1 + at) && isDynamic(args[at] as string)
   const named = (path: string): Named => ({ path, cwd: where.cwd })
-  const ownText = [...words, command.input ?? ''].join(' ')
+  const own: Own = { text: [...words, command.input ?? ''].join(' '), ...(where.cwd === undefined ? {} : { cwd: where.cwd }) }
   // Variables that make a program load code: set for the commands after this one, unset, or set (or
   // taken away, by `env -u` or `env -i`) for this one alone.
   const before = words.slice(0, placed.index)
@@ -286,7 +293,7 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     // A script file is code already on disk, judged as any program is, by the paths it is given.
     const file = args.findIndex(arg => !arg.startsWith('-'))
     if (file !== -1) return pathsGiven(lastPart(args[file] as string), args.slice(file + 1), at => unknown(file + 1 + at), named, writes)
-    out.unseen.push({ reason: `${program} runs a script from its input, which the guard does not read`, text: ownText })
+    out.unseen.push({ reason: `${program} runs a script from its input, which the guard does not read`, ...own })
     return
   }
   if (program === 'source' || program === '.') {
@@ -315,14 +322,14 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       const script = language === 'perl' || language === 'ruby' ? language : undefined
       const switches = script === undefined ? undefined : scriptSwitches(script, args)
       // The text a plain replacement writes is no code (`s/old/write tests/`).
-      const codeText = script !== undefined && switches !== undefined ? [...words.slice(0, placed.index + 1), ...plainArgs(script, args, switches.code), command.input ?? ''].join(' ') : ownText
+      const codeText = script !== undefined && switches !== undefined ? [...words.slice(0, placed.index + 1), ...plainArgs(script, args, switches.code), command.input ?? ''].join(' ') : own.text
       // With code a variable loads beside it (counted above), what an in-place edit writes is no plain edit of the file.
       const inPlaceWrites = loaded === undefined ? writes : (write: ShellWrite): void => writes(write.kind === 'unknown' ? { kind: 'unknown', to: write.to, what: `${write.what}, beside code ${loaded.name} loads` } : write)
-      if (!known) out.unseen.push({ reason: `${program} runs code from its input, which the guard does not read`, text: ownText })
+      if (!known) out.unseen.push({ reason: `${program} runs code from its input, which the guard does not read`, ...own })
       else if (filledIn) out.unseen.push({ reason: `${program} runs code only known as it runs` })
-      else if (mayChange(codeText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text: ownText })
+      else if (mayChange(codeText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, ...own })
       // Perl or Ruby told to edit files in place (`-i`) writes the files named after its code.
-      else if (script !== undefined && switches !== undefined) readInPlace(script, switches, args, unknown, where, inPlaceWrites, dynamicPath, fills, out, ownText, command.input)
+      else if (script !== undefined && switches !== undefined) readInPlace(script, switches, args, unknown, where, inPlaceWrites, dynamicPath, fills, out, own, command.input)
       return
     }
     // A script file or a module (`python3 -m pip …`) is code already on disk: judged by the paths it is given, not by where it is.
@@ -338,7 +345,7 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   if (/^[gmn]?awk$/.test(program)) {
     const fromFile = args.some(arg => arg === '-f' || arg.startsWith('--file'))
     const text = args.find(arg => !arg.startsWith('-'))
-    if (fromFile || (text !== undefined && /[>|]|\bsystem\s*\(|\bgetline\b/.test(text))) out.unseen.push({ reason: `${program} runs a program that may write files`, text: ownText })
+    if (fromFile || (text !== undefined && /[>|]|\bsystem\s*\(|\bgetline\b/.test(text))) out.unseen.push({ reason: `${program} runs a program that may write files`, ...own })
     return
   }
   if (Object.hasOwn(COPY_VALUES, program)) {
@@ -381,7 +388,7 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     return
   }
   if (program === 'sed' || program === 'gsed') {
-    readSedInPlace(args, unknown, named, writes, dynamicPath, out, ownText)
+    readSedInPlace(args, unknown, named, writes, dynamicPath, out, own)
     return
   }
   if (program === 'dd') {
@@ -445,6 +452,8 @@ const MAY_CHANGE: readonly RegExp[] = [
   /(?<!std(?:out|err)\.)writ(?:e|ing)|append|\bdump\s*\(|copyfile|copytree|copy2|\bcopy\s*\(|cpSync|\bcp\s*\(|\brename|\bremove|\bunlink|rmtree|rmdir|\brmSync|\brm\s*\(|mkdir|makedirs|mkdtemp|symlink|hardlink|chmod|chown|\btouch|truncate|utime|extractall|urlretrieve|download|shutil|FileUtils|file_put_contents|fopen|fputs/i,
   // With or without parentheses: Perl's `open my $fh, "+<", $path` opens for writing too.
   /\bopen\b[\s(]*[^,;)]*,\s*(?:mode\s*=\s*)?['"][^'"]*[wax+]/i,
+  // A mode after a first argument that is itself a call (`open(os.path.join(a, b), 'w')`), within open's own parentheses.
+  /\bopen\s*\((?:[^()\n;]|\((?:[^()\n]|\([^()\n]*\))*\))*?,\s*(?:mode\s*=\s*)?['"][rbtU]*[wax+][rwxabtU+]*['"]/i,
   /\bsub\x70rocess|\bchild_\x70rocess|\bs\x70awn|\bexe\x63|\bsyste\x6d\b|\x70open|\bfork\s*\(|\bOpen3|\bProcessBuilder|\bgetRuntime|\bshell_exe\x63|\bpassthru|\bproc_open|\bdo shell s\x63ript|\bDeno\.(?:run|Command)|\bStart-Process|\bInvoke-|\biex\b|\bSet-Content|\bAdd-Content|\bOut-File|\bNew-Item|\bRemove-Item|\bCopy-Item|\bMove-Item|\bRename-Item/i,
   /\b(?:instance_|class_|module_)?eva\x6c\b|\bFunction\s*\(|__im\x70ort__|\bim\x70ortlib|\bgetattr|\bsetattr|\bglobals\s*\(|\bcom\x70ile\s*\(|\bmarshal|\bpickle|\bbase64|\bb\d\ddecode|\ba85decode|\bunhexlify|\bfromhex|\bcodecs|\\x[0-9a-fA-F]{2}|\bchr\s*\(|\bfromCharCode|\batob\b/i,
   /(?<![=-])>|\x60/,
@@ -602,17 +611,17 @@ function plainArgs(language: 'perl' | 'ruby', args: readonly string[], code: rea
  * by name in the code) is code the guard does not read, and so is code that
  * chooses which files it edits.
  */
-function readInPlace(language: 'perl' | 'ruby', switches: ScriptSwitches, args: readonly string[], unknown: (at: number) => boolean, where: Where, writes: Writes, dynamicPath: () => void, fills: boolean, out: ShellWrites, ownText: string, input: string | undefined): void {
+function readInPlace(language: 'perl' | 'ruby', switches: ScriptSwitches, args: readonly string[], unknown: (at: number) => boolean, where: Where, writes: Writes, dynamicPath: () => void, fills: boolean, out: ShellWrites, own: Own, input: string | undefined): void {
   const { code, suffix, module, folder, after } = switches
   if (suffix === undefined) return
   // With no code inline, a here-document is the script.
   const source = code.length > 0 ? code.map(item => plainCode(language, item.value)).join('\n') : (input ?? '')
   if (module || IN_PLACE_LOADS[language].test(source)) {
-    out.unseen.push({ reason: `${language} loads a module beside the files it edits in place, which the guard does not read`, text: ownText })
+    out.unseen.push({ reason: `${language} loads a module beside the files it edits in place, which the guard does not read`, ...own })
     return
   }
   if (IN_PLACE_CHOOSES[language].test(source)) {
-    out.unseen.push({ reason: `${language} edits files in place that its code chooses as it runs`, text: ownText })
+    out.unseen.push({ reason: `${language} edits files in place that its code chooses as it runs`, ...own })
     return
   }
   if (fills) {
@@ -1018,9 +1027,9 @@ function sedScripts(args: readonly string[]): string[] {
 }
 
 /** `sed -i`: each file it edits in place; and a script whose `w` command writes a file, or whose `e` runs one. */
-function readSedInPlace(args: readonly string[], unknown: (at: number) => boolean, named: (path: string) => Named, writes: Writes, dynamicPath: () => void, out: ShellWrites, ownText: string): void {
+function readSedInPlace(args: readonly string[], unknown: (at: number) => boolean, named: (path: string) => Named, writes: Writes, dynamicPath: () => void, out: ShellWrites, own: Own): void {
   if (sedScripts(args).some(script => /(?:^|[/;}\d$])\s*[wWe](?:\s+\S|$)/m.test(script)) || args.some(arg => /^-[A-Za-z]*f/.test(arg) || arg.startsWith('--file'))) {
-    out.unseen.push({ reason: 'sed runs a script that may write files', text: ownText })
+    out.unseen.push({ reason: 'sed runs a script that may write files', ...own })
   }
   const inPlace = args.findIndex(arg => /^-[A-Za-z]*i/.test(arg) || arg.startsWith('--in-place'))
   if (inPlace === -1) return

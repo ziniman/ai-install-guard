@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.13 &nbsp;·&nbsp; 2026-11-03
+
+**Shell commands** - Code that names a path in a `.claude` folder is held only when the path reaches what Claude Code loads from: skills, commands, agents, output styles, plugins and settings. A transcript and the tool results kept beside it, memory files, `CLAUDE.md`, `launch.json` and a worktree's own files are like any other file, as they already were for Write. This was the most common needless hold in real sessions. The folder itself, a path that climbs out through `..` or names a `.claude` folder within it, one built or joined onto as the code runs, one after a root only known as it runs (a variable other than `$HOME`), one beside an escaped character (`\x2f`), and one a link on disk leads into such a place (the folder `CLAUDE_CONFIG_DIR` names included), or that the command may make or move a link onto first, still count. A skill or command file that code edits is now found from the folder the code runs in, after any `cd` before it, so the same edit gets the same note whatever folder the session is in. When a command holds several pieces of code, every one must edit files already there for it to go on with a note; before, only the first was checked. Python's `open(…, 'w')` now counts as a write when its first argument is itself a call (`os.path.join(…)`), and a path in a JavaScript template literal counts like one in quotes
+
+---
+
 ## v0.8.12 &nbsp;·&nbsp; 2026-11-02
 
 **Shell commands** - Two ways past the shell-command gate are closed. The backup `sed -i` keeps (`-i.bak`, or GNU sed's `-i'folder/*'`, which can put a copy of any file in another folder) now counts as a write, as Perl's and Ruby's already did, so a backup that lands among your skills, commands or settings is held. And a program run with a variable that makes it load code of its own (`PERL5OPT`, `RUBYOPT`, `PYTHONPATH`, `NODE_OPTIONS` for their interpreters, `BASH_ENV` for bash, `LD_PRELOAD`, `DYLD_*` or `PATH` for any program), set on the command or earlier in it, now counts as code the guard does not read, rather than as a read-only one-liner or a plain in-place edit. Each variable counts only for the programs that read it, and not once it is `unset` or taken away with `env -u`. A path or code only known as it runs no longer passes as an ordinary edit of a skill or command it names, since it could be any file
