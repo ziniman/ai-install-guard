@@ -239,6 +239,7 @@ describe('what a shell command changes where Claude Code loads from', () => {
     '.claude/commands/.keep': b64(''),
     '.claude/commands/expenses.md': b64('Sort the expenses.\n'),
     '.claude/agents/helper.md': b64('Help.\n'),
+    '.claude/cache': { link: '../.claude' },
   }
   const host = memoryHost(HOME, files)
   const change = (command: string, cwd: string | undefined = PROJECT) => readShellChange(host, command, cwd)
@@ -296,6 +297,11 @@ describe('what a shell command changes where Claude Code loads from', () => {
     const edit = `cd /home/tester && python3 - <<'EOF'\np='.claude/commands/expenses.md'; s=open(p).read()\nopen(p,'w').write(s.replace('Sort', 'Group'))\nEOF`
     expect(await change(edit)).toMatchObject({ ...note('the command'), label: `a change to ${HOME}/.claude/commands/expenses.md` })
     expect(await change(edit.replace('cd /home/tester', 'cd "$X"'))).toMatchObject({ kind: 'unreadable' })
+    // Its words may name the file from the session's folder while it runs in the file's own.
+    expect(await change(`cd /home/tester/.claude/commands && python3 - <<'EOF'\np='expenses.md'; s=open(p).read()\n# Edits \`.claude/commands/expenses.md\`.\nopen(p,'w').write(s)\nEOF`, HOME)).toMatchObject(note('the command'))
+    // Every piece of code must edit files already there: a new skill beside an edit is brought in.
+    expect(await change(`${edit}; python3 -c "open('/home/tester/.claude/skills/new/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
+    expect(await change(`${edit}; python3 -c "p='/home/tester/.claude/skills/old/SKILL.md'; open(p,'w').write(open(p).read())"`)).toMatchObject(note('each one'))
   })
 
   test('what is brought into a skill or command, and an edit anywhere else, is still held', async () => {
@@ -511,7 +517,17 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `python3 -c "import glob; [open(p,'w') for p in glob.glob('/home/tester/.claude/*/x.md')]"`,
       `python3 -c "open('/home/tester/.claude/Settings.json','w').write('{}')"`,
       `python3 -c "open('/home/tester/.claude/output-styles/a.md','w').write('x')"`,
+      // Local review: a name the path is read past (`@`), and a link in Claude's folder that leads back into it.
+      `python3 -c "open('.claude/foo@bar/../settings.json','w').write('{}')"`,
+      `python3 -c "open('/home/tester/.claude/cache/settings.json','w').write('{}')"`,
+      `python3 -c "import os; open(os.environ['HOME'] + '/.claude/cache/settings.json','w').write('{}')"`,
+      `cd "$X" && python3 -c "open('.claude/CLAUDE.md','w').write('x')"`,
+      // A template literal is a string too.
+      `node -e 'require("fs").writeFileSync(\`.claude/settings.json\`, "{}")'`,
     ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    // A mode belongs to open only inside its own parentheses.
+    expect(await change(`python3 -c 'print(open(".claude/settings.json", "r"), "w")'`)).toEqual({ kind: 'pass' })
+    expect(await change(`python3 -c "print('x', file=open(os.path.join(home, '.claude/settings.json'), 'w'))"`)).toMatchObject({ kind: 'unreadable' })
   })
 })
 

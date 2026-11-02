@@ -452,8 +452,8 @@ const MAY_CHANGE: readonly RegExp[] = [
   /(?<!std(?:out|err)\.)writ(?:e|ing)|append|\bdump\s*\(|copyfile|copytree|copy2|\bcopy\s*\(|cpSync|\bcp\s*\(|\brename|\bremove|\bunlink|rmtree|rmdir|\brmSync|\brm\s*\(|mkdir|makedirs|mkdtemp|symlink|hardlink|chmod|chown|\btouch|truncate|utime|extractall|urlretrieve|download|shutil|FileUtils|file_put_contents|fopen|fputs/i,
   // With or without parentheses: Perl's `open my $fh, "+<", $path` opens for writing too.
   /\bopen\b[\s(]*[^,;)]*,\s*(?:mode\s*=\s*)?['"][^'"]*[wax+]/i,
-  // A mode after a first argument that is itself a call (`open(os.path.join(a, b), 'w')`), on the same line.
-  /\bopen\s*\([^;\n]*?,\s*(?:mode\s*=\s*)?['"][rbtU]*[wax+][rwxabtU+]*['"]/i,
+  // A mode after a first argument that is itself a call (`open(os.path.join(a, b), 'w')`), within open's own parentheses.
+  /\bopen\s*\((?:[^()\n;]|\((?:[^()\n]|\([^()\n]*\))*\))*?,\s*(?:mode\s*=\s*)?['"][rbtU]*[wax+][rwxabtU+]*['"]/i,
   /\bsub\x70rocess|\bchild_\x70rocess|\bs\x70awn|\bexe\x63|\bsyste\x6d\b|\x70open|\bfork\s*\(|\bOpen3|\bProcessBuilder|\bgetRuntime|\bshell_exe\x63|\bpassthru|\bproc_open|\bdo shell s\x63ript|\bDeno\.(?:run|Command)|\bStart-Process|\bInvoke-|\biex\b|\bSet-Content|\bAdd-Content|\bOut-File|\bNew-Item|\bRemove-Item|\bCopy-Item|\bMove-Item|\bRename-Item/i,
   /\b(?:instance_|class_|module_)?eva\x6c\b|\bFunction\s*\(|__im\x70ort__|\bim\x70ortlib|\bgetattr|\bsetattr|\bglobals\s*\(|\bcom\x70ile\s*\(|\bmarshal|\bpickle|\bbase64|\bb\d\ddecode|\ba85decode|\bunhexlify|\bfromhex|\bcodecs|\\x[0-9a-fA-F]{2}|\bchr\s*\(|\bfromCharCode|\batob\b/i,
   /(?<![=-])>|\x60/,
