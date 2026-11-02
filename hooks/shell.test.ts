@@ -542,6 +542,15 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `python3 -c "open(f'{root}/.claude/cache/new.md','w').write('x')"`,
       `python3 -c 'import os; open(os.path.expandvars("$HOME/.claude/cache/settings.json"), "w").write("{}")'`,
     ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    // PR review, round three: a link moved into place first, by any of the ways code moves a file.
+    for (const command of [
+      `python3 -c "import os; os.rename('/tmp/incoming', '/home/tester/.claude/x'); open('/home/tester/.claude/x','w').write('{}')"`,
+      `python3 -c "import os; os.replace('/tmp/incoming', '/home/tester/.claude/x'); open('/home/tester/.claude/x','w').write('{}')"`,
+      `python3 -c "from pathlib import Path; Path('/tmp/incoming').replace(target); open('/home/tester/.claude/x','w').write('{}')"`,
+      `python3 -c "import shutil; shutil.move('/tmp/incoming', '/home/tester/.claude/x'); open('/home/tester/.claude/x','w').write('{}')"`,
+    ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    // A string's own replace is no move.
+    expect(await change(`python3 -c "p='/home/tester/.claude/projects/x.md'; s=open(p).read(); open(p,'w').write(s.replace('a', 'b'))"`)).toEqual({ kind: 'pass' })
     const configured = `python3 -c "open('/home/tester/.claude/elsewhere/new/SKILL.md','w').write('x')"`
     expect(await readShellChange(host, configured, PROJECT, async () => `${HOME}/cfg`)).toMatchObject({ kind: 'unreadable' })
     // A path given whole, from a root written out, reaches only what it names; another folder's `.claude` is not yours.

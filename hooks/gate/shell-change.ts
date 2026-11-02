@@ -145,8 +145,13 @@ export function namesClaudeFolder(text: string): boolean {
 /** A path into, or of, a `.claude` folder. */
 const IN_CLAUDE = /(?:^|[\\/])\.claude(?:[\\/]|$)/i
 
-/** Code that may make a link: a symbolic or hard link, by a call or by `ln`. */
-const MAKES_LINK = /symlink|\blink(?:Sync|_to)?\s*\(|\bln\s+-|hardlink/i
+/**
+ * Code that may put a link at a path before it writes through it: make one
+ * (a symbolic or hard link, by a call or by `ln`), or move or copy one there
+ * (`rename`, `os.replace`, a path's own `replace` with its one argument, where
+ * a string's takes two, `shutil`, `mv`, `cp` keeping links, `FileUtils`).
+ */
+const MAY_PLACE_LINK = /symlink|\blink(?:Sync|_to)?\s*\(|\bln\s+-|hardlink|\brenames?\s*\(|renameSync|\bos\.replace\s*\(|\.replace\s*\([^,()]*\)|shutil\.(?:move|copy)|copytree|\bmove\s*\(|\bmv\s|\bcp\s+-[a-zA-Z]*[aPRrd]|FileUtils\.(?:mv|cp|ln|move|copy)/i
 
 /** The most of a file the guard reads to know what a copy or an append makes, as it reads a configuration. */
 const MAX_TEXT_BYTES = 16 * 1024 * 1024
@@ -236,8 +241,8 @@ export async function readShellChange(host: Host, command: string, cwd: string |
   const settle = async (): Promise<void> => {
     for (const { part, paths } of linked) {
       if (hidden !== undefined) break
-      // A link the command or its code may make is not on disk yet to follow.
-      if (claudeChanged || MAKES_LINK.test(part.text ?? command)) {
+      // A link the command or its code may make or move there is not on disk yet to follow.
+      if (claudeChanged || MAY_PLACE_LINK.test(part.text ?? command)) {
         hidden = part
         break
       }
