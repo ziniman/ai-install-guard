@@ -103,7 +103,26 @@ describe('reading what a shell command writes', () => {
     expect(writes('tar xzf skill.tgz --directory=/opt/x')).toEqual([`unknown ${PROJECT}:/opt/x deep: the files tar unpacks`])
     expect(writes('tar -czf out.tgz dir')).toEqual([])
     expect(writes("sed -i '' -e 's/a/b/' ~/.claude/settings.json")).toEqual([`unknown ${PROJECT}:~/.claude/settings.json: an edit sed makes`])
-    expect(writes("sed -i.bak 's/a/b/' one.md two.md")).toEqual([`unknown ${PROJECT}:one.md: an edit sed makes`, `unknown ${PROJECT}:two.md: an edit sed makes`])
+    // The backup sed keeps is a copy of the file it edits, wherever its suffix puts it.
+    expect(writes("sed -i.bak 's/a/b/' one.md two.md")).toEqual([
+      `unknown ${PROJECT}:one.md: an edit sed makes`,
+      `unknown ${PROJECT}:one.md.bak: the copy sed keeps of the file it edits`,
+      `unknown ${PROJECT}:two.md: an edit sed makes`,
+      `unknown ${PROJECT}:two.md.bak: the copy sed keeps of the file it edits`,
+    ])
+    expect(writes("sed -i .orig 's/a/b/' x.md")).toEqual([`unknown ${PROJECT}:x.md: an edit sed makes`, `unknown ${PROJECT}:x.md.orig: the copy sed keeps of the file it edits`])
+    expect(writes("sed --in-place=.orig 's/a/b/' x.md")).toEqual([`unknown ${PROJECT}:x.md: an edit sed makes`, `unknown ${PROJECT}:x.md.orig: the copy sed keeps of the file it edits`])
+    // GNU sed puts the file's name for each `*`, and a folder in the suffix moves the copy there; BSD sed adds the suffix as it is.
+    expect(writes("sed -i'old/*' 's/a/b/' docs/x.md")).toEqual([
+      `unknown ${PROJECT}:docs/x.md: an edit sed makes`,
+      `unknown ${PROJECT}:old/x.md: the copy sed keeps of the file it edits`,
+      `unknown ${PROJECT}:docs/x.mdold/*: the copy sed keeps of the file it edits`,
+    ])
+    expect(writes("sed -i'*.orig' 's/a/b/' docs/x.md")).toContain(`unknown ${PROJECT}:docs/x.md.orig: the copy sed keeps of the file it edits`)
+    expect(unseen(`sed -i"$SUFFIX" 's/a/b/' x.md`)).toEqual(['sed writes to a path only known as it runs'])
+    // On macOS a bare -i takes the next word as the suffix, so one only known as it runs may be that suffix.
+    expect(unseen(`sed -i "$SUFFIX" -e 's/a/b/' x.md`)).toEqual(['sed writes to a path only known as it runs'])
+    expect(writes(`sed -i "$SUFFIX" 's/a/b/' x.md`)).toEqual([`unknown ${PROJECT}:x.md: an edit sed makes`])
     expect(writes("sed 's/a/b/' one.md")).toEqual([])
     // Perl and Ruby told to edit in place are read as sed -i is: each file after the code, and the copy a suffix keeps.
     expect(writes("perl -pi -e 's/old/new/' .claude/CLAUDE.md")).toEqual([`unknown ${PROJECT}:.claude/CLAUDE.md: an edit perl makes`])
@@ -138,6 +157,33 @@ describe('reading what a shell command writes', () => {
     expect(unseen('python3 <<EOF\nimport shutil\nshutil.copy("a", "b")\nEOF')).toEqual(['python3 runs code that may write files or run programs'])
     // Code that only reads and prints is no change; code piped in from elsewhere is unknown.
     expect(unseen('python3 <<EOF\nprint(1)\nEOF')).toEqual([])
+    // A variable that makes the interpreter load code of its own, on the command or set before it, makes its code unseen.
+    expect(unseen("PERL5OPT=-MEvil perl -pi -e 's/a/b/' x.md")).toEqual(['perl runs with PERL5OPT set, so it loads code the guard does not read'])
+    expect(unseen("export RUBYOPT=-revil; ruby -pi -e 'gsub(/a/, %q(b))' x.md")).toEqual(['ruby runs with RUBYOPT set, so it loads code the guard does not read'])
+    expect(unseen("PERL5LIB=/tmp/lib && perl -pi -e 's/a/b/' x.md")).toEqual(['perl runs with PERL5LIB set, so it loads code the guard does not read'])
+    expect(unseen("env PYTHONPATH=/tmp python3 -c 'print(1)'")).toEqual(['python3 runs with PYTHONPATH set, so it loads code the guard does not read'])
+    expect(unseen(`export NODE_OPTIONS=--require=./x.js && sh -c "node -e 'console.log(1)'"`)).toEqual(['node runs with NODE_OPTIONS set, so it loads code the guard does not read'])
+    // Any other variable changes nothing about the code, nor does one another language reads, nor one unset again.
+    expect(unseen("LANG=C perl -pi -e 's/a/b/' x.md; X=1; python3 -c 'print(1)'")).toEqual([])
+    expect(unseen(`PERL5OPT=-Mstrict python3 -c 'print(open("/home/tester/.claude/settings.json").read())'`)).toEqual([])
+    expect(unseen(`export PERL5OPT=-Mstrict; unset PERL5OPT; perl -e 'print 1'; sh -c "perl -e 'print 2'"`)).toEqual([])
+    // A library loaded into any program, and the file bash runs before its script.
+    expect(unseen("LD_PRELOAD=/tmp/x.so python3 -c 'print(1)'")).toEqual(['python3 runs with LD_PRELOAD set, so it loads code the guard does not read'])
+    expect(unseen(`BASH_ENV=/tmp/x.sh bash -c 'echo hi'`)).toEqual(['bash runs with BASH_ENV set, so it loads code the guard does not read'])
+    // PR review: any program a library is loaded into, not only an interpreter; a shell's own commands load nothing.
+    expect(unseen('LD_PRELOAD=/tmp/x.so /usr/bin/true ~/.claude/settings.json')).toEqual(['true runs with LD_PRELOAD set, so it loads code the guard does not read'])
+    expect(unseen('export DYLD_INSERT_LIBRARIES=/tmp/x.dylib; ls ~/.claude')).toEqual(['ls runs with DYLD_INSERT_LIBRARIES set, so it loads code the guard does not read'])
+    expect(unseen('export LD_PRELOAD=/tmp/x.so; cd /tmp; echo hi')).toEqual([])
+    // PR review: `unset -f` takes away a function, not the variable; `env -u` and `env -i` take it from the program they run.
+    expect(unseen(`export PERL5OPT=-MEvil; unset -f PERL5OPT; perl -e 'print 1'`)).toEqual(['perl runs with PERL5OPT set, so it loads code the guard does not read'])
+    expect(unseen(`export PERL5OPT=-MEvil; env -u PERL5OPT perl -e 'print 1'; env -i perl -e 'print 2'; env --unset=PERL5OPT perl -e 'print 3'`)).toEqual([])
+    expect(unseen(`export PERL5OPT=-MEvil; env -u OTHER perl -e 'print 1'`)).toEqual(['perl runs with PERL5OPT set, so it loads code the guard does not read'])
+    // PR review, round two: env itself starts with the library loaded before it clears anything; what a shell command is
+    // given reaches the commands inside it; and a file edited in place beside loaded code is still a file it changes.
+    expect(unseen('export LD_PRELOAD=/tmp/x.so; env -i /usr/bin/true')).toEqual(['env runs with LD_PRELOAD set, so it loads code the guard does not read'])
+    expect(unseen(`NODE_OPTIONS=--require=/tmp/evil.js sh -c 'node -e "console.log(1)"'`)).toEqual(['node runs with NODE_OPTIONS set, so it loads code the guard does not read'])
+    expect(unseen(`PERL5OPT=-MEvil env -S "perl -e 'print 1'"`)).toEqual(['perl runs with PERL5OPT set, so it loads code the guard does not read'])
+    expect(writes("PERL5OPT=-MEvil perl -pi -e 's/a/b/' settings.json")).toEqual([`unknown ${PROJECT}:settings.json: an edit perl makes, beside code PERL5OPT loads`])
     expect(unseen('curl -s https://example.com/x.py | python3 -')).toEqual(['python3 runs code from its input, which the guard does not read'])
     // A script file or module is judged by the paths it is given, not by where it lives.
     expect(writes('python3 ~/.claude/skills/pdf/scripts/fill.py in.pdf /tmp/out.pdf')).toEqual([`unknown ${PROJECT}:/tmp/out.pdf: what fill.py writes when given this path`])
@@ -261,12 +307,25 @@ describe('what a shell command changes where Claude Code loads from', () => {
       "sed -i '' 's/Help/Assist/' ~/.claude/agents/helper.md",
       "sed -i '' 's/a/b/' ~/.claude/settings.json",
       "sed -i '' 's/a/b/' ~/.claude/plugins/cache/x/SKILL.md",
+      // A backup sed keeps where Claude Code loads from is a copy of another file brought in.
+      "sed -i'/home/tester/.claude/commands/*' 's/a/b/' /tmp/notes.md",
+      "sed -i.md 's/a/b/' ~/.claude/commands/expenses",
+      `S=.md; sed -i "$S" -e 's/a/b/' ~/.claude/commands/expenses.md`,
+      // An edit by an interpreter that loads code the guard does not read, where nothing checks it before it is used.
+      "PERL5OPT=-MEvil perl -pi -e 's/a/b/' ~/.claude/agents/helper.md",
+      "export RUBYOPT=-revil; ruby -pi -e 'gsub(/a/, %q(b))' ~/.claude/settings.json",
+      // PR review: code a variable loads is never an edit of the skill or command files the command names, even its own.
+      "PERL5OPT=-MEvil perl -pi -e 's/a/b/' ~/.claude/commands/expenses.md",
+      "BASH_ENV=~/.claude/skills/old/SKILL.md bash -c 'echo ok'",
+      'LD_PRELOAD=/tmp/x.so /usr/bin/true ~/.claude/settings.json',
+      // PR review, round two: a file named relative to the session's folder, which is Claude's own.
+      ["PERL5OPT=-MEvil perl -pi -e 's/a/b/' settings.json", `${HOME}/.claude`],
       // An edit beside a change elsewhere, a new command beside an edit, or a copy whose source cannot be read.
       "sed -i '' 's/a/b/' ~/.claude/commands/expenses.md ~/.claude/settings.json",
       "sed -i '' 's/a/b/' ~/.claude/commands/expenses.md && echo x > ~/.claude/commands/new.md",
       'cp "$SRC" ~/.claude/commands/new.md',
-    ]) {
-      expect(await change(command)).toMatchObject(held)
+    ] as (string | [string, string])[]) {
+      expect(await (typeof command === 'string' ? change(command) : change(...command))).toMatchObject(held)
     }
   })
 

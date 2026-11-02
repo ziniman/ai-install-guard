@@ -99,7 +99,8 @@ export async function readShellChange(host: Host, command: string, cwd: string |
   let skills: { part: Unseen; files: string[] } | undefined
   const weigh = (text: string, part: Unseen): void => {
     if (!NAMES_CLAUDE.test(text)) return
-    const files = onlySkillFiles(text)
+    // Only code can be an edit of the files it names; a path only known as it runs could be any file.
+    const files = part.text === undefined ? undefined : onlySkillFiles(text)
     if (files === undefined) hidden ??= part
     else skills ??= { part, files }
   }

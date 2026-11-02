@@ -103,8 +103,65 @@ export function readShellWrites(command: string, cwd: string | undefined): Shell
   return out
 }
 
-/** The folder commands run in as the script goes on; `cd` changes it for the commands after. */
-type Where = { cwd: string | undefined }
+/**
+ * The folder commands run in as the script goes on; `cd` changes it for the
+ * commands after. `loads` holds the variables set earlier in the command,
+ * and not unset since, that make a program load code of its own
+ * (`export PERL5OPT=…`).
+ */
+type Where = { cwd: string | undefined; loads?: ReadonlySet<string> }
+
+/**
+ * Variables that make a program load or run code besides what it is given,
+ * each with the programs that read it: modules or switches added to every run
+ * (`PERL5OPT=-MEvil`, `RUBYOPT=-revil`, `NODE_OPTIONS=--require`), folders it
+ * loads modules from first, a file bash runs before its script, and, for any
+ * program, a library loaded into it or another program found by its name.
+ */
+const LOADS_CODE: readonly (readonly [programs: RegExp, names: RegExp])[] = [
+  [/^perl$/, /^(?:PERL5OPT|PERL5LIB|PERLLIB|PERL5DB)$/],
+  [/^ruby$/, /^(?:RUBYOPT|RUBYLIB)$/],
+  [/^python[23]?$/, /^(?:PYTHONPATH|PYTHONHOME|PYTHONUSERBASE)$/],
+  [/^(?:node|nodejs|bun)$/, /^(?:NODE_OPTIONS|NODE_PATH)$/],
+  [/^bash$/, /^BASH_ENV$/],
+  [/^/, /^(?:LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|PATH)$/],
+]
+
+/** The names `NAME=value` words set. */
+function assigned(words: readonly string[]): string[] {
+  return words.flatMap(word => /^([A-Za-z_]\w*)=/.exec(word)?.[1] ?? [])
+}
+
+/**
+ * What `env` among the words before a program takes away from the
+ * environment it inherits: the names `-u` gives, or all of it with `-i`.
+ */
+function envTakes(words: readonly string[]): Set<string> | 'all' {
+  const taken = new Set<string>()
+  let inEnv = false
+  for (let at = 0; at < words.length; at += 1) {
+    const word = words[at] as string
+    if (programName(word) === 'env') inEnv = true
+    else if (!inEnv) continue
+    else if (word === '-i' || word === '--ignore-environment' || word === '-') return 'all'
+    else if (word === '-u' || word === '--unset') {
+      at += 1
+      taken.add(words[at] ?? '')
+    }
+    else if (/^-u./.test(word)) taken.add(word.slice(2))
+    else if (word.startsWith('--unset=')) taken.add(word.slice('--unset='.length))
+  }
+  return taken
+}
+
+/** Commands a shell runs itself when named alone, which load nothing a variable can add; `/usr/bin/true` is a program. */
+const BUILTINS = new Set(['cd', 'pushd', 'popd', 'chdir', 'export', 'declare', 'typeset', 'readonly', 'local', 'unset', 'eval', 'source', '.', ':', 'echo', 'printf', 'test', '[', 'true', 'false', 'read', 'set', 'shift', 'exit', 'return', 'alias'])
+
+/** The first of `names` that makes `program` load code of its own. */
+function loaderFor(program: string, names: Iterable<string>): string | undefined {
+  for (const name of names) if (LOADS_CODE.some(([programs, variable]) => programs.test(program) && variable.test(name))) return name
+  return undefined
+}
 
 function readScript(text: string, where: Where, out: ShellWrites, depth: number): void {
   if (depth > MAX_DEPTH) {
@@ -114,9 +171,9 @@ function readScript(text: string, where: Where, out: ShellWrites, depth: number)
   for (const command of splitShell(text).commands) readCommand(command, where, out, depth, false)
 }
 
-/** A script that runs in a shell of its own: a folder it changes to stays its own. */
+/** A script that runs in a shell of its own: a folder it changes to stays its own, and what it was given carries in. */
 function readNested(text: string, where: Where, out: ShellWrites, depth: number): void {
-  readScript(text, { cwd: where.cwd }, out, depth + 1)
+  readScript(text, { cwd: where.cwd, ...(where.loads === undefined ? {} : { loads: where.loads }) }, out, depth + 1)
 }
 
 /**
@@ -132,7 +189,6 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   const words = command.words.slice(start)
   const expands = new Set((command.expands ?? []).map(at => at - start))
   const placed = programAt(words)
-  for (const script of placed.scripts) readNested(script, where, out, depth)
   const fills = fromInput || placed.fromInput
   const word = words[placed.index]
   const program = word === undefined ? '' : programName(word)
@@ -141,6 +197,31 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   const unknown = (at: number): boolean => expands.has(placed.index + 1 + at) && isDynamic(args[at] as string)
   const named = (path: string): Named => ({ path, cwd: where.cwd })
   const ownText = [...words, command.input ?? ''].join(' ')
+  // Variables that make a program load code: set for the commands after this one, unset, or set (or
+  // taken away, by `env -u` or `env -i`) for this one alone.
+  const before = words.slice(0, placed.index)
+  const setHere = assigned(before)
+  const loading = (names: readonly string[]): string[] => names.filter(name => LOADS_CODE.some(([, variable]) => variable.test(name)))
+  if (word === undefined || /^(?:export|declare|typeset|readonly|local)$/.test(program)) {
+    const added = loading(word === undefined ? setHere : assigned(args))
+    if (added.length > 0) where.loads = new Set([...(where.loads ?? []), ...added])
+  } else if (program === 'unset' && where.loads !== undefined && !args.some(arg => /^-[a-z]*f/.test(arg))) {
+    // `unset -f` takes away functions only.
+    const gone = new Set(args.filter(arg => !arg.startsWith('-')))
+    where.loads = new Set([...where.loads].filter(name => !gone.has(name)))
+  }
+  const taken = envTakes(before)
+  const inherited = taken === 'all' ? [] : [...(where.loads ?? [])].filter(name => !taken.has(name))
+  const loaderOf = (language: string): string | undefined => loaderFor(language, [...setHere, ...inherited])
+  const language = program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1')
+  // A script this command runs in a shell of its own (`sh -c`, `env -S`, `eval`) gets the variables it is given too.
+  const given = loading(setHere)
+  const child: Where = given.length === 0 && taken !== 'all' && taken.size === 0 ? where : { cwd: where.cwd, loads: new Set([...inherited, ...given]) }
+  for (const script of placed.scripts) readNested(script, child, out, depth)
+  // A wrapper (`env`, `sudo`) starts first, in the environment as it was before it changes any of it.
+  const wrapperAt = before.findIndex(item => !/^[A-Za-z_]\w*=/.test(item))
+  const wrapper = wrapperAt === -1 ? undefined : programName(before[wrapperAt])
+  const wrapperLoads = wrapper === undefined ? undefined : loaderFor(wrapper, [...assigned(before.slice(0, wrapperAt)), ...(where.loads ?? [])])
 
   for (const target of command.targets ?? []) {
     if (target.expands && isDynamic(target.path)) {
@@ -154,6 +235,11 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     out.unseen.push({ reason: 'it runs a program only known as it runs' })
     return
   }
+  // What a variable makes the program load runs beside whatever it is given: code the guard does not read,
+  // with no text of its own, so a path it names is never taken for a file the command only edits.
+  const loads = BUILTINS.has(program) && !/[\\/]/.test(word) ? undefined : loaderOf(language)
+  const loaded = loads !== undefined ? { by: program, name: loads } : wrapper !== undefined && wrapperLoads !== undefined ? { by: wrapper, name: wrapperLoads } : undefined
+  if (loaded !== undefined) out.unseen.push({ reason: `${loaded.by} runs with ${loaded.name} set, so it loads code the guard does not read` })
   const writes = (write: ShellWrite): void => {
     // A write whose paths come from input could be anywhere.
     if (fills) out.unseen.push({ reason: `${program} is given paths from its input, which the guard does not see` })
@@ -193,10 +279,10 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     const script = flag === -1 ? undefined : args[flag + 1]
     if (script !== undefined) {
       if (unknown(flag + 1)) out.unseen.push({ reason: `${program} runs a script only known as it runs` })
-      else readNested(script, where, out, depth)
+      else readNested(script, child, out, depth)
       return
     }
-    if (command.input !== undefined) return readNested(command.input, where, out, depth)
+    if (command.input !== undefined) return readNested(command.input, child, out, depth)
     // A script file is code already on disk, judged as any program is, by the paths it is given.
     const file = args.findIndex(arg => !arg.startsWith('-'))
     if (file !== -1) return pathsGiven(lastPart(args[file] as string), args.slice(file + 1), at => unknown(file + 1 + at), named, writes)
@@ -208,10 +294,9 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     return
   }
   if (program === 'eval') {
-    readNested(args.join(' '), where, out, depth)
+    readNested(args.join(' '), child, out, depth)
     return
   }
-  const language = program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1')
   if (INTERPRETERS.has(language)) {
     // Code given inline (`deno eval` too), or read from input, is not read.
     const inline = args.some(arg => INLINE_CODE.test(arg)) || (program === 'deno' && args[0] === 'eval')
@@ -231,11 +316,13 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       const switches = script === undefined ? undefined : scriptSwitches(script, args)
       // The text a plain replacement writes is no code (`s/old/write tests/`).
       const codeText = script !== undefined && switches !== undefined ? [...words.slice(0, placed.index + 1), ...plainArgs(script, args, switches.code), command.input ?? ''].join(' ') : ownText
+      // With code a variable loads beside it (counted above), what an in-place edit writes is no plain edit of the file.
+      const inPlaceWrites = loaded === undefined ? writes : (write: ShellWrite): void => writes(write.kind === 'unknown' ? { kind: 'unknown', to: write.to, what: `${write.what}, beside code ${loaded.name} loads` } : write)
       if (!known) out.unseen.push({ reason: `${program} runs code from its input, which the guard does not read`, text: ownText })
       else if (filledIn) out.unseen.push({ reason: `${program} runs code only known as it runs` })
       else if (mayChange(codeText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text: ownText })
       // Perl or Ruby told to edit files in place (`-i`) writes the files named after its code.
-      else if (script !== undefined && switches !== undefined) readInPlace(script, switches, args, unknown, where, writes, dynamicPath, fills, out, ownText, command.input)
+      else if (script !== undefined && switches !== undefined) readInPlace(script, switches, args, unknown, where, inPlaceWrites, dynamicPath, fills, out, ownText, command.input)
       return
     }
     // A script file or a module (`python3 -m pip …`) is code already on disk: judged by the paths it is given, not by where it is.
@@ -937,10 +1024,16 @@ function readSedInPlace(args: readonly string[], unknown: (at: number) => boolea
   }
   const inPlace = args.findIndex(arg => /^-[A-Za-z]*i/.test(arg) || arg.startsWith('--in-place'))
   if (inPlace === -1) return
+  const flag = args[inPlace] as string
+  // A bare -i on macOS takes the next word, often '', as the backup suffix; otherwise the suffix is attached.
+  // A next word only known as it runs may be that suffix too.
+  const next = args[inPlace + 1]
+  const separate = flag === '-i' && next !== undefined && (next === '' || next.startsWith('.') || unknown(inPlace + 1)) ? inPlace + 1 : undefined
+  const suffix = separate !== undefined ? (args[separate] as string) : flag.startsWith('--in-place') ? flag.slice('--in-place'.length).replace(/^=/, '') : flag.slice(flag.indexOf('i') + 1)
+  const suffixUnknown = unknown(separate ?? inPlace) && isDynamic(suffix)
   let script = !args.some(arg => /^-[A-Za-z]*[ef]/.test(arg) || arg.startsWith('--expression') || arg.startsWith('--file'))
   args.forEach((arg, at) => {
-    // A bare -i on macOS takes the next word, often '', as the backup suffix.
-    if (at === inPlace + 1 && args[inPlace] === '-i' && (arg === '' || arg.startsWith('.'))) return
+    if (at === separate) return
     if (arg.startsWith('-')) return
     // The value of -e or -f is a script, not a file.
     const before = args[at - 1] ?? ''
@@ -949,9 +1042,26 @@ function readSedInPlace(args: readonly string[], unknown: (at: number) => boolea
       script = false
       return
     }
-    if (unknown(at)) dynamicPath()
-    else writes({ kind: 'unknown', to: named(arg), what: 'an edit sed makes', edit: true })
+    if (unknown(at)) return dynamicPath()
+    writes({ kind: 'unknown', to: named(arg), what: 'an edit sed makes', edit: true })
+    // The backup of the file as it was is a copy of it, which a suffix can put anywhere (GNU sed's `-i'old/*'`).
+    if (suffixUnknown) dynamicPath()
+    else for (const backup of sedBackups(arg, suffix)) writes({ kind: 'unknown', to: named(backup), what: 'the copy sed keeps of the file it edits' })
   })
+}
+
+/**
+ * Where sed keeps the file it edits in place, given the backup suffix: none
+ * for an empty one. GNU sed puts each `*` the file's name and, when that
+ * names no folder, keeps it beside the file; BSD sed adds the suffix as it is.
+ * Both are given, so neither sed's choice is missed.
+ */
+function sedBackups(path: string, suffix: string): string[] {
+  if (suffix === '') return []
+  if (!suffix.includes('*')) return [`${path}${suffix}`]
+  const slash = path.lastIndexOf('/')
+  const name = suffix.split('*').join(path.slice(slash + 1))
+  return [name.includes('/') ? name : `${path.slice(0, slash + 1)}${name}`, `${path}${suffix}`]
 }
 
 /** `find … -exec cmd {} ;`: the command it runs for each file, whose paths come from what it finds; and the files `-fprint` writes. */
