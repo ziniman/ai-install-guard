@@ -21,8 +21,55 @@ export type ShellChange =
   | { kind: 'folder'; label: string; path: string; claim: string }
   /** A repository cloned in: scanned at the commit it would clone. */
   | { kind: 'clone'; label: string; spec: RemoteSpec; claim: string }
+  /**
+   * Ordinary work on a skill or command the guard cannot read before it runs
+   * (`sed -i`, a script): it goes on with a note, since the skill gate checks
+   * the skill or command before Claude Code next uses it.
+   */
+  | { kind: 'note'; label: string; note: string; claim?: string }
 
 const PASS: ShellChange = { kind: 'pass' }
+
+type Place = ReturnType<typeof writePlace>
+
+/** A skill or a command, which the skill gate checks before Claude Code uses it. */
+function checkedAtUse(place: Place): place is Extract<Place, { kind: 'skill' | 'command' }> {
+  return place?.kind === 'skill' || place?.kind === 'command'
+}
+
+function noted(label: string, what: string, claim?: string): ShellChange {
+  return { kind: 'note', label, note: `AI Install Guard: writing ${label}; the guard checks ${what} before Claude Code next uses it`, ...(claim === undefined ? {} : { claim }) }
+}
+
+/** What the note calls the skill or command a change is to. */
+function noun(place: Place): string {
+  return place?.kind === 'skill' ? 'the skill' : 'the command'
+}
+
+/** A note for changes, named by path, to skill and command files only. */
+function noteFiles(files: readonly string[]): ShellChange {
+  const [one] = files
+  if (files.length === 1 && one !== undefined) return noted(`a change to ${safeLine(one)}`, noun(writePlace(one)))
+  return noted(`changes to ${files.length} skill and command files`, 'each one')
+}
+
+/** A path to a file in a `.claude` folder's skills or commands. */
+const SKILL_FILE = /[^\s"'`;|&<>()$=]*\.claude[\\/](?:skills|commands)[\\/][^\s"'`;|&<>()$]+/gi
+
+/**
+ * The skill or command files text names, when those are all it names of the
+ * places Claude Code loads from; undefined when it names any other, or one
+ * through `..`.
+ */
+function onlySkillFiles(text: string): string[] | undefined {
+  const files: string[] = []
+  const rest = text.replace(SKILL_FILE, path => {
+    if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(path)) return path
+    files.push(path)
+    return ' '
+  })
+  return files.length > 0 && !NAMES_CLAUDE.test(rest) ? files : undefined
+}
 
 /**
  * Whether text names a place Claude Code loads from: a `.claude` folder, an
@@ -35,21 +82,28 @@ export const NAMES_CLAUDE = /(?:^|[\s"'=:/\\~$({])\.claude(?![\w.-])|\.mcp\.json
 const MAX_TEXT_BYTES = 16 * 1024 * 1024
 
 /** One write found to land where Claude Code loads from. */
-type Found = { write: ShellWrite; path: string; landed: string; place: ReturnType<typeof writePlace>; covers: boolean; source?: string | string[] }
+type Found = { write: ShellWrite; path: string; landed: string; place: Place; covers: boolean; source?: string | string[] }
 
 /**
  * What `command` changes where Claude Code loads from, run in `cwd` (the
  * session's current folder, when known). A command that changes nothing
  * there passes; one that changes one thing is turned into what the gate
- * judges; anything else there is held as one the guard cannot read.
+ * judges; changes to skills and commands alone that the guard cannot read
+ * go on with a note; anything else there is held as one the guard cannot read.
  */
 export async function readShellChange(host: Host, command: string, cwd: string | undefined, claudeFolder: () => Promise<string | undefined> = async () => undefined): Promise<ShellChange> {
   const read = readShellWrites(command, cwd)
-  // A part only known as it runs counts when it names Claude's own folder.
-  let hidden: Unseen | undefined = read.unseen.find(item => NAMES_CLAUDE.test(item.text ?? command))
-  if (read.writes.length === 0) return hidden === undefined ? PASS : unseen(hidden)
-  // Only a command that writes looks up where CLAUDE_CONFIG_DIR keeps Claude's folder.
-  const configDir = await claudeFolder()
+  // A part only known as it runs counts when it names Claude's own folder; when all it
+  // names there is skill and command files already there, it edits them: ordinary work.
+  let hidden: Unseen | undefined
+  let skills: { part: Unseen; files: string[] } | undefined
+  const weigh = (text: string, part: Unseen): void => {
+    if (!NAMES_CLAUDE.test(text)) return
+    const files = onlySkillFiles(text)
+    if (files === undefined) hidden ??= part
+    else skills ??= { part, files }
+  }
+  for (const part of read.unseen) weigh(part.text ?? command, part)
 
   let home: string | undefined | null = null
   const homeFolder = async (): Promise<string | undefined> => {
@@ -69,15 +123,45 @@ export async function readShellChange(host: Host, command: string, cwd: string |
     const base = await absolute({ path: named.cwd, cwd: undefined })
     return base === undefined ? undefined : `${base.replace(/\/+$/, '')}/${path}`
   }
+  /** Each file's full path, when every one is there now as a plain file: what an edit changes, rather than something brought in. */
+  const there = async (files: readonly string[]): Promise<string[] | undefined> => {
+    const paths: string[] = []
+    for (const file of files) {
+      const path = await absolute({ path: file, cwd })
+      const stat = path === undefined ? undefined : await host.stat(path).catch(() => undefined)
+      if (path === undefined || stat?.kind !== 'file' || stat.isLink === true) return undefined
+      paths.push(path)
+    }
+    return paths
+  }
+  const settle = async (): Promise<void> => {
+    if (skills === undefined) return
+    const paths = await there(skills.files)
+    if (paths !== undefined) skills.files = paths
+    else {
+      hidden ??= skills.part
+      skills = undefined
+    }
+  }
+
+  if (read.writes.length === 0) {
+    await settle()
+    return hidden !== undefined ? unseen(hidden) : skills !== undefined ? noteFiles(skills.files) : PASS
+  }
+  // Only a command that writes looks up where CLAUDE_CONFIG_DIR keeps Claude's folder.
+  const configDir = await claudeFolder()
 
   const found: Found[] = []
-  const unreadable: { label: string; reason: string }[] = []
+  const unreadable: { label: string; reason: string; place: Place; covers: boolean; edit: boolean }[] = []
   for (const write of read.writes) {
     const to = await absolute(write.to)
     if (to === undefined) {
       // Relative to a folder only known as it runs: a place only when its own words name one.
-      if (writePlace(write.to.path, configDir) !== undefined || coversPlace(write.to.path, configDir)) unreadable.push({ label: `a change to ${safeLine(write.to.path)}`, reason: 'it writes to a path relative to a folder only known as it runs' })
-      else hidden ??= NAMES_CLAUDE.test(command) ? { reason: 'it writes to a path relative to a folder only known as it runs' } : undefined
+      const place = writePlace(write.to.path, configDir)
+      const covers = coversPlace(write.to.path, configDir)
+      const edit = write.kind === 'unknown' && write.edit === true
+      if (place !== undefined || covers) unreadable.push({ label: `a change to ${safeLine(write.to.path)}`, reason: 'it writes to a path relative to a folder only known as it runs', place, covers, edit })
+      else weigh(command, { reason: 'it writes to a path relative to a folder only known as it runs' })
       continue
     }
     for (const { path, source } of await landings(host, write, to, absolute)) {
@@ -91,15 +175,24 @@ export async function readShellChange(host: Host, command: string, cwd: string |
       found.push({ write, path, landed, place, covers, ...(source === undefined ? {} : { source }) })
     }
   }
+  await settle()
   if (hidden !== undefined) return unseen(hidden)
   const total = found.length + unreadable.length
-  if (total === 0) return PASS
-  if (total > 1) {
+  if (total === 0) return skills !== undefined ? noteFiles(skills.files) : PASS
+  const edits = (item: (typeof unreadable)[number]): boolean => item.edit && checkedAtUse(item.place) && !item.covers
+  if (total > 1 || skills !== undefined) {
+    // Edits to several skills and commands already there go on, each checked before it is used;
+    // a new one among them is judged in a command of its own.
+    const judged = await Promise.all(found.map(async one => ({ one, change: await judgeable(host, one, configDir) })))
+    let atUse = unreadable.every(edits)
+    for (const { one, change } of judged) atUse &&= change.kind === 'note' || (change.kind === 'write' && checkedAtUse(one.place) && !one.covers && (await there([one.path])) !== undefined)
+    if (atUse) return noted('changes to skills and commands', 'each one')
+    if (skills !== undefined) return unseen(skills.part)
     const places = [...found.map(item => item.landed), ...unreadable.map(item => item.label.replace(/^a change to /, ''))].slice(0, 3).map(item => safeLine(item))
     return { kind: 'unreadable', label: `${total} changes by one command`, reason: `it makes more than one change where Claude Code loads from (${places.join(', ')}${total > 3 ? ', …' : ''}); make each change in a command of its own, or write each file with Write` }
   }
   const [failed] = unreadable
-  if (failed !== undefined) return { kind: 'unreadable', ...failed }
+  if (failed !== undefined) return edits(failed) ? noted(failed.label, noun(failed.place)) : { kind: 'unreadable', label: failed.label, reason: failed.reason }
   return judgeable(host, found[0] as Found, configDir)
 }
 
@@ -141,23 +234,30 @@ async function judgeable(host: Host, one: Found, configDir: string | undefined):
   const folder = place?.kind === 'skill' ? place.folder : undefined
   const claim = (folder === undefined ? one.landed : normalizePath(await landsAt(host, folder))).toLowerCase()
   const held = (reason: string): ShellChange => ({ kind: 'unreadable', label, reason, claim })
+  // A skill or command is checked before it is used, so an edit to it already there goes on;
+  // anything brought in that the guard cannot read is still held.
+  const atUse = !one.covers && checkedAtUse(place)
+  const edited = (reason: string): ShellChange => (atUse ? noted(label, noun(place), claim) : held(reason))
   if (one.covers) {
     const what = write.kind === 'unknown' ? `${write.what} would land in` : 'it writes over'
     return held(`${what} ${shown} as a whole, where Claude Code keeps what it loads, so the guard cannot tell what it adds; change one skill, command or file at a time`)
   }
   if (place?.kind === 'plugins') return held('it changes the files of a plugin Claude Code installed, outside any install, so what runs would no longer be what was approved')
-  const write1 = (content: string, copied: boolean): ShellChange => ({ kind: 'write', label, input: { tool: 'Write', file_path: one.path, content }, copied, claim, ...(configDir === undefined ? {} : { configDir }) })
+  // Text copied into a skill or command is judged as a Write of it; copied anywhere else, it is always shown.
+  const write1 = (content: string, copied: boolean): ShellChange => ({ kind: 'write', label, input: { tool: 'Write', file_path: one.path, content }, copied: copied && !atUse, claim, ...(configDir === undefined ? {} : { configDir }) })
   switch (write.kind) {
     case 'content': {
       if (!write.append) return write1(write.content, false)
       const current = await readText(host, one.path)
-      return 'text' in current ? write1(`${current.text ?? ''}${write.content}`, false) : held(current.reason)
+      return 'text' in current ? write1(`${current.text ?? ''}${write.content}`, false) : edited(current.reason)
     }
     // A settings file taken away is one with no rules in it.
     case 'remove':
       return write1('{}', false)
-    case 'unknown':
-      return held(`${write.what} would land there, and what it is is only known as it runs; write the file's text with Write, or copy a file that is already there`)
+    case 'unknown': {
+      const reason = `${write.what} would land there, and what it is is only known as it runs; write the file's text with Write, or copy a file that is already there`
+      return write.edit === true ? edited(reason) : held(reason)
+    }
     case 'clone': {
       if (write.submodules) return held("it also clones the repository's submodules, which the guard does not read; clone without --recurse-submodules")
       try {

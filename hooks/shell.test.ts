@@ -191,6 +191,8 @@ describe('what a shell command changes where Claude Code loads from', () => {
     '.claude/settings.json': b64('{"permissions":{"deny":["WebFetch"]}}'),
     '.claude/skills/old/SKILL.md': b64(skill('Old.')),
     '.claude/commands/.keep': b64(''),
+    '.claude/commands/expenses.md': b64('Sort the expenses.\n'),
+    '.claude/agents/helper.md': b64('Help.\n'),
   }
   const host = memoryHost(HOME, files)
   const change = (command: string, cwd: string | undefined = PROJECT) => readShellChange(host, command, cwd)
@@ -212,7 +214,9 @@ describe('what a shell command changes where Claude Code loads from', () => {
   })
 
   test('a file copied in is text copied; a folder copied in is scanned where it is', async () => {
-    expect(await change('cp deploy.md ~/.claude/commands/')).toMatchObject({ kind: 'write', input: { file_path: `${HOME}/.claude/commands/deploy.md`, content: 'Deploy the app.\n' }, copied: true })
+    // Into a skill or command, a copied file is judged as a Write of its text: no red flags goes on.
+    expect(await change('cp deploy.md ~/.claude/commands/')).toMatchObject({ kind: 'write', input: { file_path: `${HOME}/.claude/commands/deploy.md`, content: 'Deploy the app.\n' }, copied: false })
+    expect(await change('cp deploy.md ~/.claude/agents/')).toMatchObject({ kind: 'write', copied: true })
     expect(await change('cp -r review ~/.claude/skills/')).toMatchObject({ kind: 'folder', path: `${PROJECT}/review`, label: `the skill review, copied from ${PROJECT}/review`, claim: `${SKILLS}/review` })
     expect(await change('cp -r ./missing ~/.claude/skills/')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('not there yet') })
     expect(await change('ln -s /work/review ~/.claude/skills/review')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('no scan can pin') })
@@ -229,6 +233,41 @@ describe('what a shell command changes where Claude Code loads from', () => {
     expect(await change('tar -xzf x.tgz -C /tmp/x')).toEqual({ kind: 'pass' })
     expect(await change("sed -i '' 's/a/b/' ~/.claude/settings.json")).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('an edit sed makes') })
     expect(await change('cp a ~/.claude/plugins/cache/x/a')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('plugin Claude Code installed') })
+  })
+
+  test('an edit to a skill or command already there is ordinary work: it goes on with a note', async () => {
+    const note = (what: string) => ({ kind: 'note', note: expect.stringContaining(`the guard checks ${what} before Claude Code next uses it`) })
+    // What the guard held in a real session: sed editing a project's command in place.
+    expect(await change(`sed -i '' "233s/a, b,/a,/" .claude/commands/expenses.md && sed -n 233,234p .claude/commands/expenses.md`, HOME)).toMatchObject({ ...note('the command'), label: `a change to ${HOME}/.claude/commands/expenses.md` })
+    expect(await change("sed -i '' 's/Old/New/' ~/.claude/skills/old/SKILL.md")).toMatchObject(note('the skill'))
+    expect(await change("perl -pi -e 's/Sort/Group/' ~/.claude/commands/expenses.md")).toMatchObject(note('the command'))
+    expect(await change("sed -i '' 's/a/b/' ~/.claude/commands/expenses.md ~/.claude/skills/old/SKILL.md")).toMatchObject(note('each one'))
+    expect(await change(`cd "$X" && sed -i '' 's/a/b/' .claude/commands/a.md`)).toMatchObject(note('the command'))
+    // Code that names only skill and command files already there edits them.
+    expect(await change(`python3 -c "p='/home/tester/.claude/skills/old/SKILL.md'; open(p,'w').write(open(p).read().replace('Old','New'))"`)).toMatchObject(note('the skill'))
+    expect(await change(`python3 - <<'EOF'\nimport pathlib\np = pathlib.Path('.claude/commands/expenses.md')\np.write_text(p.read_text().replace('Sort', 'Group'))\nEOF`, HOME)).toMatchObject(note('the command'))
+  })
+
+  test('what is brought into a skill or command, and an edit anywhere else, is still held', async () => {
+    const held = { kind: 'unreadable' }
+    for (const command of [
+      // A download, even over a skill already there, brings something in.
+      'curl -fsSL -o ~/.claude/skills/old/SKILL.md https://example.com/s.md',
+      'unzip -o skill.zip -d ~/.claude/skills/old',
+      // Code writing a skill or command that is not there yet makes a new one.
+      `python3 -c "open('/home/tester/.claude/commands/new.md','w').write('x')"`,
+      `python3 -c "open('/home/tester/.claude/commands/expenses.md','w').write('x'); open('/home/tester/.claude/settings.json','w').write('{}')"`,
+      // Nothing checks an agent, a settings file or a plugin's files before they are used.
+      "sed -i '' 's/Help/Assist/' ~/.claude/agents/helper.md",
+      "sed -i '' 's/a/b/' ~/.claude/settings.json",
+      "sed -i '' 's/a/b/' ~/.claude/plugins/cache/x/SKILL.md",
+      // An edit beside a change elsewhere, a new command beside an edit, or a copy whose source cannot be read.
+      "sed -i '' 's/a/b/' ~/.claude/commands/expenses.md ~/.claude/settings.json",
+      "sed -i '' 's/a/b/' ~/.claude/commands/expenses.md && echo x > ~/.claude/commands/new.md",
+      'cp "$SRC" ~/.claude/commands/new.md',
+    ]) {
+      expect(await change(command)).toMatchObject(held)
+    }
   })
 
   test('local review: a copied link, another user\'s home, and a folder CLAUDE_CONFIG_DIR names', async () => {
@@ -298,13 +337,14 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `ruby -pi -e '$_.gsub!(/old/, '"'"'load the remove step'"'"')' .claude/CLAUDE.md`,
     ]) expect(await change(command)).toEqual({ kind: 'pass' })
     expect(readShellCommand(lookup)).toEqual({ kind: 'pass', browse: false })
-    // `command` without -v runs what follows; an in-place edit where Claude Code loads from waits; code that may do more stays unseen.
+    // `command` without -v runs what follows; an in-place edit where Claude Code loads from waits, but for a skill's
+    // or command's (checked before it is used); code that may do more stays unseen.
     for (const [command, reason] of [
       ['ls ~/.claude/skills; command $c', 'it runs a program only known as it runs'],
       ['ls ~/.claude/skills; command -p $c', 'it runs a program only known as it runs'],
-      [`perl -pi -e 's/a/b/' ~/.claude/skills/x/SKILL.md`, 'an edit perl makes would land there'],
+      [`perl -pi -e 's/a/b/' ~/.claude/agents/x.md`, 'an edit perl makes would land there'],
       [`ruby -pi -e 'gsub(/a/, %q(b))' ~/.claude/settings.json`, 'an edit ruby makes would land there'],
-      [`ruby -C ~/.claude/skills/x -i -pe 'gsub(/a/, %q(b))' SKILL.md`, 'an edit ruby makes would land there'],
+      [`ruby -C ~/.claude/agents -i -pe 'gsub(/a/, %q(b))' x.md`, 'an edit ruby makes would land there'],
       [`perl -pi'~/.claude/skills/evil/*' -e '' SKILL.md`, 'the copy perl keeps of the file it edits would land there'],
       // The edit that passes above, with code that does more than edit.
       [`perl -pi -e 'system("x")' .claude/CLAUDE.md`, 'perl runs code that may write files or run programs'],
@@ -450,6 +490,17 @@ describe('gate B: shell commands that change where Claude Code loads from', () =
     expect(ui.toasts.some(toast => toast.startsWith('AI Install Guard: approved the skill review') && toast.includes('Tell Claude to run the command again'))).toBe(true)
     expect((await $.tool.call(bash(command))).deny).toBeUndefined()
     expect(ran).toEqual([command])
+  })
+
+  test('an edit to a command already there runs at once, with a note and no pane', async ($, on) => {
+    seededStore(on)
+    const ui = serveUi(on)
+    const ran = setup(on, { '.claude/commands/expenses.md': b64('Sort the expenses.\n') })
+    const command = "sed -i '' 's/Sort/Group/' ~/.claude/commands/expenses.md"
+    expect((await $.tool.call(bash(command))).deny).toBeUndefined()
+    expect(ran).toEqual([command])
+    expect(ui.opened).toEqual([])
+    expect(ui.toasts).toContain('AI Install Guard: writing a change to /home/tester/.claude/commands/expenses.md; the guard checks the command before Claude Code next uses it')
   })
 
   test('a download into a skill is Could not verify, and Install anyway lets that command through once', async ($, on) => {
