@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.12 &nbsp;·&nbsp; 2026-11-02
+
+**Shell commands** - Two ways past the shell-command gate are closed. The backup `sed -i` keeps (`-i.bak`, or GNU sed's `-i'folder/*'`, which can put a copy of any file in another folder) now counts as a write, as Perl's and Ruby's already did, so a backup that lands among your skills, commands or settings is held. And a program run with a variable that makes it load code of its own (`PERL5OPT`, `RUBYOPT`, `PYTHONPATH`, `NODE_OPTIONS` for their interpreters, `BASH_ENV` for bash, `LD_PRELOAD`, `DYLD_*` or `PATH` for any program), set on the command or earlier in it, now counts as code the guard does not read, rather than as a read-only one-liner or a plain in-place edit. Each variable counts only for the programs that read it, and not once it is `unset` or taken away with `env -u`. A path or code only known as it runs no longer passes as an ordinary edit of a skill or command it names, since it could be any file
+
+---
+
 ## v0.8.11 &nbsp;·&nbsp; 2026-11-02
 
 **Shell commands** - The guard holds installs, not ongoing work. An edit Claude makes with the shell to a skill or command that is already there (`sed -i`, `perl -i`, or a short script that names only those files) now goes on with a note instead of Could not verify: the guard checks that skill or command before Claude Code next uses it, as it does for any skill that came with no install. A single file copied into a skill or command is checked as a Write of its text, so one with no red flags goes on too. A download, an archive, a clone, a copy the guard cannot read, a new file made by a script, and an edit to an agent, output style, settings file or plugin are still held
