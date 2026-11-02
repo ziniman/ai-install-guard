@@ -89,17 +89,25 @@ const LOAD_AREA = /^(?:skills|commands|agents|output-styles|plugins|settings(?:\
 /** A call that joins paths, so what a path given to it reaches depends on what follows. */
 const PATH_JOIN = /\bpath\.(?:join|resolve)\s*\(|\bjoinpath\s*\(|\bPurePath\s*\(|\bPath\s*\([^()]*,|\bFile\.(?:join|expand_path)\s*\(|\bcat(?:file|dir)\b/i
 
-/** `..` as a name of its own anywhere in the text: a path joined from parts may climb out through it. */
-const CLIMBS = /(?:^|[\s\\/'"`(,=+])\.\.(?=[\\/'"`),\s]|$)/m
+/**
+ * Anywhere in the text, what can make a path other than it reads: `..` as a
+ * name of its own, which a path joined from parts may climb out through, or
+ * a character written as an escape (`\x2f`, `chr(47)`, `%2f`). Decoding
+ * content (base64) is not one: a path decoded must still be joined on, which
+ * counts where it is written.
+ */
+const MAY_REDIRECT = /(?:^|[\s\\/'"`(,=+])\.\.(?=[\\/'"`),\s]|$)|\\x[0-9a-f]{2}|\\u\{?[0-9a-f]{4}|\\[0-7]{3}|\\N\{|\bchr\s*\(|fromCharCode|%2[ef]|unquote/im
 
 /**
  * The `.claude` paths text names, and whether any of them, by its words
  * alone, may reach a place Claude Code loads from: the folder itself, a path
  * that reaches what it loads, climbs out through `..`, names a `.claude`
- * folder again (a worktree's own), starts with a wildcard, or is built
- * further as it runs (`$`, `{`, or joined onto past its closing quote); or
- * one of Claude Code's other configurations. The paths that do not are
- * listed, to follow any link on disk they pass through.
+ * folder again (a worktree's own), starts with a wildcard, or is built as it
+ * runs (`$`, `{`, joined onto past its closing quote, or after a root that
+ * is only known as it runs: a variable, `+`, a later part of a call that
+ * joins paths); or one of Claude Code's other configurations. The paths that
+ * do not are listed with the root they are written from, to follow any link
+ * on disk they pass through.
  */
 function claudePaths(text: string): { loads: boolean; others: string[] } {
   const others: string[] = []
@@ -111,10 +119,17 @@ function claudePaths(text: string): { loads: boolean; others: string[] } {
     if (first === undefined || LOAD_AREA.test(first) || /[*?[]/.test(first) || names.some(name => name === '..' || name.toLowerCase() === '.claude') || /[$`{}%#]/.test(next)) return { loads: true, others }
     // Joined onto past its closing quote: `+`, pathlib's `/`, or more parts of a call that joins paths.
     const after = text.slice((match.index ?? 0) + whole.length)
-    if (/^['"`]\s*\)*\s*(?:\+|\/(?![/*]))/.test(after) ||(/^['"`]\s*,/.test(after) && PATH_JOIN.test(text))) return { loads: true, others }
-    others.push(`${before}.claude/${names.join('/')}`)
+    if (/^['"`]\s*\)*\s*(?:\+|\/(?![/*]))/.test(after) || (/^['"`]\s*,/.test(after) && PATH_JOIN.test(text))) return { loads: true, others }
+    // Written after a root only known as it runs, but for the home folder by its variable. A path
+    // after `$` starts with the variable's name (`$HOME/`), since only `$` ends what comes before it.
+    const lead = text.slice(0, match.index ?? 0)
+    const variable = /\$$/.test(lead) ? /^\w+/.exec(before)?.[0] : undefined
+    const home = variable === 'HOME' || /\$\{HOME\}$/.test(lead)
+    if (variable !== undefined && !home) return { loads: true, others }
+    if (!home && (/(?:\+\s*|[}\])]|\$\{[^}]*\})['"`]?$/.test(lead) || (/,\s*['"`]$/.test(lead) && PATH_JOIN.test(text)))) return { loads: true, others }
+    others.push(`${home ? '~' : ''}${variable === undefined ? before : before.slice(variable.length)}.claude/${names.join('/')}`)
   }
-  return { loads: others.length > 0 && CLIMBS.test(text), others }
+  return { loads: others.length > 0 && MAY_REDIRECT.test(text), others }
 }
 
 /**
@@ -202,20 +217,19 @@ export async function readShellChange(host: Host, command: string, cwd: string |
     }
     return paths
   }
+  let config: string | undefined | null = null
   /**
    * Whether a path in a `.claude` folder that reaches nothing Claude Code loads
-   * by its words lands in such a place through a link: read as written, from
-   * where the code runs, and in your own `.claude`, since what comes before it
-   * may be your home folder built as the code runs. One that cannot be found
-   * counts.
+   * by its words lands in such a place through a link, read as written from
+   * where the code runs: by its own words there, or in the folder
+   * CLAUDE_CONFIG_DIR names. One that cannot be found counts.
    */
   const leadsIn = async (path: string, folder: string | undefined): Promise<boolean> => {
-    const at = path.search(/(?<![\w.-])\.claude(?![\w.-])/i)
-    for (const named of [path, `~/${path.slice(at)}`]) {
-      const full = await absolute({ path: named, cwd: folder })
-      if (full === undefined || namesClaudeFolder(normalizePath(await landsAt(host, full)))) return true
-    }
-    return false
+    const full = await absolute({ path, cwd: folder })
+    if (full === undefined) return true
+    const landed = normalizePath(await landsAt(host, full))
+    if (config === null) config = await claudeFolder()
+    return namesClaudeFolder(landed) || writePlace(landed, config) !== undefined || coversPlace(landed, config)
   }
   // Whether the command writes in a `.claude` folder itself, so a link may be there by the time its code runs.
   let claudeChanged = false
@@ -252,8 +266,8 @@ export async function readShellChange(host: Host, command: string, cwd: string |
     await settle()
     return hidden !== undefined ? unseen(hidden) : skills !== undefined ? noteFiles(skills.files) : PASS
   }
-  // Only a command that writes looks up where CLAUDE_CONFIG_DIR keeps Claude's folder.
-  const configDir = await claudeFolder()
+  // Only a command that writes, or whose code names a path in a `.claude` folder, looks up where CLAUDE_CONFIG_DIR keeps Claude's folder.
+  const configDir = config !== null ? config : await claudeFolder()
 
   const found: Found[] = []
   const unreadable: { label: string; reason: string; place: Place; covers: boolean; edit: boolean }[] = []

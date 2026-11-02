@@ -240,6 +240,9 @@ describe('what a shell command changes where Claude Code loads from', () => {
     '.claude/commands/expenses.md': b64('Sort the expenses.\n'),
     '.claude/agents/helper.md': b64('Help.\n'),
     '.claude/cache': { link: '../.claude' },
+    '.claude/log': { link: 'commands' },
+    '.claude/elsewhere': { link: '../cfg/skills' },
+    'cfg/skills/x/SKILL.md': b64(skill('Configured.')),
   }
   const host = memoryHost(HOME, files)
   const change = (command: string, cwd: string | undefined = PROJECT) => readShellChange(host, command, cwd)
@@ -532,8 +535,20 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `ln -s ~/.claude/skills .claude/shortcut && python3 -c "open('.claude/shortcut/new.md','w').write('x')"`,
       `python3 -c "import os; os.symlink(target, '.claude/shortcut'); open('.claude/shortcut/new.md','w').write('x')"`,
     ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
-    // A path that is the last of the parts joined reaches only what it names.
-    expect(await change(`python3 -c "import json, os; d = json.load(open(os.path.join(root, '/home/tester/.claude/projects/x.json'))); open('out.json','w').write('x')"`)).toEqual({ kind: 'pass' })
+    // PR review, round two: a character written as an escape, a root only known as it runs, and a link into the folder CLAUDE_CONFIG_DIR names.
+    for (const command of [
+      `python3 -c "open('/home/tester/.claude/projects\\x2f..\\x2fsettings.json','w').write('{}')"`,
+      `python3 -c "import os; open(os.environ['ROOT'] + '/.claude/cache/new.md','w').write('x')"`,
+      `python3 -c "open(f'{root}/.claude/cache/new.md','w').write('x')"`,
+      `python3 -c 'import os; open(os.path.expandvars("$HOME/.claude/cache/settings.json"), "w").write("{}")'`,
+    ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    const configured = `python3 -c "open('/home/tester/.claude/elsewhere/new/SKILL.md','w').write('x')"`
+    expect(await readShellChange(host, configured, PROJECT, async () => `${HOME}/cfg`)).toMatchObject({ kind: 'unreadable' })
+    // A path given whole, from a root written out, reaches only what it names; another folder's `.claude` is not yours.
+    expect(await change(`python3 -c "import json; d = json.load(open('/home/tester/.claude/projects/x.json')); open('out.json','w').write('x')"`)).toEqual({ kind: 'pass' })
+    expect(await change(`python3 -c "open('/home/tester/proj/.claude/log','w').write('x')"`)).toEqual({ kind: 'pass' })
+    expect(await change(`python3 -c 'import os; d = open(os.path.expandvars("$HOME/.claude/projects/x.json")).read(); open("out.json", "w").write(d)'`)).toEqual({ kind: 'pass' })
+    expect(await change(`python3 -c "open('/home/tester/.claude/log','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
     // A mode belongs to open only inside its own parentheses.
     expect(await change(`python3 -c 'print(open(".claude/settings.json", "r"), "w")'`)).toEqual({ kind: 'pass' })
     expect(await change(`python3 -c "print('x', file=open(os.path.join(home, '.claude/settings.json'), 'w'))"`)).toMatchObject({ kind: 'unreadable' })
