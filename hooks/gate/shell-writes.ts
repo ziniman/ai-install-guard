@@ -189,7 +189,6 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   const words = command.words.slice(start)
   const expands = new Set((command.expands ?? []).map(at => at - start))
   const placed = programAt(words)
-  for (const script of placed.scripts) readNested(script, where, out, depth)
   const fills = fromInput || placed.fromInput
   const word = words[placed.index]
   const program = word === undefined ? '' : programName(word)
@@ -215,6 +214,14 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   const inherited = taken === 'all' ? [] : [...(where.loads ?? [])].filter(name => !taken.has(name))
   const loaderOf = (language: string): string | undefined => loaderFor(language, [...setHere, ...inherited])
   const language = program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1')
+  // A script this command runs in a shell of its own (`sh -c`, `env -S`, `eval`) gets the variables it is given too.
+  const given = loading(setHere)
+  const child: Where = given.length === 0 && taken !== 'all' && taken.size === 0 ? where : { cwd: where.cwd, loads: new Set([...inherited, ...given]) }
+  for (const script of placed.scripts) readNested(script, child, out, depth)
+  // A wrapper (`env`, `sudo`) starts first, in the environment as it was before it changes any of it.
+  const wrapperAt = before.findIndex(item => !/^[A-Za-z_]\w*=/.test(item))
+  const wrapper = wrapperAt === -1 ? undefined : programName(before[wrapperAt])
+  const wrapperLoads = wrapper === undefined ? undefined : loaderFor(wrapper, [...assigned(before.slice(0, wrapperAt)), ...(where.loads ?? [])])
 
   for (const target of command.targets ?? []) {
     if (target.expands && isDynamic(target.path)) {
@@ -231,7 +238,8 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   // What a variable makes the program load runs beside whatever it is given: code the guard does not read,
   // with no text of its own, so a path it names is never taken for a file the command only edits.
   const loads = BUILTINS.has(program) && !/[\\/]/.test(word) ? undefined : loaderOf(language)
-  if (loads !== undefined) out.unseen.push({ reason: `${program} runs with ${loads} set, so it loads code the guard does not read` })
+  const loaded = loads !== undefined ? { by: program, name: loads } : wrapper !== undefined && wrapperLoads !== undefined ? { by: wrapper, name: wrapperLoads } : undefined
+  if (loaded !== undefined) out.unseen.push({ reason: `${loaded.by} runs with ${loaded.name} set, so it loads code the guard does not read` })
   const writes = (write: ShellWrite): void => {
     // A write whose paths come from input could be anywhere.
     if (fills) out.unseen.push({ reason: `${program} is given paths from its input, which the guard does not see` })
@@ -271,10 +279,10 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     const script = flag === -1 ? undefined : args[flag + 1]
     if (script !== undefined) {
       if (unknown(flag + 1)) out.unseen.push({ reason: `${program} runs a script only known as it runs` })
-      else readNested(script, where, out, depth)
+      else readNested(script, child, out, depth)
       return
     }
-    if (command.input !== undefined) return readNested(command.input, where, out, depth)
+    if (command.input !== undefined) return readNested(command.input, child, out, depth)
     // A script file is code already on disk, judged as any program is, by the paths it is given.
     const file = args.findIndex(arg => !arg.startsWith('-'))
     if (file !== -1) return pathsGiven(lastPart(args[file] as string), args.slice(file + 1), at => unknown(file + 1 + at), named, writes)
@@ -286,7 +294,7 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     return
   }
   if (program === 'eval') {
-    readNested(args.join(' '), where, out, depth)
+    readNested(args.join(' '), child, out, depth)
     return
   }
   if (INTERPRETERS.has(language)) {
@@ -308,13 +316,13 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       const switches = script === undefined ? undefined : scriptSwitches(script, args)
       // The text a plain replacement writes is no code (`s/old/write tests/`).
       const codeText = script !== undefined && switches !== undefined ? [...words.slice(0, placed.index + 1), ...plainArgs(script, args, switches.code), command.input ?? ''].join(' ') : ownText
+      // With code a variable loads beside it (counted above), what an in-place edit writes is no plain edit of the file.
+      const inPlaceWrites = loaded === undefined ? writes : (write: ShellWrite): void => writes(write.kind === 'unknown' ? { kind: 'unknown', to: write.to, what: `${write.what}, beside code ${loaded.name} loads` } : write)
       if (!known) out.unseen.push({ reason: `${program} runs code from its input, which the guard does not read`, text: ownText })
-      // A module or switch the environment adds runs beside the code read here, whatever that code does: counted above.
-      else if (loads !== undefined) return
       else if (filledIn) out.unseen.push({ reason: `${program} runs code only known as it runs` })
       else if (mayChange(codeText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text: ownText })
       // Perl or Ruby told to edit files in place (`-i`) writes the files named after its code.
-      else if (script !== undefined && switches !== undefined) readInPlace(script, switches, args, unknown, where, writes, dynamicPath, fills, out, ownText, command.input)
+      else if (script !== undefined && switches !== undefined) readInPlace(script, switches, args, unknown, where, inPlaceWrites, dynamicPath, fills, out, ownText, command.input)
       return
     }
     // A script file or a module (`python3 -m pip …`) is code already on disk: judged by the paths it is given, not by where it is.
