@@ -4,6 +4,14 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.10 &nbsp;·&nbsp; 2026-11-01
+
+**Checks** - Two false positives that flagged well-made plugins as Do not install, and so opened the pane at each of their updates, are now notes. In a skill's code block, a page downloaded into a one-line Python program that only reads it (`curl … | python3 -c "…json.load(sys.stdin)…"`, `python3 -m json.tool`) is data, not code downloaded and run; one whose code could run what it reads (`exec`, `os.system`, a shell substitution), whose output is piped on, or that sits inside a group, a substitution or a loop still fails, as does any download piped into Node. And in a script that writes files, a path where Claude Code loads plugins, skills or memory now counts as written only when it can reach a write, followed through the names it is given and the calls that build a path: one only printed, read or run as a script is listed, not flagged
+
+**Install gate** - A shell command running JavaScript with a template in it (``node -e 'console.log(`${a} ${b}`)'``) is no longer held as a command built as it runs, when the code starts no process and runs no text as code. The template is the code's own text, so it is read for install words like the rest of the code. A backquote that runs a command only known as it runs is still held: one a shell runs (in double quotes, in a script a shell is given, or in an argument `watch` or `su -c` may hand to one), one in Ruby, Perl or PHP, where it runs a shell command, one in a string that code may hand to a shell, and any in JavaScript that can start a process or run text as code (`eval`, `Function`, `vm`)
+
+---
+
 ## v0.8.9 &nbsp;·&nbsp; 2026-10-31
 
 **Session start** - The check as a session starts now also reads your configuration: each MCP server in `~/.claude.json` and this folder's `.mcp.json`, and what your own and this folder's settings files run on their own (hooks, the status line, helper commands, and environment variables that change what runs or where traffic goes). That catches what a `git pull` or another program's installer adds outside Claude. It reads the files and runs nothing. A server with no red flags is named once; one with a red flag, or a settings file that runs something you have not approved, waits in the pane with Keep and Reject. Keep approves what a settings file runs, not the whole file, and a later change shows only what it adds or takes away. The guard never edits your configuration: Reject on a server makes it refuse that server's tools, from the first call in every session after, and tells you the command that removes it
