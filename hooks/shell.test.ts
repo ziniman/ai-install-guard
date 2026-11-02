@@ -297,8 +297,8 @@ describe('what a shell command changes where Claude Code loads from', () => {
     const edit = `cd /home/tester && python3 - <<'EOF'\np='.claude/commands/expenses.md'; s=open(p).read()\nopen(p,'w').write(s.replace('Sort', 'Group'))\nEOF`
     expect(await change(edit)).toMatchObject({ ...note('the command'), label: `a change to ${HOME}/.claude/commands/expenses.md` })
     expect(await change(edit.replace('cd /home/tester', 'cd "$X"'))).toMatchObject({ kind: 'unreadable' })
-    // Its words may name the file from the session's folder while it runs in the file's own.
-    expect(await change(`cd /home/tester/.claude/commands && python3 - <<'EOF'\np='expenses.md'; s=open(p).read()\n# Edits \`.claude/commands/expenses.md\`.\nopen(p,'w').write(s)\nEOF`, HOME)).toMatchObject(note('the command'))
+    // PR review: never from the session's folder instead, where a file of the same name says nothing of the one made here.
+    expect(await change(`cd /tmp && python3 -c "open('.claude/commands/expenses.md','w').write('x')"`, HOME)).toMatchObject({ kind: 'unreadable' })
     // Every piece of code must edit files already there: a new skill beside an edit is brought in.
     expect(await change(`${edit}; python3 -c "open('/home/tester/.claude/skills/new/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
     expect(await change(`${edit}; python3 -c "p='/home/tester/.claude/skills/old/SKILL.md'; open(p,'w').write(open(p).read())"`)).toMatchObject(note('each one'))
@@ -524,7 +524,16 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `cd "$X" && python3 -c "open('.claude/CLAUDE.md','w').write('x')"`,
       // A template literal is a string too.
       `node -e 'require("fs").writeFileSync(\`.claude/settings.json\`, "{}")'`,
+      // PR review: a path joined onto past its quote, and a link made before the code runs.
+      `python3 -c "open('/home/tester/.claude/projects/x' + '/../../settings.json','w').write('{}')"`,
+      `python3 -c "import os; open(os.path.join('/home/tester/.claude/projects', name), 'w')"`,
+      `python3 -c "from pathlib import Path; (Path('/home/tester/.claude/projects') / name).write_text('x')"`,
+      `python3 -c "import os; p = '/home/tester/.claude/projects/x'; open(os.sep.join([p, '..', '..', 'settings.json']), 'w')"`,
+      `ln -s ~/.claude/skills .claude/shortcut && python3 -c "open('.claude/shortcut/new.md','w').write('x')"`,
+      `python3 -c "import os; os.symlink(target, '.claude/shortcut'); open('.claude/shortcut/new.md','w').write('x')"`,
     ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    // A path that is the last of the parts joined reaches only what it names.
+    expect(await change(`python3 -c "import json, os; d = json.load(open(os.path.join(root, '/home/tester/.claude/projects/x.json'))); open('out.json','w').write('x')"`)).toEqual({ kind: 'pass' })
     // A mode belongs to open only inside its own parentheses.
     expect(await change(`python3 -c 'print(open(".claude/settings.json", "r"), "w")'`)).toEqual({ kind: 'pass' })
     expect(await change(`python3 -c "print('x', file=open(os.path.join(home, '.claude/settings.json'), 'w'))"`)).toMatchObject({ kind: 'unreadable' })
