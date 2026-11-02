@@ -29,8 +29,10 @@ export type ShellWrite =
    * What lands at `to` is only known as it runs: `what` says what makes it.
    * `deep` is set for a folder anything may be written below (an archive
    * unpacked, a checkout), so a folder holding Claude's own counts too.
+   * `edit` is set for a file changed in place (`sed -i`, `perl -i`): what
+   * lands is the file already there, edited, never anything brought in.
    */
-  | { kind: 'unknown'; to: Named; what: string; deep?: boolean }
+  | { kind: 'unknown'; to: Named; what: string; deep?: boolean; edit?: boolean }
 
 /** A part of the command only known as it runs; `text` is what to look for Claude's folder in, the whole command when unset. */
 export type Unseen = { reason: string; text?: string }
@@ -539,7 +541,7 @@ function readInPlace(language: 'perl' | 'ruby', switches: ScriptSwitches, args: 
       dynamicPath()
       continue
     }
-    writes({ kind: 'unknown', to: { path, cwd }, what: `an edit ${language} makes` })
+    writes({ kind: 'unknown', to: { path, cwd }, what: `an edit ${language} makes`, edit: true })
     const kept = keptCopy(language, path, suffix.value)
     if (kept === undefined) continue
     if (unknown(suffix.at)) dynamicPath()
@@ -948,7 +950,7 @@ function readSedInPlace(args: readonly string[], unknown: (at: number) => boolea
       return
     }
     if (unknown(at)) dynamicPath()
-    else writes({ kind: 'unknown', to: named(arg), what: 'an edit sed makes' })
+    else writes({ kind: 'unknown', to: named(arg), what: 'an edit sed makes', edit: true })
   })
 }
 

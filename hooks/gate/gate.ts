@@ -137,11 +137,14 @@ async function scanThenHold($: EngineInterface, label: string, how: ScanHow, req
 /**
  * What the guard does with a shell command that changes where Claude Code
  * loads from. Text it writes is judged as Claude's Write of it would be; a
- * file it copies, as text copied in, is always shown; a folder copied in, or
- * a repository cloned, is scanned and held; anything else is Could not
- * verify, which Install anyway lets through once, as that exact command.
+ * file it copies, as text copied in, is always shown, but into a skill or
+ * command; a folder copied in, or a repository cloned, is scanned and held;
+ * a change to skills or commands it cannot read goes on with a note, since
+ * the skill gate checks them before they are used; anything else is Could
+ * not verify, which Install anyway lets through once, as that exact command.
  */
 export async function judgeShell($: EngineInterface, change: Exclude<ShellChange, { kind: 'pass' }>, command: string, lookups: boolean): Promise<Judgement> {
+  if (change.kind === 'note') return { kind: 'allow', note: change.note }
   const request = (label: string): GuardRequest => ({ origin: 'tool', args: command, label, subject: 'command' })
   if (change.kind === 'write') {
     const reading = await readWrite(modHost($), change.input, change.configDir)

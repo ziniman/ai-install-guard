@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.11 &nbsp;·&nbsp; 2026-11-02
+
+**Shell commands** - The guard holds installs, not ongoing work. An edit Claude makes with the shell to a skill or command that is already there (`sed -i`, `perl -i`, or a short script that names only those files) now goes on with a note instead of Could not verify: the guard checks that skill or command before Claude Code next uses it, as it does for any skill that came with no install. A single file copied into a skill or command is checked as a Write of its text, so one with no red flags goes on too. A download, an archive, a clone, a copy the guard cannot read, a new file made by a script, and an edit to an agent, output style, settings file or plugin are still held
+
+---
+
 ## v0.8.10 &nbsp;·&nbsp; 2026-11-01
 
 **Checks** - Two false positives that flagged well-made plugins as Do not install, and so opened the pane at each of their updates, are now notes. In a skill's code block, a page downloaded into a one-line Python program that only reads it (`curl … | python3 -c "…json.load(sys.stdin)…"`, `python3 -m json.tool`) is data, not code downloaded and run; one whose code could run what it reads (`exec`, `os.system`, a shell substitution), whose output is piped on, or that sits inside a group, a substitution or a loop still fails, as does any download piped into Node. And in a script that writes files, a path where Claude Code loads plugins, skills or memory now counts as written only when it can reach a write, followed through the names it is given and the calls that build a path: one only printed, read or run as a script is listed, not flagged
