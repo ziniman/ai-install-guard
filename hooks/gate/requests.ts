@@ -2,6 +2,7 @@
 // `/plugin` command the person typed, or a shell command Claude is about to
 // run. Nothing here runs anything or touches the disk.
 
+import { spanKinds } from '../scan/checks/text'
 import { safeLine } from '../scan/safe-text'
 
 /** One thing to add to Claude Code: a plugin from a marketplace, a marketplace, or an MCP server. */
@@ -141,16 +142,37 @@ export const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'no
 
 /**
  * Interpreters of JavaScript, where a backquote opens a template. In Ruby,
- * Perl and PHP one runs a shell command, and in Python one can only be in a
- * string, which may be handed to a shell.
+ * Perl and PHP one runs a shell command.
  */
 const JAVASCRIPT = new Set(['node', 'nodejs', 'deno', 'bun'])
+
+/**
+ * Languages in which a backquote runs nothing: Python, where one can only be
+ * text in a string or a comment, awk, sed and jq. Their code's backquotes are
+ * its own text, as a JavaScript template's are; one inside a double-quoted
+ * string, which the code may hand to a shell, is still read as a script.
+ */
+const NO_BACKQUOTE = new Set(['python', 'python2', 'python3', 'awk', 'gawk', 'mawk', 'nawk', 'sed', 'gsed', 'jq', 'yq'])
+
+/** JavaScript with its regular expression literals and comments blanked: a backquote in one, as in a pattern for a fenced code block, opens nothing. */
+function withoutPatterns(code: string): string {
+  const kind = spanKinds(code, 'js')
+  let out = ''
+  for (let at = 0; at < code.length; at += 1) {
+    const span = kind(at)
+    out += span === 'regex' || span === 'comment' || span === 'trailing-comment' ? (code[at] === '\n' ? '\n' : ' ') : code[at]
+  }
+  return out
+}
 
 /**
  * JavaScript that may start a process or run text as code: a template it
  * hands to one may run as a command (`` execSync(`${cmd}`) ``, `` Bun.$`…` ``,
  * `` eval(`${code}`) ``), so its backquotes are read as scripts.
  */
+/** What hands a template straight to something that runs it: a call that starts a process or runs code, or a tag that does (`` $`…` ``). */
+const RUNS_TEMPLATE = /(?:\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork|eval|Function|execa\w*|system|runIn\w*Context|compileFunction|require|import)\s*\(\s*|\$\s*)$/
+
 const MAY_RUN_TEXT = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`|\b(?:eval|Function|vm|Worker)\b|_compile|runIn\w*Context|compileFunction|\bimport\s*\(|\brequire\s*\(\s*`/
 
 /**
@@ -279,6 +301,19 @@ export function isDynamic(word: string): boolean {
 /** A brace list (`{a,b}`) or range (`{a..c}`, `{1..3}`), which the shell turns into several words. */
 const BRACES = /\{[^}]*(?:,|\.\.)[^}]*\}/
 
+/** The names of the functions shell text defines (`name() {`, `function name`). */
+function definedFunctions(text: string): Set<string> {
+  return new Set([...text.matchAll(/(?:^|[\s;&|(){}])(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\s*\)|\bfunction\s+([A-Za-z_][\w-]*)/g)].map(found => found[1] ?? found[2] ?? ''))
+}
+
+/** `NAME=value`, or `NAME+=value`, at the start of a word. */
+const ASSIGNMENT = /^([A-Za-z_]\w*)(\+?)=/
+/** Words that may come before a command within a compound one. */
+const COMPOUND_PREFIX = new Set(['then', 'do', 'else', 'elif', '!', 'time', 'if', 'while', 'until', '{'])
+/** Words that open a compound command, and those that close one. */
+const COMPOUND_OPENS = new Set(['if', 'while', 'until', 'for', 'select', 'case', '{'])
+const COMPOUND_CLOSES = new Set(['fi', 'done', 'esac', '}'])
+
 /**
  * Where the program of a simple command is: after `NAME=value` words and
  * any wrappers with their options. A wrapper given an option with which it
@@ -343,6 +378,9 @@ function claudePlugin(words: readonly string[], index: number, expands: Readonly
   }
   const rest = words.slice(index + 2)
   const sub = rest[0]?.toLowerCase()
+  // Asked for its help (before `--`), the command shows it and does nothing else.
+  const options = rest.indexOf('--') === -1 ? rest : rest.slice(0, rest.indexOf('--'))
+  if (options.includes('--help') || options.includes('-h')) return PASS
   if (sub === 'install' || sub === 'i') return readInstall(rest.slice(1), 'install', 'claude plugin install')
   if (sub === 'update') return readInstall(rest.slice(1), 'update', 'claude plugin update')
   if (sub === 'marketplace' && rest[1]?.toLowerCase() === 'add') return readMarketplaceAdd(rest.slice(2), 'claude plugin marketplace add')
@@ -358,9 +396,12 @@ function claudePlugin(words: readonly string[], index: number, expands: Readonly
  * a backquote outside a string opens a template, the code's own text, so what
  * it holds, like every word read from the code, is read as code too. One
  * inside a string is still read as a script, and so is a shell or eval named
- * in the code.
+ * in the code. `runners` is set for JavaScript that may run text: a template
+ * there is a script only when handed straight to what runs it
+ * (`` execSync(`…`) ``, `` $`…` ``, `` eval(`…`) ``); any other is the code's own
+ * text, as with `inCode`.
  */
-function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean, inCode = false): Collected {
+function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean, inCode = false, runners = false): Collected {
   const out: Collected = { unseen: false, opaque: false, others: 0, texts: [] }
   if (depth > MAX_DEPTH) return { unseen: true, opaque: asScript, others: 0, texts: [command] }
   const merge = (inner: Collected, counts: boolean): void => {
@@ -370,11 +411,12 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     out.texts.push(...inner.texts)
   }
   const nested = (script: string): void => merge(collectInstalls(script, found, depth + 1, true), true)
-  for (const { words, input, scripts: substitutions, quotedScripts, writes, expands, splits } of splitShell(command).commands) {
+  const functions = definedFunctions(command)
+  for (const { words, input, scripts: substitutions, quotedScripts, scriptLeads, writes, expands, splits } of splitShell(command).commands) {
     // What its substitutions run comes first, and is read as commands too, but
     // for a JavaScript template, which is the code's own text.
     substitutions?.forEach((script, at) => {
-      const template = inCode && quotedScripts?.includes(at) !== true
+      const template = (inCode || (runners && !RUNS_TEMPLATE.test(scriptLeads?.[at] ?? ''))) && quotedScripts?.includes(at) !== true
       merge(collectInstalls(script, found, depth + 1, !template, template), true)
     })
     const own = out.texts.push([...words, input ?? ''].join(' ')) - 1
@@ -456,7 +498,12 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       if (ran.hooks) out.unseen = true
       for (const script of ran.scripts) merge(collectInstalls(script, found, depth + 1, true), false)
     } else if (!TEXT_ARGUMENTS.has(program)) {
-      for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) merge(collectInstalls(text, found, depth + 1, false, inCode || (JAVASCRIPT.has(language) && !MAY_RUN_TEXT.test(text))), false)
+      for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) {
+        const code = JAVASCRIPT.has(language) ? withoutPatterns(text) : text
+        const runs = JAVASCRIPT.has(language) && MAY_RUN_TEXT.test(code)
+        // A function the command defines runs its body, read with the rest, so a backquote in its arguments is what the body makes of it.
+        merge(collectInstalls(code, found, depth + 1, false, inCode || functions.has(program) || NO_BACKQUOTE.has(language) || (JAVASCRIPT.has(language) && !runs), runs && !inCode), false)
+      }
     }
     out.others += 1
   }
@@ -537,6 +584,9 @@ type Expansion = { expands: (at: number) => boolean; splits: (at: number) => boo
 
 function claudeMcp(rest: readonly string[], shell: Expansion): Reading | undefined {
   const sub = rest[0]?.toLowerCase()
+  // Asked for its help before the server's name, the command shows it; after it, the word may be the server's own.
+  const named = rest.findIndex((word, at) => at > 0 && !word.startsWith('-'))
+  if (rest.slice(1, named === -1 ? undefined : named).some(word => word === '--help' || word === '-h')) return PASS
   const after: Expansion = { expands: at => shell.expands(at + 1), splits: at => shell.splits(at + 1) }
   if (sub === 'add') return readMcpAdd(rest.slice(1), after)
   if (sub === 'add-json') return readMcpAddJson(rest.slice(1), after.expands)
@@ -762,6 +812,8 @@ export type ShellCommand = {
   scripts?: string[]
   /** Which of `scripts` were found inside double quotes. */
   quotedScripts?: number[]
+  /** For each of `scripts`, the text just before it opens, which tells what code hands it to. */
+  scriptLeads?: string[]
   writes?: boolean
   /** Which words the shell expands as the command runs: a variable, a substitution, a tilde, or an unquoted pattern or brace list. */
   expands?: number[]
@@ -799,6 +851,31 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   let splits = false
   let bare = ''
   let dynamic = false
+  /** Variables the text sets earlier to a value written out, which `$NAME` and `${NAME}` then read as that value (see `settle`). */
+  const known = new Map<string, string>()
+  /** The functions the text defines: calling one may set any variable. */
+  const functions = definedFunctions(text)
+  /** Part of this word is only known as it runs: an expansion `known` does not hold, or a substitution. */
+  let unresolved = false
+  /** For each word of the command at hand, whether it is only known as it runs. */
+  let wordsUnresolved: boolean[] = []
+  /** What ended the command before this one; how deep the text is in compound commands and in parentheses. */
+  let before = ';'
+  let depth = 0
+  let parens = 0
+  /**
+   * The value of the variable named at `at` (its `$`) and how many characters
+   * name it, when the text set it earlier to a value written out. Unquoted, a
+   * value the shell would split or match as a pattern, or an empty one, is
+   * only known as it runs.
+   */
+  const resolve = (at: number, inQuotes: boolean): { value: string; length: number } | undefined => {
+    const found = /^(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})/.exec(text.slice(at + 1, at + 130))
+    const name = found?.[1] ?? found?.[2]
+    const value = name === undefined ? undefined : known.get(name)
+    if (found === null || value === undefined || (!inQuotes && (value === '' || /[\s*?[\]{}]/.test(value)))) return undefined
+    return { value, length: found[0].length }
+  }
   /** What the next word is: a word, a redirection's target, a here-document's end marker, or a here-string. */
   let next: 'word' | 'target' | 'marker' | 'herestring' = 'word'
   /** For a redirection's target: whether the redirection writes, appends, and whether it duplicates a descriptor (`>&2`). */
@@ -821,6 +898,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       const multiplies = word !== '[' && (/[*?[]/.test(bare) || BRACES.test(bare))
       if (expands || multiplies) (current.expands ??= []).push(current.words.length)
       if (splits || multiplies) (current.splits ??= []).push(current.words.length)
+      wordsUnresolved.push(unresolved)
       current.words.push(word)
     }
     else if (writing && word !== '/dev/null' && !(duplicating && /^(?:\d+|-)$/.test(word))) {
@@ -834,11 +912,54 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     quoted = false
     expands = false
     splits = false
+    unresolved = false
     bare = ''
   }
-  const endCommand = (): void => {
+  /**
+   * What the command at hand does to the variables `known` holds, given what
+   * ended it and the one before. `NAME=value` alone, at the top level, after
+   * `;` or a new line and before one or `&&`, sets it to a value written out;
+   * an assignment anywhere else (inside `if`, `for`, `{ }` or parentheses,
+   * after `&&` or `||`, in a pipeline or in the background), or to a value
+   * only known as it runs, leaves it unknown, as does any command that may
+   * set it (`read`, `for NAME in`, `unset`, `local`, `let`, `printf -v`).
+   * `eval`, `source` and a function the text defines may set any.
+   */
+  const settle = (ending: string): void => {
+    const words = current.words
+    let at = 0
+    while (at < words.length && COMPOUND_PREFIX.has(words[at] as string)) at += 1
+    let program = at
+    const assigns: { name: string; value: string; fixed: boolean }[] = []
+    for (let found = ASSIGNMENT.exec(words[program] ?? ''); found !== null; found = ASSIGNMENT.exec(words[program] ?? '')) {
+      assigns.push({ name: found[1] as string, value: (words[program] as string).slice(found[0].length), fixed: found[2] === '' && wordsUnresolved[program] !== true })
+      program += 1
+    }
+    const top = depth + parens === 0 && at === 0 && (before === ';' || before === '\n') && (ending === ';' || ending === '\n' || ending === 'end' || ending === '&&')
+    const set = (name: string, value: string, fixed: boolean): void => {
+      if (fixed && top && !/[$`]/.test(value)) known.set(name, value)
+      else known.delete(name)
+    }
+    const name = words[program]
+    const args = words.slice(program + 1)
+    if (name === undefined) for (const item of assigns) set(item.name, item.value, item.fixed)
+    else if (name === 'eval' || name === 'source' || name === '.' || functions.has(name)) known.clear()
+    else if (name === 'export' || name === 'readonly' || name === 'declare' || name === 'typeset' || name === 'local' || name === 'unset' || name === 'read' || name === 'mapfile' || name === 'readarray' || name === 'getopts' || name === 'let' || name === 'for' || name === 'select' || name === 'printf') {
+      args.forEach((arg, index) => {
+        const found = ASSIGNMENT.exec(arg)
+        if (found !== null) set(found[1] as string, arg.slice(found[0].length), name === 'export' && found[2] === '' && wordsUnresolved[program + 1 + index] !== true)
+        else if (/^[A-Za-z_]\w*$/.test(arg) && !((name === 'export' || name === 'readonly') && known.has(arg))) known.delete(arg)
+      })
+    }
+    for (const word of words.slice(0, program + 1)) if (COMPOUND_OPENS.has(word)) depth += 1
+    if (COMPOUND_CLOSES.has(words[0] as string)) depth = Math.max(0, depth - 1)
+  }
+  const endCommand = (ending = 'end'): void => {
     endWord()
     next = 'word'
+    settle(ending)
+    before = ending
+    wordsUnresolved = []
     if (current.words.length > 0 || current.input !== undefined || current.scripts !== undefined || current.writes === true) commands.push(current)
     current = { words: [] }
   }
@@ -854,9 +975,14 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       const inner = substitutionsIn(body)
       if (inner.length > 0) (current.scripts ??= []).push(...inner)
     } else (current.scripts ??= []).push(body)
-    if (inQuotes) for (let at = first; at < (current.scripts?.length ?? 0); at += 1) (current.quotedScripts ??= []).push(at)
+    const start = open - (isBackquote ? 0 : 1)
+    for (let at = first; at < (current.scripts?.length ?? 0); at += 1) {
+      ;(current.scriptLeads ??= [])[at] = text.slice(Math.max(0, start - 40), start)
+      if (inQuotes) (current.quotedScripts ??= []).push(at)
+    }
     dynamic = true
     expands = true
+    unresolved = true
     if (!inQuotes) splits = true
     word += text.slice(open - (isBackquote ? 0 : 1), Math.min(end + 1, text.length))
     inWord = true
@@ -893,8 +1019,15 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
           continue
         }
         if (inner === '$') {
+          const value = resolve(index, true)
+          if (value !== undefined) {
+            word += value.value
+            index += 1 + value.length
+            continue
+          }
           dynamic = true
           expands = true
+          unresolved = true
           // Even quoted, "$@" and "${list[@]}" give one word per item.
           const rest = text.slice(index + 1, index + 200)
           if (rest.startsWith('@') || /^\{[^}]*@/.test(rest)) splits = true
@@ -923,9 +1056,18 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       continue
     }
     if (char === '$') {
+      const value = resolve(index, false)
+      if (value !== undefined) {
+        word += value.value
+        bare += value.value
+        index += value.length
+        inWord = true
+        continue
+      }
       dynamic = true
       expands = true
       splits = true
+      unresolved = true
       word += char
       inWord = true
       continue
@@ -938,7 +1080,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     if (char === '\n') {
       endWord()
       const pending = heredocs.splice(0)
-      endCommand()
+      endCommand('\n')
       // Each here-document's body follows, up to the line that ends it.
       for (const heredoc of pending) {
         const lines: string[] = []
@@ -1017,7 +1159,11 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       continue
     }
     if (char === ';' || char === '&' || char === '|' || char === '(' || char === ')') {
-      endCommand()
+      const doubled = (char === '&' || char === '|') && text[index + 1] === char
+      if (doubled) index += 1
+      endCommand(doubled ? `${char}${char}` : char)
+      if (char === '(') parens += 1
+      else if (char === ')' && parens > 0) parens -= 1
       continue
     }
     // An unquoted `~` at the start of a word, or after `=` or `:` in it, is a home folder.
