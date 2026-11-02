@@ -5,7 +5,7 @@ import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
 import { configuredServers, refusalByName, servingTool, toolRefusal, type ServerTools } from './gate/configured'
 import { checkAtStart, waitingReport, type StartCheck } from './gate/installed'
 import { failedLoad, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
-import { NAMES_CLAUDE, readShellChange, type ShellChange } from './gate/shell-change'
+import { namesClaudeFolder, readShellChange, type ShellChange } from './gate/shell-change'
 import { failedSkill, judgeByName, judgeSkill } from './gate/skill'
 import { readPluginArgs, readShellCommand } from './gate/requests'
 import { claudeConfigDir, keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
@@ -333,7 +333,7 @@ async function gateShell($: EngineInterface, command: string, cwd: string | unde
     change = await readShellChange(modHost($), command, cwd, () => claudeFolder($))
   } catch {
     // This runs before every shell command: one that cannot be read fails only when it names Claude's own folder.
-    if (!NAMES_CLAUDE.test(command)) return free
+    if (!namesClaudeFolder(command)) return free
     return { deny: 'AI Install Guard stopped this command: it names a place Claude Code loads from, and the guard failed before it could read what it changes there. Nothing was written.' }
   }
   if (change.kind === 'pass') return free
