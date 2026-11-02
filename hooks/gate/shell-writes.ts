@@ -103,8 +103,29 @@ export function readShellWrites(command: string, cwd: string | undefined): Shell
   return out
 }
 
-/** The folder commands run in as the script goes on; `cd` changes it for the commands after. */
-type Where = { cwd: string | undefined }
+/**
+ * The folder commands run in as the script goes on; `cd` changes it for the
+ * commands after. `loads` names a variable set earlier in the command that
+ * makes an interpreter load code of its own (`export PERL5OPT=…`).
+ */
+type Where = { cwd: string | undefined; loads?: string }
+
+/**
+ * Variables that make an interpreter load or run code besides what it is
+ * given: modules or switches added to every run (`PERL5OPT=-MEvil`,
+ * `RUBYOPT=-revil`, `NODE_OPTIONS=--require`), folders it loads modules from
+ * first, a library loaded into it, or another program found by its name.
+ */
+const LOADS_CODE = /^(?:PERL5OPT|PERL5LIB|PERLLIB|PERL5DB|RUBYOPT|RUBYLIB|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|NODE_OPTIONS|NODE_PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|BASH_ENV|ENV|PATH)$/
+
+/** The first variable among `NAME=value` words that makes an interpreter load code. */
+function loadsCode(words: readonly string[]): string | undefined {
+  for (const word of words) {
+    const name = /^([A-Za-z_]\w*)=/.exec(word)?.[1]
+    if (name !== undefined && LOADS_CODE.test(name)) return name
+  }
+  return undefined
+}
 
 function readScript(text: string, where: Where, out: ShellWrites, depth: number): void {
   if (depth > MAX_DEPTH) {
@@ -114,9 +135,9 @@ function readScript(text: string, where: Where, out: ShellWrites, depth: number)
   for (const command of splitShell(text).commands) readCommand(command, where, out, depth, false)
 }
 
-/** A script that runs in a shell of its own: a folder it changes to stays its own. */
+/** A script that runs in a shell of its own: a folder it changes to stays its own, and what it was given carries in. */
 function readNested(text: string, where: Where, out: ShellWrites, depth: number): void {
-  readScript(text, { cwd: where.cwd }, out, depth + 1)
+  readScript(text, { cwd: where.cwd, ...(where.loads === undefined ? {} : { loads: where.loads }) }, out, depth + 1)
 }
 
 /**
@@ -141,6 +162,10 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   const unknown = (at: number): boolean => expands.has(placed.index + 1 + at) && isDynamic(args[at] as string)
   const named = (path: string): Named => ({ path, cwd: where.cwd })
   const ownText = [...words, command.input ?? ''].join(' ')
+  // A variable that makes an interpreter load code, set for the commands after this one, or for this one alone.
+  const setHere = loadsCode(words.slice(0, placed.index))
+  if (word === undefined || /^(?:export|declare|typeset|readonly|local)$/.test(program)) where.loads ??= setHere ?? (word === undefined ? undefined : loadsCode(args))
+  const loads = setHere ?? where.loads
 
   for (const target of command.targets ?? []) {
     if (target.expands && isDynamic(target.path)) {
@@ -232,6 +257,8 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       // The text a plain replacement writes is no code (`s/old/write tests/`).
       const codeText = script !== undefined && switches !== undefined ? [...words.slice(0, placed.index + 1), ...plainArgs(script, args, switches.code), command.input ?? ''].join(' ') : ownText
       if (!known) out.unseen.push({ reason: `${program} runs code from its input, which the guard does not read`, text: ownText })
+      // A module or switch the environment adds runs beside the code read here, whatever that code does.
+      else if (loads !== undefined) out.unseen.push({ reason: `${program} runs with ${loads} set, so it loads code the guard does not read`, text: ownText })
       else if (filledIn) out.unseen.push({ reason: `${program} runs code only known as it runs` })
       else if (mayChange(codeText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text: ownText })
       // Perl or Ruby told to edit files in place (`-i`) writes the files named after its code.
@@ -937,10 +964,14 @@ function readSedInPlace(args: readonly string[], unknown: (at: number) => boolea
   }
   const inPlace = args.findIndex(arg => /^-[A-Za-z]*i/.test(arg) || arg.startsWith('--in-place'))
   if (inPlace === -1) return
+  const flag = args[inPlace] as string
+  // A bare -i on macOS takes the next word, often '', as the backup suffix; otherwise the suffix is attached.
+  const separate = flag === '-i' && (args[inPlace + 1] === '' || args[inPlace + 1]?.startsWith('.') === true) ? inPlace + 1 : undefined
+  const suffix = separate !== undefined ? (args[separate] as string) : flag.startsWith('--in-place') ? flag.slice('--in-place'.length).replace(/^=/, '') : flag.slice(flag.indexOf('i') + 1)
+  const suffixUnknown = unknown(separate ?? inPlace) && isDynamic(suffix)
   let script = !args.some(arg => /^-[A-Za-z]*[ef]/.test(arg) || arg.startsWith('--expression') || arg.startsWith('--file'))
   args.forEach((arg, at) => {
-    // A bare -i on macOS takes the next word, often '', as the backup suffix.
-    if (at === inPlace + 1 && args[inPlace] === '-i' && (arg === '' || arg.startsWith('.'))) return
+    if (at === separate) return
     if (arg.startsWith('-')) return
     // The value of -e or -f is a script, not a file.
     const before = args[at - 1] ?? ''
@@ -949,9 +980,26 @@ function readSedInPlace(args: readonly string[], unknown: (at: number) => boolea
       script = false
       return
     }
-    if (unknown(at)) dynamicPath()
-    else writes({ kind: 'unknown', to: named(arg), what: 'an edit sed makes', edit: true })
+    if (unknown(at)) return dynamicPath()
+    writes({ kind: 'unknown', to: named(arg), what: 'an edit sed makes', edit: true })
+    // The backup of the file as it was is a copy of it, which a suffix can put anywhere (GNU sed's `-i'old/*'`).
+    if (suffixUnknown) dynamicPath()
+    else for (const backup of sedBackups(arg, suffix)) writes({ kind: 'unknown', to: named(backup), what: 'the copy sed keeps of the file it edits' })
   })
+}
+
+/**
+ * Where sed keeps the file it edits in place, given the backup suffix: none
+ * for an empty one. GNU sed puts each `*` the file's name and, when that
+ * names no folder, keeps it beside the file; BSD sed adds the suffix as it is.
+ * Both are given, so neither sed's choice is missed.
+ */
+function sedBackups(path: string, suffix: string): string[] {
+  if (suffix === '') return []
+  if (!suffix.includes('*')) return [`${path}${suffix}`]
+  const slash = path.lastIndexOf('/')
+  const name = suffix.split('*').join(path.slice(slash + 1))
+  return [name.includes('/') ? name : `${path.slice(0, slash + 1)}${name}`, `${path}${suffix}`]
 }
 
 /** `find … -exec cmd {} ;`: the command it runs for each file, whose paths come from what it finds; and the files `-fprint` writes. */
