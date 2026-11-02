@@ -117,9 +117,9 @@ function claudePaths(text: string): { loads: boolean; others: string[] } {
     const names = tail.split(/[\\/]+/).filter(name => name !== '' && name !== '.')
     const [first] = names
     if (first === undefined || LOAD_AREA.test(first) || /[*?[]/.test(first) || names.some(name => name === '..' || name.toLowerCase() === '.claude') || /[$`{}%#]/.test(next)) return { loads: true, others }
-    // Joined onto past its closing quote: `+`, pathlib's `/`, or more parts of a call that joins paths.
+    // Joined onto past its closing quote: `+`, pathlib's `/`, a string written beside it (`'a' 'b'`), or more parts of a call that joins paths.
     const after = text.slice((match.index ?? 0) + whole.length)
-    if (/^['"`]\s*\)*\s*(?:\+|\/(?![/*]))/.test(after) || (/^['"`]\s*,/.test(after) && PATH_JOIN.test(text))) return { loads: true, others }
+    if (/^['"`]\s*(?:\)*\s*(?:\+|\/(?![/*]))|[rRbBfFuU]{0,2}['"`])/.test(after) ||(/^['"`]\s*,/.test(after) && PATH_JOIN.test(text))) return { loads: true, others }
     // Written after a root only known as it runs, but for the home folder by its variable. A path
     // after `$` starts with the variable's name (`$HOME/`), since only `$` ends what comes before it.
     const lead = text.slice(0, match.index ?? 0)

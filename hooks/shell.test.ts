@@ -549,6 +549,9 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `python3 -c "from pathlib import Path; Path('/tmp/incoming').replace(target); open('/home/tester/.claude/x','w').write('{}')"`,
       `python3 -c "import shutil; shutil.move('/tmp/incoming', '/home/tester/.claude/x'); open('/home/tester/.claude/x','w').write('{}')"`,
     ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    // Round four: strings written side by side are one string.
+    expect(await change(`python3 -c "open('.claude/ski' 'lls/new/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
+    expect(await change(`python3 -c "open('/home/tester/.claude/projects' f'/{x}/../../settings.json','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
     // A string's own replace is no move.
     expect(await change(`python3 -c "p='/home/tester/.claude/projects/x.md'; s=open(p).read(); open(p,'w').write(s.replace('a', 'b'))"`)).toEqual({ kind: 'pass' })
     const configured = `python3 -c "open('/home/tester/.claude/elsewhere/new/SKILL.md','w').write('x')"`
