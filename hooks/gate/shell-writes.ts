@@ -132,6 +132,31 @@ function assigned(words: readonly string[]): string[] {
   return words.flatMap(word => /^([A-Za-z_]\w*)=/.exec(word)?.[1] ?? [])
 }
 
+/**
+ * What `env` among the words before a program takes away from the
+ * environment it inherits: the names `-u` gives, or all of it with `-i`.
+ */
+function envTakes(words: readonly string[]): Set<string> | 'all' {
+  const taken = new Set<string>()
+  let inEnv = false
+  for (let at = 0; at < words.length; at += 1) {
+    const word = words[at] as string
+    if (programName(word) === 'env') inEnv = true
+    else if (!inEnv) continue
+    else if (word === '-i' || word === '--ignore-environment' || word === '-') return 'all'
+    else if (word === '-u' || word === '--unset') {
+      at += 1
+      taken.add(words[at] ?? '')
+    }
+    else if (/^-u./.test(word)) taken.add(word.slice(2))
+    else if (word.startsWith('--unset=')) taken.add(word.slice('--unset='.length))
+  }
+  return taken
+}
+
+/** Commands a shell runs itself when named alone, which load nothing a variable can add; `/usr/bin/true` is a program. */
+const BUILTINS = new Set(['cd', 'pushd', 'popd', 'chdir', 'export', 'declare', 'typeset', 'readonly', 'local', 'unset', 'eval', 'source', '.', ':', 'echo', 'printf', 'test', '[', 'true', 'false', 'read', 'set', 'shift', 'exit', 'return', 'alias'])
+
 /** The first of `names` that makes `program` load code of its own. */
 function loaderFor(program: string, names: Iterable<string>): string | undefined {
   for (const name of names) if (LOADS_CODE.some(([programs, variable]) => programs.test(program) && variable.test(name))) return name
@@ -173,17 +198,23 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   const unknown = (at: number): boolean => expands.has(placed.index + 1 + at) && isDynamic(args[at] as string)
   const named = (path: string): Named => ({ path, cwd: where.cwd })
   const ownText = [...words, command.input ?? ''].join(' ')
-  // Variables that make a program load code: set for the commands after this one, unset, or set for this one alone.
-  const setHere = assigned(words.slice(0, placed.index))
+  // Variables that make a program load code: set for the commands after this one, unset, or set (or
+  // taken away, by `env -u` or `env -i`) for this one alone.
+  const before = words.slice(0, placed.index)
+  const setHere = assigned(before)
   const loading = (names: readonly string[]): string[] => names.filter(name => LOADS_CODE.some(([, variable]) => variable.test(name)))
   if (word === undefined || /^(?:export|declare|typeset|readonly|local)$/.test(program)) {
     const added = loading(word === undefined ? setHere : assigned(args))
     if (added.length > 0) where.loads = new Set([...(where.loads ?? []), ...added])
-  } else if (program === 'unset' && where.loads !== undefined) {
-    const gone = new Set(args)
+  } else if (program === 'unset' && where.loads !== undefined && !args.some(arg => /^-[a-z]*f/.test(arg))) {
+    // `unset -f` takes away functions only.
+    const gone = new Set(args.filter(arg => !arg.startsWith('-')))
     where.loads = new Set([...where.loads].filter(name => !gone.has(name)))
   }
-  const loaderOf = (language: string): string | undefined => loaderFor(language, [...setHere, ...(where.loads ?? [])])
+  const taken = envTakes(before)
+  const inherited = taken === 'all' ? [] : [...(where.loads ?? [])].filter(name => !taken.has(name))
+  const loaderOf = (language: string): string | undefined => loaderFor(language, [...setHere, ...inherited])
+  const language = program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1')
 
   for (const target of command.targets ?? []) {
     if (target.expands && isDynamic(target.path)) {
@@ -197,6 +228,10 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     out.unseen.push({ reason: 'it runs a program only known as it runs' })
     return
   }
+  // What a variable makes the program load runs beside whatever it is given: code the guard does not read,
+  // with no text of its own, so a path it names is never taken for a file the command only edits.
+  const loads = BUILTINS.has(program) && !/[\\/]/.test(word) ? undefined : loaderOf(language)
+  if (loads !== undefined) out.unseen.push({ reason: `${program} runs with ${loads} set, so it loads code the guard does not read` })
   const writes = (write: ShellWrite): void => {
     // A write whose paths come from input could be anywhere.
     if (fills) out.unseen.push({ reason: `${program} is given paths from its input, which the guard does not see` })
@@ -232,9 +267,6 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     return
   }
   if (SHELLS.has(program)) {
-    // BASH_ENV names a file bash runs before the script it is given.
-    const loads = loaderOf(program)
-    if (loads !== undefined) out.unseen.push({ reason: `${program} runs with ${loads} set, so it loads code the guard does not read`, text: ownText })
     const flag = args.findIndex(arg => /^-[A-Za-z]*c[A-Za-z]*$/.test(arg))
     const script = flag === -1 ? undefined : args[flag + 1]
     if (script !== undefined) {
@@ -257,7 +289,6 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     readNested(args.join(' '), where, out, depth)
     return
   }
-  const language = program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1')
   if (INTERPRETERS.has(language)) {
     // Code given inline (`deno eval` too), or read from input, is not read.
     const inline = args.some(arg => INLINE_CODE.test(arg)) || (program === 'deno' && args[0] === 'eval')
@@ -277,10 +308,9 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       const switches = script === undefined ? undefined : scriptSwitches(script, args)
       // The text a plain replacement writes is no code (`s/old/write tests/`).
       const codeText = script !== undefined && switches !== undefined ? [...words.slice(0, placed.index + 1), ...plainArgs(script, args, switches.code), command.input ?? ''].join(' ') : ownText
-      const loads = loaderOf(language)
       if (!known) out.unseen.push({ reason: `${program} runs code from its input, which the guard does not read`, text: ownText })
-      // A module or switch the environment adds runs beside the code read here, whatever that code does.
-      else if (loads !== undefined) out.unseen.push({ reason: `${program} runs with ${loads} set, so it loads code the guard does not read`, text: ownText })
+      // A module or switch the environment adds runs beside the code read here, whatever that code does: counted above.
+      else if (loads !== undefined) return
       else if (filledIn) out.unseen.push({ reason: `${program} runs code only known as it runs` })
       else if (mayChange(codeText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text: ownText })
       // Perl or Ruby told to edit files in place (`-i`) writes the files named after its code.
