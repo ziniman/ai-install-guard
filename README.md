@@ -6,7 +6,7 @@
 
 **A Claude Code mod that runs in the background. Install it once, and every `/plugin install`, marketplace and MCP server, yours or Claude's, and every skill or settings change Claude makes, is checked before it lands: nothing to run, nothing to remember.**
 
-[![AI Install Guard: No red flags at 292101c24c28](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_292101c24c28-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:292101c24c28adcfadd70b7042d5e5b61597cd97a8b0650207a1d9c3d63843aa, read without this badge")
+[![AI Install Guard: No red flags at a8ce5d0bad30](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_a8ce5d0bad30-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:a8ce5d0bad3009ee38803e322b3dabc76a7bb62fb33edfc0e8800299107ee4b2, read without this badge")
 
 [![npm version](https://img.shields.io/npm/v/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
 [![npm downloads](https://img.shields.io/npm/dm/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
