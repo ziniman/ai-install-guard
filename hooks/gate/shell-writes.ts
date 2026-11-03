@@ -268,6 +268,25 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   const dynamicPath = (): void => {
     out.unseen.push({ reason: `${program} writes to a path only known as it runs` })
   }
+  // What made, before this one, code an interpreter of `language` may load beside what it runs, however the code names
+  // it (an import in any statement, a package's own files): each file of its code other than `except`, written or named
+  // by code the guard does not read, and each folder copied, cloned or unpacked, by what made it (`makersOf`).
+  const codeMakers = (language: string, except?: string): Maker[] => {
+    const files = CODE_FILES[tokenized(language) ?? language]
+    if (files === undefined) return []
+    const code = (name: string): boolean => files.test(name) && name !== except
+    const folder = (write: ShellWrite): boolean => write.kind === 'clone' || (write.kind === 'unknown' && write.deep === true) || (write.kind === 'copy' && (write.into === true || write.contents === true || !/\.\w+$/.test(lastPart(write.to.path))))
+    return [
+      ...out.writes.slice(0, writesBefore).filter(write => !(write.kind === 'unknown' && write.given === true) && (folder(write) || code(lastPart(write.to.path)))).flatMap(write => makersOf(write, out.writes)),
+      ...out.unseen
+        .slice(0, unseenBefore)
+        .filter(part => part.text !== undefined && [...part.text.matchAll(/[\w-]+(?:\.[\w-]+)+/g)].some(found => !/\.json$/i.test(found[0]) && code(found[0])))
+        .map(part => ({ text: part.text, ...(part.cwd === undefined ? {} : { cwd: part.cwd }) })),
+    ]
+  }
+  const besideMade = (language: string, except?: string): void => {
+    for (const maker of codeMakers(language, except)) out.unseen.push({ reason: `${program} runs beside code the command makes first, which it may load`, ...maker })
+  }
   // A script the command makes or changes before it runs it, by its file name, since the same file may be named
   // another way (a link such as `/tmp`, `~` or `$HOME`, after a `cd`): text the command writes for a shell
   // is read as commands, and code an interpreter runs as inline code is. Otherwise what made it counts as this run:
@@ -287,10 +306,7 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       if (mayChange(text)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text, ...(where.cwd === undefined ? {} : { cwd: where.cwd }), ...placesOf(language, [], [], text, []) })
     } else {
       for (const part of mentioning) out.unseen.push({ reason, text: part.text, ...(part.cwd === undefined ? {} : { cwd: part.cwd }) })
-      for (const write of made) {
-        const by = write.kind === 'unknown' && write.edit === true ? madeBy.get(write) : undefined
-        out.unseen.push(by === undefined ? { reason } : { reason, ...by })
-      }
+      for (const maker of made.flatMap(write => makersOf(write, out.writes))) out.unseen.push({ reason, ...maker })
     }
   }
 
@@ -375,10 +391,11 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       // Perl or Ruby told to edit files in place (`-i`) writes the files named after its code.
       else if (script !== undefined && switches !== undefined) readInPlace(script, switches, args, unknown, where, inPlaceWrites, dynamicPath, fills, out, own, command.input)
       // A module the code loads that the command made first (`cat > re.py …; python3 -c 'import re'`) is code it runs.
-      const inlineCode = codeAt.length > 0 ? codeAt.map(at => args[at] ?? '').join('\n') : (command.input ?? '')
-      if (known && !filledIn) for (const module of localModules(language, inlineCode)) madeFirst(module, 'code')
+      if (known && !filledIn) besideMade(language)
       return
     }
+    // A script or module it runs, `json.tool` included, may load other code the command made first.
+    besideMade(language, module === -1 && file !== -1 ? lastPart(args[file] as string) : undefined)
     // `python3 -m json.tool` given one file (or none, or `-` for its input) prints it; a second is the file it writes, but for `-`, the screen.
     if (module !== -1 && args[module + 1] === 'json.tool') {
       const files: string[] = []
@@ -482,26 +499,41 @@ const AWK_WRITES = /\bprintf?\b[^;{}\n]*[>|]|\bsystem\s*\(|\|&?\s*getline\b/
 /** The command that made each write, by its own text and folder: what counts when it makes a script the command then runs. */
 const madeBy = new WeakMap<ShellWrite, Own>()
 
+/** What made a file, as an unseen part takes it: the text to read and the folder it ran in, or nothing for the whole command. */
+type Maker = { text?: string; cwd?: string }
+
 /**
- * The files of modules code may load that a command can make beside it:
- * each module Python imports, as `<name>.py`, found first in the folder it
- * runs in, and each relative path JavaScript requires or imports, with the
- * extensions Node tries.
+ * What made a file the command then runs or loads, among the writes before
+ * it: the command's own text, all of it, when that holds all it made (text
+ * it wrote, an edit in place), since what it holds as text may now be code;
+ * for a copy, what made the files it copies, when the command made them, and
+ * nothing for one already on disk, which is code like any other there; and
+ * the whole command (an empty maker) when it brought content in from
+ * elsewhere (a download, a clone, an archive, a program's output).
  */
-function localModules(language: string, code: string): string[] {
-  const read = tokenized(language)
-  if (read === 'python') {
-    return [...code.matchAll(/(?:^|[;\n])[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w., \t]+))/g)].flatMap(found =>
-      (found[1] ?? found[2] ?? '').split(',').map(name => `${(name.trim().split(/\s+/)[0] ?? '').split('.')[0] ?? ''}.py`),
-    )
-  }
-  if (read !== 'js') return []
-  return [...code.matchAll(/(?:\brequire\s*\(\s*|\bfrom\s+|\bimport\s*\(?\s*)['"`](\.{1,2}\/[^'"`\s]+)['"`]/g)].flatMap(found => {
-    const path = found[1] as string
-    // JSON is data it reads, not code it runs.
-    if (/\.json$/i.test(path)) return []
-    return /\.[cm]?[jt]s$/.test(path) ? [path] : [path, `${path}.js`, `${path}.mjs`, `${path}.cjs`]
-  })
+function makersOf(write: ShellWrite, before: readonly ShellWrite[], depth = 0): Maker[] {
+  const by = madeBy.get(write)
+  if (by !== undefined && (write.kind === 'content' || (write.kind === 'unknown' && write.edit === true))) return [by]
+  if (write.kind !== 'copy') return [{}]
+  if (depth > MAX_DEPTH) return [{}]
+  const sources = new Set(write.from.map(source => lastPart(source.path)))
+  const at = before.indexOf(write)
+  const earlier = at === -1 ? before : before.slice(0, at)
+  return earlier.filter(made => sources.has(lastPart(made.to.path)) && !(made.kind === 'unknown' && made.given === true)).flatMap(made => makersOf(made, earlier, depth + 1))
+}
+
+/**
+ * The files of code each interpreter may load beside what it runs, by the
+ * tokenizer's name for its language or its own: modules, packages' files
+ * and compiled extensions.
+ */
+const CODE_FILES: Readonly<Record<string, RegExp>> = {
+  python: /\.(?:py[cdiw]?|pth|so)$/i,
+  js: /\.(?:[cm]?[jt]sx?|node|wasm)$/i,
+  ruby: /\.(?:rb|so|bundle)$/i,
+  perl: /\.(?:p[lm]|so)$/i,
+  php: /\.(?:php|inc)$/i,
+  lua: /\.(?:lua|so)$/i,
 }
 
 /** A first line that starts a shell: `#!/bin/sh`, `#!/usr/bin/env bash`. */
@@ -667,7 +699,8 @@ function pythonWrites(code: string, only: string, kind: (index: number) => SpanK
   const targets: string[] = []
   for (const found of only.matchAll(/\bopen\s*\(/g)) {
     const args = callArgs(code, kind, (found.index ?? 0) + found[0].length - 1)
-    if (args === undefined) return undefined
+    // Arguments spread from a list or a mapping (`open(*a)`, `open(**kw)`) are a path and mode it builds.
+    if (args === undefined || args.spread) return undefined
     const { plain, named } = args
     const mode = named.get('mode') ?? plain[1]
     // With no mode it reads.

@@ -546,6 +546,13 @@ describe('what a shell command changes where Claude Code loads from', () => {
       // A module the command writes before code loads it is code that runs.
       `cat > re.py <<'EOF'\nimport os\nos.remove(os.path.expanduser('~/.claude/settings.json'))\nEOF\npython3 -c 'import re; print(re.escape("x"))'`,
       `cat > lib.js <<'EOF'\nrequire('fs').rmSync(require('os').homedir() + '/.claude/settings.json')\nEOF\nnode -e 'require("./lib")'`,
+      // However the code loads it: from a script it runs, in a compound statement, or as a package's own file.
+      `cat > evil.py <<'EOF'\nimport os\nos.remove(os.path.expanduser('~/.claude/settings.json'))\nEOF\ncat > run.py <<'EOF'\nimport evil\nEOF\npython3 run.py`,
+      `cat > payload.py <<'EOF'\nimport os\nos.remove(os.path.expanduser('~/.claude/settings.json'))\nEOF\npython3 -c 'if True: import payload'`,
+      `mkdir -p pkg && cat > pkg/evil.py <<'EOF'\nimport os\nos.remove(os.path.expanduser('~/.claude/settings.json'))\nEOF\npython3 -c 'from pkg import evil'`,
+      `mkdir -p pkg && cat > pkg/index.js <<'EOF'\nrequire('fs').rmSync(require('os').homedir() + '/.claude/settings.json')\nEOF\nnode -e 'require("./pkg")'`,
+      // Arguments spread into open are a path it builds.
+      `python3 - <<'EOF'\nkw = {'file': '/home/tester/.claude/settings.json', 'mode': 'w'}\nopen(**kw).write('{}')\nopen('log.txt', 'w').write('x')\nEOF`,
       // Code run in a place Claude Code loads from may write there by any name.
       `cd ~/.claude/skills/old && python3 -c "open('SKILL.md', 'w').write('evil')"`,
       `cd ~/.claude && python3 -c "import json; json.dump({}, open('settings.json', 'w'))"`,
@@ -560,6 +567,7 @@ describe('what a shell command changes where Claude Code loads from', () => {
     // A script edited and then run, or one a program is only given, is no more than the edit; a script it writes that runs nothing there passes.
     expect(await change(`python3 - <<'PY'\np = '/home/tester/.claude/commands/expenses.md'\ns = open(p).read()\nopen(p, 'w').write(s.replace("Sort", "File"))\nPY\npython3 -m py_compile scripts/x.py && python3 scripts/x.py selftest`)).toMatchObject({ kind: 'note' })
     expect(await change(`cat > /tmp/x.sh <<'EOF'\necho hi\nEOF\nbash /tmp/x.sh`)).toEqual({ kind: 'pass' })
+    expect(await change(`cat > /tmp/x.py <<'EOF'\nprint(open('notes.md').read())\nEOF\npython3 /tmp/x.py; cat ~/.claude/settings.json`)).toEqual({ kind: 'pass' })
     expect(await change(`python3 -m py_compile x.py && python3 x.py; cat ~/.claude/settings.json`)).toEqual({ kind: 'pass' })
   })
 
