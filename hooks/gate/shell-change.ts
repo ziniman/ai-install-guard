@@ -92,11 +92,12 @@ const PATH_JOIN = /\bpath\.(?:join|resolve)\s*\(|\bjoinpath\s*\(|\bPurePath\s*\(
 /**
  * Anywhere in the text, what can make a path other than it reads: `..` as a
  * name of its own, which a path joined from parts may climb out through, or
- * a character written as an escape (`\x2f`, `chr(47)`, `%2f`). Decoding
- * content (base64) is not one: a path decoded must still be joined on, which
- * counts where it is written.
+ * a path character (`/`, `.` or `\`) written as an escape inside a string
+ * (`\x2f`, `.`, `\057`, `%2f`). A character made as the code runs
+ * (`chr(47)`) or a path decoded (base64) is not one: it must still be joined
+ * on, which counts where it is written.
  */
-const MAY_REDIRECT = /(?:^|[\s\\/'"`(,=+])\.\.(?=[\\/'"`),\s]|$)|\\x[0-9a-f]{2}|\\u\{?[0-9a-f]{4}|\\[0-7]{3}|\\N\{|\bchr\s*\(|fromCharCode|%2[ef]|unquote/im
+const MAY_REDIRECT = /(?:^|[\s\\/'"`(,=+])\.\.(?=[\\/'"`),\s]|$)|\\x(?:2[ef]|5c)|\\u\{?0*(?:2[ef]|5c)\}?|\\0?(?:5[67]|134)|\\N\{(?:SOLIDUS|FULL STOP|REVERSE SOLIDUS)\}|%(?:2[ef]|5c)/im
 
 /**
  * The `.claude` paths text names, and whether any of them, by its words
@@ -152,6 +153,15 @@ const IN_CLAUDE = /(?:^|[\\/])\.claude(?:[\\/]|$)/i
  * a string's takes two, `shutil`, `mv`, `cp` keeping links, `FileUtils`).
  */
 const MAY_PLACE_LINK = /symlink|\blink(?:Sync|_to)?\s*\(|\bln\s+-|hardlink|\brenames?\s*\(|renameSync|\bos\.replace\s*\(|\.replace\s*\([^,()]*\)|shutil\.(?:move|copy)|copytree|\bmove\s*\(|\bmv\s|\bcp\s+-[a-zA-Z]*[aPRrd]|FileUtils\.(?:mv|cp|ln|move|copy)/i
+
+/**
+ * Whether a write may put a link in place: a copy, a move or `ln`, a clone, an
+ * archive unpacked, or a program the guard does not know. Text written into
+ * a file, an in-place edit and a removal make none.
+ */
+function mayLink(write: ShellWrite): boolean {
+  return write.kind === 'copy' || write.kind === 'clone' || (write.kind === 'unknown' && write.edit !== true)
+}
 
 /** The most of a file the guard reads to know what a copy or an append makes, as it reads a configuration. */
 const MAX_TEXT_BYTES = 16 * 1024 * 1024
@@ -283,7 +293,7 @@ export async function readShellChange(host: Host, command: string, cwd: string |
       const place = writePlace(write.to.path, configDir)
       const covers = coversPlace(write.to.path, configDir)
       const edit = write.kind === 'unknown' && write.edit === true
-      if (write.kind !== 'remove' && IN_CLAUDE.test(write.to.path)) claudeChanged = true
+      if (mayLink(write) && IN_CLAUDE.test(write.to.path)) claudeChanged = true
       if (place !== undefined || covers) unreadable.push({ label: `a change to ${safeLine(write.to.path)}`, reason: 'it writes to a path relative to a folder only known as it runs', place, covers, edit })
       else weigh(command, { reason: 'it writes to a path relative to a folder only known as it runs' })
       continue
@@ -294,7 +304,7 @@ export async function readShellChange(host: Host, command: string, cwd: string |
       // Anything unpacked or checked out below a folder that holds the home folder can reach ~/.claude.
       const holder = write.kind === 'unknown' && write.deep === true ? await homeFolder() : undefined
       const covers = coversPlace(landed, configDir) || coversPlace(normalizePath(path), configDir) || (holder !== undefined && (holder === landed || holder.startsWith(`${landed.replace(/\/+$/, '')}/`)))
-      if (write.kind !== 'remove' && (IN_CLAUDE.test(landed) || IN_CLAUDE.test(path))) claudeChanged = true
+      if (mayLink(write) && (IN_CLAUDE.test(landed) || IN_CLAUDE.test(path))) claudeChanged = true
       // Taking a file away adds nothing, except a settings file's rules.
       if (write.kind === 'remove' ? place?.kind !== 'settings' : place === undefined && !covers) continue
       found.push({ write, path, landed, place, covers, ...(source === undefined ? {} : { source }) })
