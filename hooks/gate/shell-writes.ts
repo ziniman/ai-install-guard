@@ -334,7 +334,16 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     }
     // `python3 -m json.tool` given one file (or none, or `-` for its input) prints it; a second is the file it writes, but for `-`, the screen.
     if (module !== -1 && args[module + 1] === 'json.tool') {
-      const files = args.slice(module + 2).filter((arg, at, rest) => (arg === '-' || !arg.startsWith('-')) && rest[at - 1] !== '--indent')
+      const files: string[] = []
+      const rest = args.slice(module + 2)
+      // Options until `--`; `--indent` takes the word after it.
+      let options = true
+      for (let at = 0; at < rest.length; at += 1) {
+        const arg = rest[at] as string
+        if (options && arg === '--') options = false
+        else if (options && arg === '--indent') at += 1
+        else if (!options || arg === '-' || !arg.startsWith('-')) files.push(arg)
+      }
       if (files.length <= 1 || (files.length === 2 && files[1] === '-')) return
     }
     // A script file or a module (`python3 -m pip …`) is code already on disk: judged by the paths it is given, not by where it is.
