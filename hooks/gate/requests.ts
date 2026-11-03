@@ -173,8 +173,15 @@ function withoutPatterns(code: string): string {
 /** What hands a template to something that only prints it or throws it: whatever else it is handed to may run it, through a function of the code's own as well. */
 const PRINTS_TEMPLATE = /(?:\bconsole\.(?:log|error|warn|info|debug)|\bprocess\.std(?:out|err)\.write|\bError)\s*\(\s*$/
 
-/** Code that redefines what `PRINTS_TEMPLATE` trusts, so none of it only prints. */
-const REDEFINES_PRINT = /\bconsole\s*(?:\.\s*\w+\s*)?=(?!=)|\bprocess\.std(?:out|err)(?:\.write)?\s*=(?!=)|\b(?:function|class|const|let|var)\s+(?:console|Error|process)\b|\bError\s*=(?!=)/
+/** The calls `PRINTS_TEMPLATE` trusts, as code writes them. */
+const PRINT_CALLS = /\bconsole\.(?:log|error|warn|info|debug)\s*\(|\bprocess\.std(?:out|err)\.write\s*\(|\b(?:new\s+)?Error\s*\(/g
+
+/**
+ * Code that names what those calls use in any other way (`console["log"] =`,
+ * `const Error`, `globalThis.console`, `Reflect.set(console, …)`): it may have
+ * changed what they do, so none of them only prints.
+ */
+const REDEFINES_PRINT = /\b(?:console|Error|globalThis|global|Reflect|Proxy)\b|\bprocess\s*(?:\.\s*std(?:out|err)\b|\[)/
 
 const MAY_RUN_TEXT = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`|\b(?:eval|Function|vm|Worker)\b|_compile|runIn\w*Context|compileFunction|\bimport\s*\(|\brequire\s*\(\s*`/
 
@@ -504,7 +511,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
         const code = JAVASCRIPT.has(language) ? withoutPatterns(text) : text
         const runs = JAVASCRIPT.has(language) && MAY_RUN_TEXT.test(code)
         // Code that redefines what only prints has every template read as a script.
-        const prints = runs && !REDEFINES_PRINT.test(code)
+        const prints = runs && !REDEFINES_PRINT.test(code.replace(PRINT_CALLS, ' '))
         // A function the command defines runs its body, read with the rest, so a backquote in its arguments is what the body makes of it.
         merge(collectInstalls(code, found, depth + 1, false, inCode || functions.has(program) || NO_BACKQUOTE.has(language) || (JAVASCRIPT.has(language) && !runs), prints && !inCode), false)
       }
@@ -951,6 +958,11 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     const set = (name: string, value: string, fixed: boolean): void => {
       if (fixed && top && !/[$`]/.test(value)) known.set(name, value)
       else known.delete(name)
+    }
+    // `command` and `builtin` run the builtin after them in this same shell.
+    while (words[program] === 'command' || words[program] === 'builtin') {
+      program += 1
+      while (words[program]?.startsWith('-') === true) program += 1
     }
     const name = words[program]
     const args = words.slice(program + 1)

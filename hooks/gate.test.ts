@@ -143,6 +143,11 @@ describe("reading Claude's shell commands", () => {
     ]) expect(readShellCommand(command).kind).toBe('unreadable')
     // A single-quoted `$` is the character itself.
     expect(readShellCommand("CMD=claude; echo '$CMD plugin install notes@acme'")).toEqual({ kind: 'pass', browse: false })
+    // PR review: a builtin run through `command` or `builtin` sets what it sets.
+    for (const wrapper of ['command', 'builtin', 'command -p']) {
+      expect(readShellCommand(`X=test; ${wrapper} export X=install; claude plugin "$X" notes@acme`)).toMatchObject({ label: 'claude plugin install notes@acme' })
+      expect(readShellCommand(`CMD=claude; ${wrapper} read CMD; $CMD plugin install notes@acme`).kind).toBe('unreadable')
+    }
     // PR review: `NAME=value` after the program is its argument, not an assignment; printing or looping over
     // a value only known as it runs changes no other variable.
     expect(readShellCommand('A=claude; watch A=x "$A" plugin install notes@acme')).toMatchObject({ kind: 'unreadable', label: 'claude plugin install notes@acme', reason: expect.stringContaining('runs more than the install') })
@@ -177,6 +182,8 @@ describe("reading Claude's shell commands", () => {
       "node -e 'function run(x){require(\"child_process\").execSync(x)}; run(`${process.env.CMD}`)'",
       "node -e 'function print(x){require(\"child_process\").execSync(x)}; print(`${process.env.CMD}`)'",
       "node -e 'console.log = x => require(\"child_process\").execSync(x); console.log(`${process.env.CMD}`)'",
+      "node -e 'console[\"log\"] = x => require(\"child_process\").execSync(x); console.log(`${process.env.CMD}`)'",
+      "node -e 'globalThis.console = { log: x => require(\"child_process\").execSync(x) }; console.log(`${process.env.CMD}`)'",
       "node -e 'const c = `claude plugin install x@m`; require(\"child_process\").execSync(c)'",
       `python3 -c 'import os; os.system("\`$CMD\`")'`,
       "awk 'BEGIN { system(\"`$CMD`\") }'",
