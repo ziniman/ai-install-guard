@@ -205,6 +205,7 @@ describe("reading Claude's shell commands", () => {
       // PR review, round three: a function called by its name in a string, or through a variable.
       "php -r 'call_user_func(\"system\", \"claude plugin install evil@m\");'",
       "php -r '$f = \"sys\" . \"tem\"; $f(\"claude plugin install evil@m\");'",
+      "php -r '$f = \"sys\" . \"tem\"; ($f)(\"claude plugin install evil@m\");'",
       "ruby -e 'Kernel.send(:system, \"claude plugin install evil@m\")'",
       "perl -e '&{\"CORE::system\"}(\"claude plugin install evil@m\")'",
     ]) expect(readShellCommand(command).kind).toBe('unreadable')
