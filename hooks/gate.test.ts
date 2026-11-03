@@ -164,6 +164,13 @@ describe("reading Claude's shell commands", () => {
       `node -e 'const s = "claude plugin install x@m"; console.log(s.length)'`,
       // A script that edits source which names calls that start programs, as strings, starts none.
       "python3 - <<'EOF'\np='hooks/x.ts'; s=open(p).read()\ns=s.replace('exec(cmd)', 'execSync(cmd) // claude plugin install')\nopen(p,'w').write(s)\nEOF",
+      // PR review: a Perl command beside Python's text, a module named in a comment, a backquote in a plain string, PowerShell's output.
+      "perl -e '1'; python3 -c 'print(\"`claude plugin install evil@m`\")'",
+      "node -e '// require(\"child_process\"); claude plugin install evil@m'",
+      "perl -e 'print \"claude plugin install demo `date`\"'",
+      "pwsh -Command \"Write-Output 'claude plugin install demo'\"",
+      // A folder with a space in its name is no script the command runs.
+      `cd "/a/b c/sources" && grep -oiE "mcp server|claude code skill" x.md`,
     ]) expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
     // Code that may start a program, and data a shell runs: a file it is given, its input, one sourced, or a script the command wrote and runs.
     for (const command of [
@@ -190,6 +197,11 @@ describe("reading Claude's shell commands", () => {
       "pwsh -Command 'claude plugin install evil@m'",
       "lua -e 'os.execute(\"claude plugin install evil@m\")'",
       "julia -e 'run(`claude plugin install evil@m`)'",
+      // PR review, round two: a script made through tee, or named in code, then run by its path.
+      "python3 -c 'print(\"claude plugin install evil@m\")' | tee /tmp/x; chmod +x /tmp/x; /tmp/x",
+      "python3 -c 'open(\"/tmp/y\", \"w\").write(\"claude plugin install evil@m\")'; sh -c 'chmod +x /tmp/y'; /tmp/y",
+      "pwsh -Command \"& 'claude' plugin install evil@m\"",
+      "ruby -e 'x = \"claude plugin install evil@m\"; puts \"#{`#{x}`}\"'",
     ]) expect(readShellCommand(command).kind).toBe('unreadable')
   })
 
