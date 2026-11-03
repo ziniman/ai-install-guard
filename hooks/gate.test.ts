@@ -98,9 +98,7 @@ describe("reading Claude's shell commands", () => {
 
   test('an install hidden behind a variable, or riding along with another command, is held', () => {
     for (const command of [
-      'CMD=claude; $CMD plugin install notes@acme',
       "OTHER='claude plugin install bar@acme'; claude plugin install notes@acme | $OTHER",
-      'X=plu; claude ${X}gin install notes@acme',
       `python3 -c "import subprocess; subprocess.run(['claude', 'plugin', 'install', 'notes@acme'])"`,
       'claude plugin install notes@acme && ./more.sh',
       'xargs claude plugin install < plugins.txt',
@@ -108,6 +106,91 @@ describe("reading Claude's shell commands", () => {
       expect(readShellCommand(command).kind).toBe('unreadable')
     }
     expect(readShellCommand('claude plugin install notes@acme && ./more.sh')).toMatchObject({ reason: expect.stringContaining('runs more than the install') })
+  })
+
+  test('a variable the command sets to a value written out is read as that value; one it may not have set is not', () => {
+    // Set plainly before it is read, the install behind it is the one that runs, gated as any other.
+    for (const command of ['CMD=claude; $CMD plugin install notes@acme', 'X=plu; claude ${X}gin install notes@acme', 'SUB=install\nclaude plugin "$SUB" notes@acme']) {
+      expect(readShellCommand(command)).toMatchObject(install('notes', 'acme'))
+    }
+    // `export` runs beside the install, so the install must stand on its own, but what it sets is read.
+    expect(readShellCommand('export C=claude; "$C" plugin install notes@acme')).toMatchObject({ kind: 'unreadable', label: 'claude plugin install notes@acme', reason: expect.stringContaining('runs more than the install') })
+    // Set only as it runs, perhaps not at all, inside something, or changed after by what the guard does not read.
+    for (const command of [
+      'CMD=$(which claude); $CMD plugin install notes@acme',
+      'true && CMD=claude; $CMD plugin install notes@acme',
+      'false || CMD=claude; $CMD plugin install notes@acme',
+      'if x; then CMD=claude; fi; $CMD plugin install notes@acme',
+      '(CMD=claude); $CMD plugin install notes@acme',
+      '{ CMD=claude; }; $CMD plugin install notes@acme',
+      'CMD=claude | true; $CMD plugin install notes@acme',
+      'CMD=claude; read CMD; $CMD plugin install notes@acme',
+      'CMD=claude; for CMD in a; do :; done; $CMD plugin install notes@acme',
+      'CMD=claude; f() { CMD=evil; }; f; $CMD plugin install notes@acme',
+      'CMD=claude; source ./env.sh; $CMD plugin install notes@acme',
+      'CMD=claude; eval "$X"; $CMD plugin install notes@acme',
+      'CMD=claude; unset CMD; $CMD plugin install notes@acme',
+      'CMD=claude; CMD+=x; $CMD plugin install notes@acme',
+      "CMD=claude; sh -c '$CMD plugin install notes@acme'",
+      "CMD='$OTHER'; $CMD plugin install notes@acme",
+      'V="a b"; claude plugin install $V',
+      // Local review: an assignment earlier in the same command sets it first, and a name only known as it runs may be any.
+      'A=claude; A=x B="$A"; $B plugin install notes@acme',
+      'CMD=claude; read "$X"; $CMD plugin install notes@acme',
+      'CMD=claude; printf -v "$X" x; $CMD plugin install notes@acme',
+      'CMD=claude; printf -vCMD x; $CMD plugin install notes@acme',
+      'CMD=claude; for "$X" in a; do :; done; $CMD plugin install notes@acme',
+    ]) expect(readShellCommand(command).kind).toBe('unreadable')
+    // A single-quoted `$` is the character itself.
+    expect(readShellCommand("CMD=claude; echo '$CMD plugin install notes@acme'")).toEqual({ kind: 'pass', browse: false })
+    // PR review: a builtin run through `command` or `builtin` sets what it sets.
+    for (const wrapper of ['command', 'builtin', 'command -p']) {
+      expect(readShellCommand(`X=test; ${wrapper} export X=install; claude plugin "$X" notes@acme`)).toMatchObject({ label: 'claude plugin install notes@acme' })
+      expect(readShellCommand(`CMD=claude; ${wrapper} read CMD; $CMD plugin install notes@acme`).kind).toBe('unreadable')
+    }
+    // PR review: `NAME=value` after the program is its argument, not an assignment; printing or looping over
+    // a value only known as it runs changes no other variable.
+    expect(readShellCommand('A=claude; watch A=x "$A" plugin install notes@acme')).toMatchObject({ kind: 'unreadable', label: 'claude plugin install notes@acme', reason: expect.stringContaining('runs more than the install') })
+    for (const command of ['A=claude; printf \'%s\\n\' "$X"; "$A" plugin install notes@acme', 'A=claude; for x in "$Y"; do :; done; "$A" plugin install notes@acme']) {
+      expect(readShellCommand(command)).toMatchObject({ label: 'claude plugin install notes@acme' })
+    }
+  })
+
+  test('a claude command asked for its help installs nothing', () => {
+    for (const command of ['claude plugin install --help', 'claude plugin install notes@acme -h', 'claude plugin marketplace add --help', 'claude mcp add --help', 'claude mcp add -h']) {
+      expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
+    }
+    // After `--`, or after the server's name, it may be the server's own.
+    expect(readShellCommand('claude mcp add notes -- npx notes-server --help').kind).not.toBe('pass')
+    expect(readShellCommand('claude mcp add notes npx notes-server --help').kind).not.toBe('pass')
+  })
+
+  test('a backquote in code where it runs nothing, or in a function call the command defines, is no command built as it runs', () => {
+    for (const command of [
+      // awk and sed programs, and Python outside a double-quoted string.
+      "for f in a/*.md; do awk '/^```button/{skip=1} skip&&/^> ```$/{skip=0;next} !skip' \"$f\"; done > /tmp/out.txt",
+      "sed -i '' 's|evaluate(`(async () => { seek(${t}); })()`)|evaluate(x)|' cdp.mjs",
+      "python3 -c 'print(1)  # the `${name}` field'",
+      // JavaScript: a pattern for a fenced block, and a template only printed, beside one handed to a process.
+      "node -e 'const re=/```js\\n([\\s\\S]*?)```/g; const m=re.exec(s); console.log(`${n} blocks, ${bad} bad`); require(\"child_process\").execSync(`git blame -L ${a},${b} -- ${f}`)'",
+      // A function the command defines, called with prose that names a code span.
+      'r() { gh api x -f body="$2"; }\nr 1 "Fixed: the \\`\\$default\\` stage"',
+    ]) expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
+    for (const command of [
+      "node -e 'require(\"child_process\").execSync(`${cmd} --x`)'",
+      // Local review: a template handed to a function of the code's own, which runs it, by any name.
+      "node -e 'function run(x){require(\"child_process\").execSync(x)}; run(`${process.env.CMD}`)'",
+      "node -e 'function print(x){require(\"child_process\").execSync(x)}; print(`${process.env.CMD}`)'",
+      "node -e 'console.log = x => require(\"child_process\").execSync(x); console.log(`${process.env.CMD}`)'",
+      "node -e 'console[\"log\"] = x => require(\"child_process\").execSync(x); console.log(`${process.env.CMD}`)'",
+      "node -e 'globalThis.console = { log: x => require(\"child_process\").execSync(x) }; console.log(`${process.env.CMD}`)'",
+      "node -e 'const Foo = { Error: x => require(\"child_process\").execSync(x) }; new Foo.Error(`${process.env.CMD}`)'",
+      "node -e 'const o = { console: { log: x => require(\"child_process\").execSync(x) } }; o.console.log(`${process.env.CMD}`)'",
+      "node -e 'const c = `claude plugin install x@m`; require(\"child_process\").execSync(c)'",
+      `python3 -c 'import os; os.system("\`$CMD\`")'`,
+      "awk 'BEGIN { system(\"`$CMD`\") }'",
+      "r() { eval \"$1\"; }; r 'claude plugin install x@m'",
+    ]) expect(readShellCommand(command).kind).toBe('unreadable')
   })
 
   test("a marketplace Claude adds is named so the guard scans the same one: no cd, no relative folder", () => {
@@ -169,7 +252,7 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('cat <<EOF\n$(claude plugin install notes@acme)\nEOF').kind).not.toBe('pass')
     expect(readShellCommand("cat <<'EOF'\n$(claude plugin install notes@acme)\nEOF")).toEqual({ kind: 'pass', browse: false })
     // What claude is asked to do, only known as it runs.
-    expect(readShellCommand('SUB=install; claude plugin "$SUB" notes@acme').kind).toBe('unreadable')
+    expect(readShellCommand('claude plugin "$SUB" notes@acme').kind).toBe('unreadable')
     expect(readShellCommand('claude plugin marketplace "$VERB" https://github.com/acme/market').kind).toBe('unreadable')
     expect(readShellCommand('claude --debug plugin install notes@acme')).toMatchObject(install('notes', 'acme'))
   })

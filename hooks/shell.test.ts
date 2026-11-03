@@ -258,6 +258,12 @@ describe('what a shell command changes where Claude Code loads from', () => {
   test('an ordinary write, a read, or taking a skill away passes', async () => {
     expect(await change('npm test > out.log')).toEqual({ kind: 'pass' })
     expect(await change('ls ~/.claude/skills && cat ~/.claude/settings.json | python3 -m json.tool')).toEqual({ kind: 'pass' })
+    // json.tool given one file prints it; given a second, it writes that one.
+    expect(await change('python3 -m json.tool --indent 2 ~/.claude/settings.json')).toEqual({ kind: 'pass' })
+    expect(await change('python3 -m json.tool in.json ~/.claude/settings.json')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('json.tool') })
+    expect(await change('python3 -m json.tool - ~/.claude/settings.json')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('json.tool') })
+    expect(await change('python3 -m json.tool ~/.claude/settings.json -')).toEqual({ kind: 'pass' })
+    expect(await change('python3 -m json.tool -- --indent ~/.claude/settings.json')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('json.tool') })
     expect(await change('rm -rf ~/.claude/skills/old')).toEqual({ kind: 'pass' })
     // Taking away the settings file takes its rules with it.
     expect(await change('rm ~/.claude/settings.json')).toMatchObject({ kind: 'write', input: { file_path: `${HOME}/.claude/settings.json`, content: '{}' } })
@@ -386,7 +392,8 @@ describe('what a shell command changes where Claude Code loads from', () => {
   test('more than one change, or code that names Claude\'s folder, is Could not verify', async () => {
     expect(await change('echo a > ~/.claude/commands/a.md; echo b > ~/.claude/commands/b.md')).toMatchObject({ kind: 'unreadable', label: '2 changes by one command' })
     expect(await change(`python3 -c "open('/home/tester/.claude/skills/x/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('python3 runs code that may write files or run programs') })
-    expect(await change(`D=~/.claude/skills; cp -r review "$D"`)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('only known as it runs') })
+    expect(await change(`D=~/.claude/skills; cp -r review "$D"`)).toMatchObject({ kind: 'folder', claim: `${SKILLS}/review` })
+    expect(await change(`D=$(echo ~/.claude/skills); cp -r review "$D"`)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('only known as it runs') })
     expect(await change('python3 build.py')).toEqual({ kind: 'pass' })
     expect(await change('cd "$X" && echo a > b')).toEqual({ kind: 'pass' })
     expect(await change('cd "$X" && echo a > .claude/commands/a.md')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('relative to a folder only known') })
@@ -552,6 +559,14 @@ describe('what a shell command changes where Claude Code loads from', () => {
     // Round four: strings written side by side are one string.
     expect(await change(`python3 -c "open('.claude/ski' 'lls/new/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
     expect(await change(`python3 -c "open('/home/tester/.claude/projects' f'/{x}/../../settings.json','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
+    // A character made as the code runs, an escape that is no path character, and text written beside it, pass;
+    // a copy that may bring a link into Claude's folder first does not.
+    for (const command of [
+      `F=/home/tester/.claude/projects/a.jsonl; python3 -c "import sys; d=open(sys.argv[1]).read().replace(chr(10),' '); open('out.txt','w').write(d)" "$F"`,
+      `python3 -c "d=open('/home/tester/.claude/projects/a.jsonl').read(); open('out.txt','w').write('\\x1b[1m' + d)"`,
+      `M=/home/tester/.claude/projects/p/memory; cat > "$M/x.md" <<'EOF'\nhi\nEOF\npython3 -c "p='$M/MEMORY.md'; s=open(p).read(); open(p,'w').write(s + 'x')"`,
+    ]) expect(await change(command)).toEqual({ kind: 'pass' })
+    expect(await change(`cp -R /tmp/links /home/tester/.claude/x && python3 -c "open('/home/tester/.claude/x/a','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
     // A string's own replace is no move.
     expect(await change(`python3 -c "p='/home/tester/.claude/projects/x.md'; s=open(p).read(); open(p,'w').write(s.replace('a', 'b'))"`)).toEqual({ kind: 'pass' })
     const configured = `python3 -c "open('/home/tester/.claude/elsewhere/new/SKILL.md','w').write('x')"`
