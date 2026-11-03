@@ -202,6 +202,11 @@ describe("reading Claude's shell commands", () => {
       "python3 -c 'open(\"/tmp/y\", \"w\").write(\"claude plugin install evil@m\")'; sh -c 'chmod +x /tmp/y'; /tmp/y",
       "pwsh -Command \"& 'claude' plugin install evil@m\"",
       "ruby -e 'x = \"claude plugin install evil@m\"; puts \"#{`#{x}`}\"'",
+      // PR review, round three: a function called by its name in a string, or through a variable.
+      "php -r 'call_user_func(\"system\", \"claude plugin install evil@m\");'",
+      "php -r '$f = \"sys\" . \"tem\"; $f(\"claude plugin install evil@m\");'",
+      "ruby -e 'Kernel.send(:system, \"claude plugin install evil@m\")'",
+      "perl -e '&{\"CORE::system\"}(\"claude plugin install evil@m\")'",
     ]) expect(readShellCommand(command).kind).toBe('unreadable')
   })
 

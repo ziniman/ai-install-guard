@@ -218,9 +218,10 @@ function startsProgram(item: CollectedText): boolean {
   // its strings, or runs one some other way (`& 'claude'`, `Invoke-Expression`, Tcl's `exec`).
   if (item.names === true) return NAMES_RUN_CALL.test(item.text) || namesClaude(outsideStrings(item.text))
   const text = item.language === undefined ? item.text : codeOnly(item.text, item.language)
-  // In code read through the tokenizer, a process function named at all may be called under another name
-  // (`from os import system as go`), and JavaScript names the module that starts processes in a string.
-  const named = item.language !== undefined && (PROCESS_NAMES.test(text) || (item.language === 'js' && PROCESS_MODULES.test(withoutPatterns(item.text))))
+  // In code, a process function named at all may be called under another name (`from os import system as go`)
+  // or by its name in a string (`call_user_func("system", …)`, where no tokenizer reads the code); and
+  // JavaScript names the module that starts processes in a string. Data fed to another program is not code.
+  const named = item.data !== true && (PROCESS_NAMES.test(text) || (item.language === 'js' && PROCESS_MODULES.test(withoutPatterns(item.text))))
   return named || MAY_RUN_TEXT.test(text) || STARTS_PROGRAM.test(text) || (item.backquotes === true && outsideStrings(item.text).includes('`'))
 }
 
@@ -265,9 +266,11 @@ function tokenized(language: string): 'python' | 'js' | undefined {
  * Lua's, Swift's and Groovy's,
  * and the ways code reaches a call by a name it builds as it runs (Python's
  * `getattr` and the like, a JavaScript `require` of a name that is no
- * literal, a call through a computed property `x[…](…)`).
+ * literal, a call through a computed property `x[…](…)`, PHP's
+ * `call_user_func` and variable functions `$f(…)`, Ruby's `send` and
+ * `method`, Perl's `&{…}` and `&$f`).
  */
-const STARTS_PROGRAM = /\b_load\b|\bcreateRequire\b|\bmainModule\b|\bmodule\.constructor\b|\bos\.execute\b|\bio\.popen\b|\bProcess\s*\(|\.execute\s*\(|\b(?:getattr|setattr|globals|vars)\s*\(|__dict__|__builtins__|\bctypes\b|\bpickle\b|\bmarshal\b|\brequire\s*\(\s*[^'"`\s)]|\][\s)]*\(|\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)|\bpty\.spawn|\b(?:system|exec\w*|spawn\w*|popen|Popen|fork|check_output|check_call|getoutput|getstatusoutput|eval|compile|__import__)\s*\(|\b(?:system|exec)\s+['"]|\bimportlib\b|\bOpen3\b|\bIO\.popen\b|\bProcessBuilder\b|\bgetRuntime\b|\bshell_exec\b|\bpassthru\b|\bproc_open\b|%x[({[<|!]|\bqx\b|\bopen\s*\(?[^)\n]*\|\s*['"]|do shell script|\bStart-Process\b|\bInvoke-Expression\b|\biex\b|`[^`\n]*\bclaude(?:-code)?\b[^`\n]*`|\$\([^)\n]*\bclaude(?:-code)?\b/
+const STARTS_PROGRAM = /\bcall_user_func\w*|\bforward_static_call\w*|\bReflectionFunction\b|\bcreate_function\b|\bassert\s*\(|\b(?:public_)?send\s*\(|__send__|\bmethod\s*\(|\b(?:instance|class|module)_(?:eval|exec)\b|\$\w+\s*\(|&\s*[{$]|\b_load\b|\bcreateRequire\b|\bmainModule\b|\bmodule\.constructor\b|\bos\.execute\b|\bio\.popen\b|\bProcess\s*\(|\.execute\s*\(|\b(?:getattr|setattr|globals|vars)\s*\(|__dict__|__builtins__|\bctypes\b|\bpickle\b|\bmarshal\b|\brequire\s*\(\s*[^'"`\s)]|\][\s)]*\(|\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)|\bpty\.spawn|\b(?:system|exec\w*|spawn\w*|popen|Popen|fork|check_output|check_call|getoutput|getstatusoutput|eval|compile|__import__)\s*\(|\b(?:system|exec)\s+['"]|\bimportlib\b|\bOpen3\b|\bIO\.popen\b|\bProcessBuilder\b|\bgetRuntime\b|\bshell_exec\b|\bpassthru\b|\bproc_open\b|%x[({[<|!]|\bqx\b|\bopen\s*\(?[^)\n]*\|\s*['"]|do shell script|\bStart-Process\b|\bInvoke-Expression\b|\biex\b|`[^`\n]*\bclaude(?:-code)?\b[^`\n]*`|\$\([^)\n]*\bclaude(?:-code)?\b/
 
 const MAY_RUN_TEXT = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`|\b(?:eval|Function|vm|Worker)\b|_compile|runIn\w*Context|compileFunction|\bimport\s*\(|\brequire\s*\(\s*`/
 
