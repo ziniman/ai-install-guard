@@ -156,6 +156,61 @@ describe("reading Claude's shell commands", () => {
     }
   })
 
+  test("an install's words in code or data count only where they may run", () => {
+    // What the guard held while it was being built: a script that names the claude command in a comment, written and run.
+    for (const command of [
+      "cat > x.mjs <<'EOF'\n// Reads a claude plugin or mcp command\nEOF\nnode x.mjs",
+      "python3 - <<'EOF'\np='README.md'; s=open(p).read()\nopen(p,'w').write(s.replace('old', 'Run claude plugin install notes@acme'))\nEOF",
+      `node -e 'const s = "claude plugin install x@m"; console.log(s.length)'`,
+      // A script that edits source which names calls that start programs, as strings, starts none.
+      "python3 - <<'EOF'\np='hooks/x.ts'; s=open(p).read()\ns=s.replace('exec(cmd)', 'execSync(cmd) // claude plugin install')\nopen(p,'w').write(s)\nEOF",
+      // PR review: a Perl command beside Python's text, a module named in a comment, a backquote in a plain string, PowerShell's output.
+      "perl -e '1'; python3 -c 'print(\"`claude plugin install evil@m`\")'",
+      "node -e '// require(\"child_process\"); claude plugin install evil@m'",
+      "perl -e 'print \"claude plugin install demo `date`\"'",
+      "pwsh -Command \"Write-Output 'claude plugin install demo'\"",
+      // A folder with a space in its name is no script the command runs.
+      `cd "/a/b c/sources" && grep -oiE "mcp server|claude code skill" x.md`,
+    ]) expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
+    // Code that may start a program, and data a shell runs: a file it is given, its input, one sourced, or a script the command wrote and runs.
+    for (const command of [
+      "cat > x.py <<'EOF'\nimport os\nos.system('claude plugin install evil@m')\nEOF\npython3 x.py",
+      "cat > x.rb <<'EOF'\nsystem \"claude plugin install evil@m\"\nEOF\nruby x.rb",
+      "cat > x.pl <<'EOF'\nprint `claude plugin install evil@m`;\nEOF\nperl x.pl",
+      "cat > x.rb <<'EOF'\nx = 'claude plugin install evil@m'\n`#{x}`\nEOF\nruby x.rb",
+      "cat > x.sh <<'EOF'\nclaude plugin install evil@m\nEOF\nbash x.sh",
+      "cat > x.sh <<'EOF'\nclaude plugin install evil@m\nEOF\nchmod +x x.sh && ./x.sh",
+      "cat > x.sh <<'EOF'\nclaude plugin install evil@m\nEOF\nbash -c 'chmod +x x.sh; ./x.sh'",
+      "printf 'claude plugin install evil@m' > x.sh; source x.sh",
+      "echo 'claude plugin install evil@m' | sh",
+      // Code that starts a program, also by a name it builds as it runs.
+      "python3 - <<'EOF'\nimport os\nos.system('claude plugin install evil@m')\nEOF",
+      "python3 -c 'import os; getattr(os, \"sys\" + \"tem\")(\"claude plugin install evil@m\")'",
+      "node -e 'const m = \"child_\" + \"process\"; require(m)[\"exec\" + \"Sync\"](\"claude plugin install evil@m\")'",
+      // Local review: a process function under another name, and a script written under one spelling and run under another.
+      "python3 -c 'from os import system as go; go(\"claude plugin install evil@m\")'",
+      "node -e 'const go = require(\"child_process\")[\"exec\"+\"Sync\"]; go(\"claude plugin install evil@m\")'",
+      "mkdir -p dir; cat >dir//script <<'EOF'\nclaude plugin install evil@m\nEOF\nchmod +x dir/script; ./dir/script; python3 -c 'print(1)'",
+      // PR review: Node's other loaders, and languages that run a program by naming it.
+      "node -e 'const f=module.constructor._load(\"child_\"+\"process\")[\"ex\"+\"ecSync\"]; f(\"claude plugin install evil@m\")'",
+      "pwsh -Command '& claude plugin install evil@m'",
+      "pwsh -Command 'claude plugin install evil@m'",
+      "lua -e 'os.execute(\"claude plugin install evil@m\")'",
+      "julia -e 'run(`claude plugin install evil@m`)'",
+      // PR review, round two: a script made through tee, or named in code, then run by its path.
+      "python3 -c 'print(\"claude plugin install evil@m\")' | tee /tmp/x; chmod +x /tmp/x; /tmp/x",
+      "python3 -c 'open(\"/tmp/y\", \"w\").write(\"claude plugin install evil@m\")'; sh -c 'chmod +x /tmp/y'; /tmp/y",
+      "pwsh -Command \"& 'claude' plugin install evil@m\"",
+      "ruby -e 'x = \"claude plugin install evil@m\"; puts \"#{`#{x}`}\"'",
+      // PR review, round three: a function called by its name in a string, or through a variable.
+      "php -r 'call_user_func(\"system\", \"claude plugin install evil@m\");'",
+      "php -r '$f = \"sys\" . \"tem\"; $f(\"claude plugin install evil@m\");'",
+      "php -r '$f = \"sys\" . \"tem\"; ($f)(\"claude plugin install evil@m\");'",
+      "ruby -e 'Kernel.send(:system, \"claude plugin install evil@m\")'",
+      "perl -e '&{\"CORE::system\"}(\"claude plugin install evil@m\")'",
+    ]) expect(readShellCommand(command).kind).toBe('unreadable')
+  })
+
   test('a claude command asked for its help installs nothing', () => {
     for (const command of ['claude plugin install --help', 'claude plugin install notes@acme -h', 'claude plugin marketplace add --help', 'claude mcp add --help', 'claude mcp add -h']) {
       expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
