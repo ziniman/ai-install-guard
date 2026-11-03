@@ -137,9 +137,18 @@ describe("reading Claude's shell commands", () => {
       // Local review: an assignment earlier in the same command sets it first, and a name only known as it runs may be any.
       'A=claude; A=x B="$A"; $B plugin install notes@acme',
       'CMD=claude; read "$X"; $CMD plugin install notes@acme',
+      'CMD=claude; printf -v "$X" x; $CMD plugin install notes@acme',
+      'CMD=claude; printf -vCMD x; $CMD plugin install notes@acme',
+      'CMD=claude; for "$X" in a; do :; done; $CMD plugin install notes@acme',
     ]) expect(readShellCommand(command).kind).toBe('unreadable')
     // A single-quoted `$` is the character itself.
     expect(readShellCommand("CMD=claude; echo '$CMD plugin install notes@acme'")).toEqual({ kind: 'pass', browse: false })
+    // PR review: `NAME=value` after the program is its argument, not an assignment; printing or looping over
+    // a value only known as it runs changes no other variable.
+    expect(readShellCommand('A=claude; watch A=x "$A" plugin install notes@acme')).toMatchObject({ kind: 'unreadable', label: 'claude plugin install notes@acme', reason: expect.stringContaining('runs more than the install') })
+    for (const command of ['A=claude; printf \'%s\\n\' "$X"; "$A" plugin install notes@acme', 'A=claude; for x in "$Y"; do :; done; "$A" plugin install notes@acme']) {
+      expect(readShellCommand(command)).toMatchObject({ label: 'claude plugin install notes@acme' })
+    }
   })
 
   test('a claude command asked for its help installs nothing', () => {
@@ -164,8 +173,10 @@ describe("reading Claude's shell commands", () => {
     ]) expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
     for (const command of [
       "node -e 'require(\"child_process\").execSync(`${cmd} --x`)'",
-      // Local review: a template handed to a function of the code's own, which runs it.
+      // Local review: a template handed to a function of the code's own, which runs it, by any name.
       "node -e 'function run(x){require(\"child_process\").execSync(x)}; run(`${process.env.CMD}`)'",
+      "node -e 'function print(x){require(\"child_process\").execSync(x)}; print(`${process.env.CMD}`)'",
+      "node -e 'console.log = x => require(\"child_process\").execSync(x); console.log(`${process.env.CMD}`)'",
       "node -e 'const c = `claude plugin install x@m`; require(\"child_process\").execSync(c)'",
       `python3 -c 'import os; os.system("\`$CMD\`")'`,
       "awk 'BEGIN { system(\"`$CMD`\") }'",

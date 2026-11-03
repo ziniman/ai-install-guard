@@ -171,7 +171,10 @@ function withoutPatterns(code: string): string {
  * `` eval(`${code}`) ``), so its backquotes are read as scripts.
  */
 /** What hands a template to something that only prints it or throws it: whatever else it is handed to may run it, through a function of the code's own as well. */
-const PRINTS_TEMPLATE = /(?:\bconsole\.(?:log|error|warn|info|debug)|\bprint|\bprocess\.std(?:out|err)\.write|\bError)\s*\(\s*$/
+const PRINTS_TEMPLATE = /(?:\bconsole\.(?:log|error|warn|info|debug)|\bprocess\.std(?:out|err)\.write|\bError)\s*\(\s*$/
+
+/** Code that redefines what `PRINTS_TEMPLATE` trusts, so none of it only prints. */
+const REDEFINES_PRINT = /\bconsole\s*(?:\.\s*\w+\s*)?=(?!=)|\bprocess\.std(?:out|err)(?:\.write)?\s*=(?!=)|\b(?:function|class|const|let|var)\s+(?:console|Error|process)\b|\bError\s*=(?!=)/
 
 const MAY_RUN_TEXT = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`|\b(?:eval|Function|vm|Worker)\b|_compile|runIn\w*Context|compileFunction|\bimport\s*\(|\brequire\s*\(\s*`/
 
@@ -500,8 +503,10 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) {
         const code = JAVASCRIPT.has(language) ? withoutPatterns(text) : text
         const runs = JAVASCRIPT.has(language) && MAY_RUN_TEXT.test(code)
+        // Code that redefines what only prints has every template read as a script.
+        const prints = runs && !REDEFINES_PRINT.test(code)
         // A function the command defines runs its body, read with the rest, so a backquote in its arguments is what the body makes of it.
-        merge(collectInstalls(code, found, depth + 1, false, inCode || functions.has(program) || NO_BACKQUOTE.has(language) || (JAVASCRIPT.has(language) && !runs), runs && !inCode), false)
+        merge(collectInstalls(code, found, depth + 1, false, inCode || functions.has(program) || NO_BACKQUOTE.has(language) || (JAVASCRIPT.has(language) && !runs), prints && !inCode), false)
       }
     }
     out.others += 1
@@ -872,7 +877,13 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     const found = /^(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})/.exec(text.slice(at + 1, at + 130))
     const name = found?.[1] ?? found?.[2]
     // An assignment earlier in this same command sets it first (`A=x B="$A"`), or not at all for its words (`A=x cmd "$A"`).
-    const assignedHere = name !== undefined && current.words.some(word => ASSIGNMENT.exec(word)?.[1] === name)
+    let assignedHere = false
+    let lead = 0
+    while (lead < current.words.length && COMPOUND_PREFIX.has(current.words[lead] as string)) lead += 1
+    for (let found = ASSIGNMENT.exec(current.words[lead] ?? ''); found !== null; found = ASSIGNMENT.exec(current.words[lead] ?? '')) {
+      if (found[1] === name) assignedHere = true
+      lead += 1
+    }
     const value = name === undefined || assignedHere ? undefined : known.get(name)
     if (found === null || value === undefined || (!inQuotes && (value === '' || /[\s*?[\]{}]/.test(value)))) return undefined
     return { value, length: found[0].length }
@@ -945,7 +956,14 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     const args = words.slice(program + 1)
     if (name === undefined) for (const item of assigns) set(item.name, item.value, item.fixed)
     else if (name === 'eval' || name === 'source' || name === '.' || functions.has(name)) known.clear()
-    else if (name === 'export' || name === 'readonly' || name === 'declare' || name === 'typeset' || name === 'local' || name === 'unset' || name === 'read' || name === 'mapfile' || name === 'readarray' || name === 'getopts' || name === 'let' || name === 'for' || name === 'select' || name === 'printf') {
+    else if (name === 'printf' || name === 'for' || name === 'select') {
+      // `printf` sets a variable only with `-v NAME` (or `-vNAME`); `for` and `select` only their loop variable.
+      const flag = name === 'printf' ? args.findIndex(arg => arg.startsWith('-v')) : -1
+      const at = name !== 'printf' ? 0 : flag !== -1 && args[flag] === '-v' ? flag + 1 : flag
+      const variable = at === -1 ? undefined : at === flag ? args[at]?.slice(2) : args[at]
+      if (at !== -1 && wordsUnresolved[program + 1 + at] === true) known.clear()
+      else if (variable !== undefined) known.delete(variable)
+    } else if (name === 'export' || name === 'readonly' || name === 'declare' || name === 'typeset' || name === 'local' || name === 'unset' || name === 'read' || name === 'mapfile' || name === 'readarray' || name === 'getopts' || name === 'let') {
       // Given a name only known as it runs (`read "$X"`), it may change any variable.
       if (args.some((_, index) => wordsUnresolved[program + 1 + index] === true)) known.clear()
       args.forEach((arg, index) => {
