@@ -170,18 +170,23 @@ function withoutPatterns(code: string): string {
  * hands to one may run as a command (`` execSync(`${cmd}`) ``, `` Bun.$`…` ``,
  * `` eval(`${code}`) ``), so its backquotes are read as scripts.
  */
-/** What hands a template to something that only prints it or throws it: whatever else it is handed to may run it, through a function of the code's own as well. */
-const PRINTS_TEMPLATE = /(?:\bconsole\.(?:log|error|warn|info|debug)|\bprocess\.std(?:out|err)\.write|\bError)\s*\(\s*$/
+/**
+ * What hands a template to something that only prints it: whatever else it is
+ * handed to may run it, through a function of the code's own as well. Only the
+ * global `console` and `process` count, never a property of something else
+ * (`foo.console.log(`).
+ */
+const PRINTS_TEMPLATE = /(?<![\w$.])(?:console\.(?:log|error|warn|info|debug)|process\.std(?:out|err)\.write)\s*\(\s*$/
 
 /** The calls `PRINTS_TEMPLATE` trusts, as code writes them. */
-const PRINT_CALLS = /\bconsole\.(?:log|error|warn|info|debug)\s*\(|\bprocess\.std(?:out|err)\.write\s*\(|\b(?:new\s+)?Error\s*\(/g
+const PRINT_CALLS = /(?<![\w$.])(?:console\.(?:log|error|warn|info|debug)|process\.std(?:out|err)\.write)\s*\(/g
 
 /**
  * Code that names what those calls use in any other way (`console["log"] =`,
- * `const Error`, `globalThis.console`, `Reflect.set(console, …)`): it may have
- * changed what they do, so none of them only prints.
+ * `globalThis.console`, `Reflect.set(console, …)`): it may have changed what
+ * they do, so none of them only prints.
  */
-const REDEFINES_PRINT = /\b(?:console|Error|globalThis|global|Reflect|Proxy)\b|\bprocess\s*(?:\.\s*std(?:out|err)\b|\[)/
+const REDEFINES_PRINT = /\b(?:console|globalThis|global|Reflect|Proxy)\b|\bprocess\s*(?:\.\s*std(?:out|err)\b|\[)/
 
 const MAY_RUN_TEXT = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`|\b(?:eval|Function|vm|Worker)\b|_compile|runIn\w*Context|compileFunction|\bimport\s*\(|\brequire\s*\(\s*`/
 

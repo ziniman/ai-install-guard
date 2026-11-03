@@ -184,6 +184,8 @@ describe("reading Claude's shell commands", () => {
       "node -e 'console.log = x => require(\"child_process\").execSync(x); console.log(`${process.env.CMD}`)'",
       "node -e 'console[\"log\"] = x => require(\"child_process\").execSync(x); console.log(`${process.env.CMD}`)'",
       "node -e 'globalThis.console = { log: x => require(\"child_process\").execSync(x) }; console.log(`${process.env.CMD}`)'",
+      "node -e 'const Foo = { Error: x => require(\"child_process\").execSync(x) }; new Foo.Error(`${process.env.CMD}`)'",
+      "node -e 'const o = { console: { log: x => require(\"child_process\").execSync(x) } }; o.console.log(`${process.env.CMD}`)'",
       "node -e 'const c = `claude plugin install x@m`; require(\"child_process\").execSync(c)'",
       `python3 -c 'import os; os.system("\`$CMD\`")'`,
       "awk 'BEGIN { system(\"`$CMD`\") }'",
