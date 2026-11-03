@@ -160,7 +160,10 @@ const JAVASCRIPT = new Set(['node', 'nodejs', 'deno', 'bun'])
 const NO_BACKQUOTE = new Set(['python', 'python2', 'python3', 'awk', 'gawk', 'mawk', 'nawk', 'sed', 'gsed', 'jq', 'yq'])
 
 /** Languages in which any backquote runs a shell command. */
-const BACKQUOTE_RUNS = new Set(['perl', 'ruby', 'php'])
+const BACKQUOTE_RUNS = new Set(['perl', 'ruby', 'php', 'julia'])
+
+/** Languages whose code runs a program by naming it, as a shell's does (PowerShell's `& name`, Tcl's `exec name`): their code is read as shell text. */
+const NAMES_RUN = new Set(['pwsh', 'powershell', 'tclsh'])
 
 /** JavaScript with its regular expression literals and comments blanked: a backquote in one, as in a pattern for a fenced code block, opens nothing. */
 function withoutPatterns(code: string): string {
@@ -210,8 +213,17 @@ type CollectedText = { text: string; code: boolean; backquotes?: boolean; langua
  */
 function startsProgram(item: CollectedText): boolean {
   const text = item.language === undefined ? item.text : codeOnly(item.text, item.language)
-  return MAY_RUN_TEXT.test(text) || STARTS_PROGRAM.test(text) || (item.backquotes === true && item.text.includes('`'))
+  // In code read through the tokenizer, a process function named at all may be called under another name
+  // (`from os import system as go`), and JavaScript names the module that starts processes in a string.
+  const named = item.language !== undefined && (PROCESS_NAMES.test(text) || (item.language === 'js' && PROCESS_MODULES.test(item.text)))
+  return named || MAY_RUN_TEXT.test(text) || STARTS_PROGRAM.test(text) || (item.backquotes === true && item.text.includes('`'))
 }
+
+/** The names of functions that start a process, which code may import or take under another name. */
+const PROCESS_NAMES = /\b(?:system|popen|Popen|exec[lv]\w*|spawn\w*|posix_spawn\w*|fork|execSync|execFile\w*|check_output|check_call|getoutput|getstatusoutput|startfile)\b|create_subprocess/
+
+/** A JavaScript module that starts processes or runs code, required or imported by name. */
+const PROCESS_MODULES = /\b(?:require|import)\s*\(?\s*['"`](?:node:)?(?:child_process|worker_threads|vm|cluster)['"`]|\bfrom\s+['"](?:node:)?(?:child_process|worker_threads|vm|cluster)['"]/
 
 /** Python or JavaScript with its strings and comments blanked. */
 function codeOnly(code: string, language: 'python' | 'js'): string {
@@ -231,11 +243,13 @@ function tokenized(language: string): 'python' | 'js' | undefined {
  * subprocess and os calls, a `system`, `exec`, `popen` or `eval` call in any
  * language, Ruby's, Perl's and PHP's ways, PowerShell's and AppleScript's, a
  * backquote or `$(…)` around the claude command, which a shell or Perl runs,
+ * Node's other ways to load a module (`_load`, `createRequire`, `mainModule`),
+ * Lua's, Swift's and Groovy's,
  * and the ways code reaches a call by a name it builds as it runs (Python's
  * `getattr` and the like, a JavaScript `require` of a name that is no
  * literal, a call through a computed property `x[…](…)`).
  */
-const STARTS_PROGRAM = /\b(?:getattr|setattr|globals|vars)\s*\(|__dict__|__builtins__|\bctypes\b|\bpickle\b|\bmarshal\b|\brequire\s*\(\s*[^'"`\s)]|\][\s)]*\(|\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)|\bpty\.spawn|\b(?:system|exec\w*|spawn\w*|popen|Popen|fork|check_output|check_call|getoutput|getstatusoutput|eval|compile|__import__)\s*\(|\b(?:system|exec)\s+['"]|\bimportlib\b|\bOpen3\b|\bIO\.popen\b|\bProcessBuilder\b|\bgetRuntime\b|\bshell_exec\b|\bpassthru\b|\bproc_open\b|%x[({[<|!]|\bqx\b|\bopen\s*\(?[^)\n]*\|\s*['"]|do shell script|\bStart-Process\b|\bInvoke-Expression\b|\biex\b|`[^`\n]*\bclaude(?:-code)?\b[^`\n]*`|\$\([^)\n]*\bclaude(?:-code)?\b/
+const STARTS_PROGRAM = /\b_load\b|\bcreateRequire\b|\bmainModule\b|\bmodule\.constructor\b|\bos\.execute\b|\bio\.popen\b|\bProcess\s*\(|\.execute\s*\(|\b(?:getattr|setattr|globals|vars)\s*\(|__dict__|__builtins__|\bctypes\b|\bpickle\b|\bmarshal\b|\brequire\s*\(\s*[^'"`\s)]|\][\s)]*\(|\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)|\bpty\.spawn|\b(?:system|exec\w*|spawn\w*|popen|Popen|fork|check_output|check_call|getoutput|getstatusoutput|eval|compile|__import__)\s*\(|\b(?:system|exec)\s+['"]|\bimportlib\b|\bOpen3\b|\bIO\.popen\b|\bProcessBuilder\b|\bgetRuntime\b|\bshell_exec\b|\bpassthru\b|\bproc_open\b|%x[({[<|!]|\bqx\b|\bopen\s*\(?[^)\n]*\|\s*['"]|do shell script|\bStart-Process\b|\bInvoke-Expression\b|\biex\b|`[^`\n]*\bclaude(?:-code)?\b[^`\n]*`|\$\([^)\n]*\bclaude(?:-code)?\b/
 
 const MAY_RUN_TEXT = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`|\b(?:eval|Function|vm|Worker)\b|_compile|runIn\w*Context|compileFunction|\bimport\s*\(|\brequire\s*\(\s*`/
 
@@ -376,6 +390,11 @@ function definedFunctions(text: string): Set<string> {
   return new Set([...text.matchAll(/(?:^|[\s;&|(){}])(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\s*\)|\bfunction\s+([A-Za-z_][\w-]*)/g)].map(found => found[1] ?? found[2] ?? ''))
 }
 
+/** The last part of a path, its file's own name. */
+function fileName(path: string): string {
+  return path.replace(/\/+$/, '').split('/').pop() ?? path
+}
+
 /** `NAME=value`, or `NAME+=value`, at the start of a word. */
 const ASSIGNMENT = /^([A-Za-z_]\w*)(\+?)=/
 /** Words that may come before a command within a compound one. */
@@ -499,16 +518,17 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     // An interpreter's words hold its code, and what a program other than a shell is fed is data or code.
     const read = tokenized(language)
     const kind = { ...(BACKQUOTE_RUNS.has(language) ? { backquotes: true } : {}), ...(read === undefined ? {} : { language: read }) }
-    const own = out.texts.push({ text: words.join(' '), code: INTERPRETERS.has(language), ...kind }) - 1
+    const own = out.texts.push({ text: words.join(' '), code: INTERPRETERS.has(language) && !NAMES_RUN.has(language), ...kind }) - 1
     if (input !== undefined) out.texts.push({ text: input, code: !SHELLS.has(program), ...(INTERPRETERS.has(language) ? kind : {}) })
     // A write to a file is more than an install, whatever program makes it.
     if (writes === true) out.others += 1
-    for (const target of targets ?? []) written.add(target.path.replace(/^\.\//, ''))
+    // By file name: the same file may be named another way (`dir//s`, `./dir/s`, after a `cd`).
+    for (const target of targets ?? []) written.add(fileName(target.path))
     scripts.forEach(nested)
     // Only NAME=value words: nothing runs.
     if (word === undefined) continue
     // A script the command wrote, or one `source` or `.` runs, is shell text the guard did not read.
-    if (written.has(word.replace(/^\.\//, '')) || program === 'source' || program === '.') {
+    if (written.has(fileName(word)) || program === 'source' || program === '.') {
       out.unseen = true
       out.shellRuns = true
     }
@@ -586,7 +606,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) {
         const code = JAVASCRIPT.has(language) ? withoutPatterns(text) : text
         // An interpreter's code that can start no program runs no install it names.
-        if (INTERPRETERS.has(language) && !startsProgram({ text, code: true, ...kind })) continue
+        if (INTERPRETERS.has(language) && !NAMES_RUN.has(language) && !startsProgram({ text, code: true, ...kind })) continue
         const runs = JAVASCRIPT.has(language) && MAY_RUN_TEXT.test(code)
         // Code that redefines what only prints has every template read as a script.
         const prints = runs && !REDEFINES_PRINT.test(code.replace(PRINT_CALLS, ' '))

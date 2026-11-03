@@ -180,6 +180,16 @@ describe("reading Claude's shell commands", () => {
       "python3 - <<'EOF'\nimport os\nos.system('claude plugin install evil@m')\nEOF",
       "python3 -c 'import os; getattr(os, \"sys\" + \"tem\")(\"claude plugin install evil@m\")'",
       "node -e 'const m = \"child_\" + \"process\"; require(m)[\"exec\" + \"Sync\"](\"claude plugin install evil@m\")'",
+      // Local review: a process function under another name, and a script written under one spelling and run under another.
+      "python3 -c 'from os import system as go; go(\"claude plugin install evil@m\")'",
+      "node -e 'const go = require(\"child_process\")[\"exec\"+\"Sync\"]; go(\"claude plugin install evil@m\")'",
+      "mkdir -p dir; cat >dir//script <<'EOF'\nclaude plugin install evil@m\nEOF\nchmod +x dir/script; ./dir/script; python3 -c 'print(1)'",
+      // PR review: Node's other loaders, and languages that run a program by naming it.
+      "node -e 'const f=module.constructor._load(\"child_\"+\"process\")[\"ex\"+\"ecSync\"]; f(\"claude plugin install evil@m\")'",
+      "pwsh -Command '& claude plugin install evil@m'",
+      "pwsh -Command 'claude plugin install evil@m'",
+      "lua -e 'os.execute(\"claude plugin install evil@m\")'",
+      "julia -e 'run(`claude plugin install evil@m`)'",
     ]) expect(readShellCommand(command).kind).toBe('unreadable')
   })
 
