@@ -5,7 +5,6 @@
 // given; what it writes on its own, unnamed, is not seen. Nothing here runs
 // anything or touches the disk.
 
-import { proseTest } from '../scan/checks/code'
 import { spanKinds, type SpanKind } from '../scan/checks/text'
 import { CLAUDE, INTERPRETERS, QUIET, SHELLS, codeStartsProgram, gitScripts, isDynamic, programAt, programName, splitShell, tokenized, type ShellCommand } from './requests'
 
@@ -197,6 +196,9 @@ function readNested(text: string, where: Where, out: ShellWrites, depth: number)
 function readCommand(command: ShellCommand, where: Where, out: ShellWrites, depth: number, fromInput: boolean): void {
   // What its substitutions run comes first, each in a shell of its own.
   for (const script of command.scripts ?? []) readNested(script, where, out, depth)
+  // What the command made before this one, which a script it runs may be.
+  const writesBefore = out.writes.length
+  const unseenBefore = out.unseen.length
   let start = 0
   while (LEADING.has(command.words[start] ?? '')) start += 1
   const words = command.words.slice(start)
@@ -266,14 +268,16 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   const dynamicPath = (): void => {
     out.unseen.push({ reason: `${program} writes to a path only known as it runs` })
   }
-  // A script the command makes or changes before it runs it, by its file name: text the command writes for a shell
+  // A script the command makes or changes before it runs it, by its file name, since the same file may be named
+  // another way (a link such as `/tmp`, `~` or `$HOME`, after a `cd`): text the command writes for a shell
   // is read as commands, and code an interpreter runs as inline code is. Otherwise what made it counts as this run:
   // code that names it, or the command that edits it in place, each by its own text (all of it, since what it holds
   // as text may now be code), and anything else with the whole command. A path a program is only given is no file made.
   const madeFirst = (path: string, runner: 'shell' | 'code' | 'program'): void => {
     const name = lastPart(path)
-    const made = out.writes.filter(write => lastPart(write.to.path) === name && !(write.kind === 'unknown' && write.given === true))
-    const mentioning = out.unseen.filter(part => part.text !== undefined && namesFile(part.text, name))
+    // Only what came before this command made it: its own code naming the file runs it, nothing more.
+    const made = out.writes.slice(0, writesBefore).filter(write => lastPart(write.to.path) === name && !(write.kind === 'unknown' && write.given === true))
+    const mentioning = out.unseen.slice(0, unseenBefore).filter(part => part.text !== undefined && namesFile(part.text, name))
     if (made.length === 0 && mentioning.length === 0) return
     const [first] = made
     const text = made.length === 1 && mentioning.length === 0 && first?.kind === 'content' && !first.append ? first.content : undefined
@@ -370,6 +374,9 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       else if (mayChange(codeText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, ...own, ...placesOf(language, args, codeAt, command.input, words.slice(0, placed.index + 1)) })
       // Perl or Ruby told to edit files in place (`-i`) writes the files named after its code.
       else if (script !== undefined && switches !== undefined) readInPlace(script, switches, args, unknown, where, inPlaceWrites, dynamicPath, fills, out, own, command.input)
+      // A module the code loads that the command made first (`cat > re.py …; python3 -c 'import re'`) is code it runs.
+      const inlineCode = codeAt.length > 0 ? codeAt.map(at => args[at] ?? '').join('\n') : (command.input ?? '')
+      if (known && !filledIn) for (const module of localModules(language, inlineCode)) madeFirst(module, 'code')
       return
     }
     // `python3 -m json.tool` given one file (or none, or `-` for its input) prints it; a second is the file it writes, but for `-`, the screen.
@@ -475,6 +482,28 @@ const AWK_WRITES = /\bprintf?\b[^;{}\n]*[>|]|\bsystem\s*\(|\|&?\s*getline\b/
 /** The command that made each write, by its own text and folder: what counts when it makes a script the command then runs. */
 const madeBy = new WeakMap<ShellWrite, Own>()
 
+/**
+ * The files of modules code may load that a command can make beside it:
+ * each module Python imports, as `<name>.py`, found first in the folder it
+ * runs in, and each relative path JavaScript requires or imports, with the
+ * extensions Node tries.
+ */
+function localModules(language: string, code: string): string[] {
+  const read = tokenized(language)
+  if (read === 'python') {
+    return [...code.matchAll(/(?:^|[;\n])[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w., \t]+))/g)].flatMap(found =>
+      (found[1] ?? found[2] ?? '').split(',').map(name => `${(name.trim().split(/\s+/)[0] ?? '').split('.')[0] ?? ''}.py`),
+    )
+  }
+  if (read !== 'js') return []
+  return [...code.matchAll(/(?:\brequire\s*\(\s*|\bfrom\s+|\bimport\s*\(?\s*)['"`](\.{1,2}\/[^'"`\s]+)['"`]/g)].flatMap(found => {
+    const path = found[1] as string
+    // JSON is data it reads, not code it runs.
+    if (/\.json$/i.test(path)) return []
+    return /\.[cm]?[jt]s$/.test(path) ? [path] : [path, `${path}.js`, `${path}.mjs`, `${path}.cjs`]
+  })
+}
+
 /** A first line that starts a shell: `#!/bin/sh`, `#!/usr/bin/env bash`. */
 const SHELL_LINE = /^#![^\n]*\b(?:ba|z|da|k)?sh\b/
 
@@ -571,43 +600,42 @@ function placesOf(language: string, args: readonly string[], codeAt: readonly nu
   return { places: [...lead, ...args.map((arg, at) => (codeAt.includes(at) ? placesIn(arg, read) : arg)), code ? placesIn(input, read) : (input ?? '')].join(' ') }
 }
 
+/** Code that turns a pattern into text, which a path may then be made from. */
+const PATTERN_AS_TEXT = /\.source\b|\btoString\b|\bString\s*\(/
+
 /**
  * Python or JavaScript code with what it only holds as text blanked, so the
- * paths left are those it may write to: its comments and patterns, never a
- * path; and, when it starts no program and hides nothing (`HIDES`), its
- * strings that run over lines (an edit script's old and new text) or read as
- * prose. Such code reaches a file only by the paths its own calls are given,
- * and a block of text or a sentence is no path. Code that starts a program
- * may hand any of its text to a shell, so all of it counts.
+ * paths left are those it may write to: its comments, never a path, and its
+ * patterns, unless the code turns one into text. Python that starts no
+ * program, hides nothing (`HIDES`) and can write only the files it opens by
+ * name names just those (`pythonWrites`); any other code counts whole.
  */
 function placesIn(code: string, language: 'python' | 'js'): string {
   const kind = spanKinds(code, language)
+  const patterns = !PATTERN_AS_TEXT.test(code)
   let bare = ''
   let only = ''
   for (let at = 0; at < code.length; at += 1) {
-    const text = code[at] === '\n' || kind(at) === 'code' || kind(at) === 'string'
+    const text = code[at] === '\n' || kind(at) === 'code' || kind(at) === 'string' || (kind(at) === 'regex' && !patterns)
     bare += text ? code[at] : ' '
     only += code[at] === '\n' || kind(at) === 'code' ? code[at] : ' '
   }
   // What hides is read in the code itself: a string that names `base64` or `\x2e` is text, as a scanner's own source is.
-  if (codeStartsProgram(bare, language) || HIDES.test(only)) return bare
-  // Python that can write only the files it opens by name names just those.
-  const targets = language === 'python' ? pythonWrites(code, only, kind) : undefined
-  if (targets !== undefined) return targets.join('\n')
-  const prose = proseTest(code, kind)
-  let out = ''
-  for (let at = 0; at < bare.length; ) {
-    let end = at + 1
-    while (end < bare.length && (kind(end) === 'string') === (kind(at) === 'string')) end += 1
-    const part = bare.slice(at, end)
-    out += kind(at) === 'string' && (part.includes('\n') || prose(at)) ? part.replace(/[^\n]/g, ' ') : part
-    at = end
-  }
-  return out
+  if (language !== 'python' || codeStartsProgram(bare, language) || HIDES.test(only)) return bare
+  return pythonWrites(code, only, kind)?.join('\n') ?? bare
 }
 
-/** Python modules whose calls write no file of their own: code that imports only these writes what it opens. */
-const PYTHON_PURE = /^(?:re|sys|json|textwrap|string|collections|itertools|functools|difflib|unicodedata|math|datetime|time|typing|dataclasses|hashlib|fnmatch|glob|pprint|enum|copy|operator|random|statistics|html|shlex|urllib\.parse)$/
+/**
+ * Python modules whose calls write no file of their own and run no code they
+ * are given: code that imports only these, and `sys`, writes what it opens.
+ */
+const PYTHON_PURE = /^(?:re|json|textwrap|string|collections|itertools|functools|difflib|unicodedata|math|datetime|time|hashlib|fnmatch|glob|pprint|enum|copy|operator|random|statistics|html|shlex|urllib\.parse)$/
+
+/** What of `sys` reaches no module and no frame: its arguments, streams and facts. */
+const SYS_SAFE = /^(?:argv|stdin|stdout|stderr|exit|version|version_info|platform|maxsize|byteorder|getsizeof|getdefaultencoding|getrecursionlimit)$/
+
+/** Names that reach a module or a frame's builtins without importing one: `sys.modules`, `sys._getframe().f_builtins`, `locals()`. */
+const PYTHON_REACHES = /\bmodules\b|\b_getframe\b|\bf_(?:builtins|globals|locals)\b|\b(?:gi|tb|cr|ag)_frame\b|\blocals\s*\(|\bbuiltins\b|__(?!(?:name|main|file)__)\w+__/
 
 /** An import statement, alone: `import a, b as c` or `from a import b, c`. */
 const PYTHON_IMPORT = /^\s*(?:from\s+([\w.]+)\s+import\s+[\w\s,*()]+|import\s+([\w\s.,]+))\s*$/
@@ -625,10 +653,17 @@ function pythonWrites(code: string, only: string, kind: (index: number) => SpanK
   for (const statement of only.split(/[;\n]/)) {
     if (!/\bimport\b/.test(statement)) continue
     const found = PYTHON_IMPORT.exec(statement)
-    const modules = found === null ? [''] : found[1] !== undefined ? [found[1]] : (found[2] ?? '').split(',').map(part => part.trim().split(/\s+as\s+/)[0] ?? '')
-    if (!modules.every(name => PYTHON_PURE.test(name))) return undefined
+    if (found === null) return undefined
+    // `sys` by its own name, or only what of it reaches nothing.
+    if (found[1] === 'sys') {
+      if (statement.replace(/^\s*from\s+sys\s+import\s+/, '').replace(/[()]/g, '').split(',').every(name => SYS_SAFE.test(name.trim()))) continue
+      return undefined
+    }
+    const modules = found[1] !== undefined ? [found[1]] : (found[2] ?? '').split(',').map(part => part.trim())
+    if (!modules.every(name => name === 'sys' || PYTHON_PURE.test(name.split(/\s+as\s+/)[0] ?? ''))) return undefined
   }
-  if (/\bsys\s*\.\s*modules\b|__(?!(?:name|main|file)__)\w+__|\bbuiltins\b|\bopen\b(?!\s*\()|\.\s*open\b/.test(only)) return undefined
+  if ([...only.matchAll(/\bsys\s*\.\s*(\w+)/g)].some(found => !SYS_SAFE.test(found[1] ?? ''))) return undefined
+  if (PYTHON_REACHES.test(only) || /\bopen\b(?!\s*\()|\.\s*open\b/.test(only)) return undefined
   const targets: string[] = []
   for (const found of only.matchAll(/\bopen\s*\(/g)) {
     const args = callArgs(code, kind, (found.index ?? 0) + found[0].length - 1)

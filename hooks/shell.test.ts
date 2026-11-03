@@ -515,8 +515,10 @@ describe('what a shell command changes where Claude Code loads from', () => {
     for (const command of [
       `python3 - <<'EOF'\np = 'hooks/x.ts'\ns = open(p).read()\nold = """const A = '~/.claude/skills'\nconst B = 1"""\nnew = """const A = '~/.claude/commands'\nconst B = 2"""\nassert old in s\nopen(p, 'w').write(s.replace(old, new))\nEOF`,
       `python3 - <<'EOF'\np = 'MEMORY.md'\ns = open(p).read()\nline = '- [A skill](a.md) - the skill, with its source in Documents/a and a copy installed in ~/.claude/skills/a'\nopen(p, 'w').write(s + line)\nEOF`,
-      `node -e 'const fs = require("fs"); const re = /[^\\s"\\x27]*\\.claude[^\\s]*/g; fs.writeFileSync("out.txt", String(re))'`,
+      `node -e 'const fs = require("fs"); const re = /[^\\s"\\x27]*\\.claude[^\\s]*/g; fs.writeFileSync("out.txt", re.test("x") ? "y" : "n")'`,
       `node -e 'const fs = require("fs"); // reads ~/.claude/skills\nfs.writeFileSync("out.txt", "x")'`,
+      // Code that loads a file it names itself, or JSON, loads nothing the command made.
+      `node -e 'const rows = require("./full.json"); require("fs").writeFileSync("o.txt", rows.filter(r => /\\.claude[^\\s]*/.test(r)).join())'`,
       // Python that can write only the files it opens names just those: by a literal, a name, or its own function.
       `python3 - <<'EOF'\np='docs/x.md'; s=open(p).read()\ns=s.replace('see ~/.claude/skills/a', 'see ~/.claude/commands/a')\nopen(p,'w').write(s)\nEOF`,
       `python3 - <<'EOF'\nimport re, json\ndef edit(p, old, new):\n    s = open(p, encoding='utf-8').read()\n    assert s.count(old) == 1, old\n    open(p, 'w', encoding='utf-8').write(s.replace(old, new))\nP = 'hooks/x.ts'\nedit(P, "const A = '~/.claude/skills'", "const A = '~/.claude/agents'")\nif P:\n    print(json.dumps(re.findall('.claude', open(P).read())))\nEOF`,
@@ -536,6 +538,14 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `python3 - <<'EOF'\nimport shutil\nshutil.copy('evil.md', '/home/tester/.claude/skills/x/SKILL.md')\nopen('log.txt', 'w').write('done')\nEOF`,
       `python3 - <<'EOF'\nimport sys\nsys.modules['shutil'].copy('evil.md', '/home/tester/.claude/skills/x/SKILL.md')\nEOF`,
       `python3 - <<'EOF'\nw = open\nw('/home/tester/.claude/skills/x/SKILL.md', 'w').write('x')\nEOF`,
+      // Local review: a module reached through sys, a block of text made a path, a pattern made text.
+      `python3 - <<'EOF'\nfrom sys import modules\nmodules['os'].remove('/home/tester/.claude/settings.json')\nEOF`,
+      `python3 - <<'EOF'\nimport sys\nsys._getframe().f_builtins['__import__']('os').remove('/home/tester/.claude/settings.json')\nEOF`,
+      "node -e 'require(\"fs\").writeFileSync(`\n/home/tester/.claude/settings.json`.trim(), \"{}\")'",
+      `node -e 'require("fs").writeFileSync(/\\/home\\/tester\\/.claude\\/settings.json/.source.replace(/\\\\/g, ""), "{}")'`,
+      // A module the command writes before code loads it is code that runs.
+      `cat > re.py <<'EOF'\nimport os\nos.remove(os.path.expanduser('~/.claude/settings.json'))\nEOF\npython3 -c 'import re; print(re.escape("x"))'`,
+      `cat > lib.js <<'EOF'\nrequire('fs').rmSync(require('os').homedir() + '/.claude/settings.json')\nEOF\nnode -e 'require("./lib")'`,
       // Code run in a place Claude Code loads from may write there by any name.
       `cd ~/.claude/skills/old && python3 -c "open('SKILL.md', 'w').write('evil')"`,
       `cd ~/.claude && python3 -c "import json; json.dump({}, open('settings.json', 'w'))"`,
