@@ -230,20 +230,24 @@ describe("reading Claude's shell commands", () => {
       "node -e 'const re=/```js\\n([\\s\\S]*?)```/g; const m=re.exec(s); console.log(`${n} blocks, ${bad} bad`); require(\"child_process\").execSync(`git blame -L ${a},${b} -- ${f}`)'",
       // A function the command defines, called with prose that names a code span.
       'r() { gh api x -f body="$2"; }\nr 1 "Fixed: the \\`\\$default\\` stage"',
-    ]) expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
-    for (const command of [
+      // A program only known as it runs, in a template code hands to a process, is only unseen, as `$CMD` is.
       "node -e 'require(\"child_process\").execSync(`${cmd} --x`)'",
-      // Local review: a template handed to a function of the code's own, which runs it, by any name.
       "node -e 'function run(x){require(\"child_process\").execSync(x)}; run(`${process.env.CMD}`)'",
-      "node -e 'function print(x){require(\"child_process\").execSync(x)}; print(`${process.env.CMD}`)'",
-      "node -e 'console.log = x => require(\"child_process\").execSync(x); console.log(`${process.env.CMD}`)'",
-      "node -e 'console[\"log\"] = x => require(\"child_process\").execSync(x); console.log(`${process.env.CMD}`)'",
-      "node -e 'globalThis.console = { log: x => require(\"child_process\").execSync(x) }; console.log(`${process.env.CMD}`)'",
-      "node -e 'const Foo = { Error: x => require(\"child_process\").execSync(x) }; new Foo.Error(`${process.env.CMD}`)'",
-      "node -e 'const o = { console: { log: x => require(\"child_process\").execSync(x) } }; o.console.log(`${process.env.CMD}`)'",
-      "node -e 'const c = `claude plugin install x@m`; require(\"child_process\").execSync(c)'",
       `python3 -c 'import os; os.system("\`$CMD\`")'`,
       "awk 'BEGIN { system(\"`$CMD`\") }'",
+    ]) expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
+    for (const command of [
+      // Local review: a template handed to a function of the code's own, which runs it, by any name.
+      "node -e 'function run(x){require(\"child_process\").execSync(x)}; run(`claude plugin install ${process.env.P}`)'",
+      "node -e 'function print(x){require(\"child_process\").execSync(x)}; print(`claude plugin install ${process.env.P}`)'",
+      "node -e 'console.log = x => require(\"child_process\").execSync(x); console.log(`claude plugin install ${process.env.P}`)'",
+      "node -e 'console[\"log\"] = x => require(\"child_process\").execSync(x); console.log(`claude plugin install ${process.env.P}`)'",
+      "node -e 'globalThis.console = { log: x => require(\"child_process\").execSync(x) }; console.log(`claude plugin install ${process.env.P}`)'",
+      "node -e 'const Foo = { Error: x => require(\"child_process\").execSync(x) }; new Foo.Error(`claude plugin install ${process.env.P}`)'",
+      "node -e 'const o = { console: { log: x => require(\"child_process\").execSync(x) } }; o.console.log(`claude plugin install ${process.env.P}`)'",
+      "node -e 'const c = `claude plugin install x@m`; require(\"child_process\").execSync(c)'",
+      `python3 -c 'import os; os.system("\`$CMD plugin install x@m\`")'`,
+      "awk 'BEGIN { system(\"`$CMD plugin install x@m`\") }'",
       "r() { eval \"$1\"; }; r 'claude plugin install x@m'",
     ]) expect(readShellCommand(command).kind).toBe('unreadable')
   })
@@ -278,6 +282,41 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand('./claud[e] plugin install notes@acme').kind).toBe('unreadable')
     expect(readShellCommand('cl{aude,} plugin install notes@acme').kind).toBe('unreadable')
     expect(readShellCommand('echo $((1 + 2)) "$(date)"')).toEqual({ kind: 'pass', browse: false })
+  })
+
+  test('what a program only prints it never runs, and a substitution in an argument is read once', () => {
+    const pass = { kind: 'pass', browse: false }
+    // What Claude ran: a here-document written to a file, naming an install in a shell's own words, then node.
+    expect(readShellCommand("cat > notes.md <<'EOF'\nRun `claude plugin install x@m` to try it, or $(claude plugin install x@m).\nEOF\nnode build.js")).toEqual(pass)
+    // Run later as a shell script, or as code that starts a program, the file it wrote counts.
+    for (const command of [
+      "cat > x.sh <<'EOF'\nclaude plugin install x@m\nEOF\nbash x.sh",
+      "cat > x.sh <<'EOF'\nclaude plugin install x@m\nEOF\nchmod +x x.sh; ./x.sh",
+      "cat <<'EOF' | sh\nclaude plugin install x@m\nEOF",
+      "cat > x.js <<'EOF'\nrequire(\"child_process\").execSync(\"claude plugin install x@m\")\nEOF\nnode x.js",
+      "cat > x.rb <<'EOF'\nputs `claude plugin install x@m`\nEOF\nruby x.rb",
+      "cat > x.py <<'EOF'\nimport os; os.system(\"$(claude plugin install x@m)\")\nEOF\npython3 x.py",
+      // And a program that may run what it is fed still counts its shell's words.
+      "foo <<'EOF'\n$(claude plugin install x@m)\nEOF\nnode x.js",
+    ]) expect(readShellCommand(command).kind).toBe('unreadable')
+    // What git and gh keep as a message is text, beside code the guard does not read: a body or a message in their
+    // words, fed to them, or printed for them by a substitution, as Claude writes a pull request.
+    for (const command of [
+      "python3 -c 'print(1)'; gh pr create --title t --body \"$(cat <<'EOF'\nRun `claude plugin install x@m` to try it; it calls exec() and system().\nEOF\n)\"",
+      "python3 -c 'print(1)'; git commit -F - <<'EOF'\nRun claude plugin install x@m to try it.\nEOF",
+      "python3 -c 'print(1)'; git commit -m 'Run claude plugin install x@m to try it'",
+    ]) expect(readShellCommand(command)).toEqual(pass)
+    // What they may run still counts: a gh alias, git's configuration and the scripts it runs.
+    for (const command of [
+      "python3 -c 'print(1)'; gh alias set go '!claude plugin install x@m'",
+      "git -c alias.go='!claude plugin install x@m' go",
+      "python3 -c 'print(1)'; git rebase -x 'claude plugin install x@m' main",
+      "python3 -c 'print(1)'; x=\"$(cat <<'EOF'\nclaude plugin install x@m\nEOF\n)\"",
+    ]) expect(readShellCommand(command).kind).toBe('unreadable')
+    // An install in a substitution is one install, however often the words around it are read.
+    expect(readShellCommand('foo "y $(claude plugin install x@m)"')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('runs more than the install') })
+    // And substitutions nested in an argument are read to the end, not given up on as too deep.
+    expect(readShellCommand('for d in a b; do echo "=== $(basename $(dirname $d))"; done')).toEqual(pass)
   })
 
   test('the program is found past env, sudo and the like; arguments of a printing program are text', () => {
@@ -390,16 +429,15 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand("node -e 'console.log(`${a} ${b}`)'")).toEqual(pass)
     expect(readShellCommand("st=$(node -e 'const s = require(process.argv[1]); console.log(s ? `${s.status} ${s.sha}` : \"none\")' out.json)")).toEqual(pass)
     expect(readShellCommand("bun -e 'const x = `${a} ${b}`; console.log(\"done\", x)'")).toEqual(pass)
-    // What a shell runs from a variable is still held: a backquote in double quotes, which the shell runs first;
-    // one in an argument another program may hand to a shell; and, from local review, one that runs a shell
-    // command in Ruby, Perl or PHP, sits in a string that code may hand to a shell, or is in JavaScript that
-    // may start a process or run text as code.
-    for (const command of [
+    // A substitution's commands run as the command's own do, so a program there only known as it runs is unseen,
+    // as `$CMD arg` is: a backquote in double quotes, which the shell runs first; one in an argument another
+    // program may hand to a shell; one that runs a shell command in Ruby, Perl or PHP, sits in a string that code
+    // may hand to a shell, or is in JavaScript that may start a process or run text as code.
+    const hidden = [
       'echo "$($CMD)"',
       'x=$($CMD arg)',
       'node -e "console.log(`$CMD x`)"',
       "sh -c 'echo `$CMD`'",
-      `su -c 'bash -c "$CMD"' me`,
       "watch 'echo $($CMD)'",
       "watch 'echo `$CMD`'",
       "ruby -e 'puts `$CMD`'",
@@ -412,7 +450,14 @@ describe("reading Claude's shell commands", () => {
       "node -e 'eval( `${process.env.CODE}`)'",
       "node -e 'new Function(`${code} x`)()'",
       "node -e 'import(`data:text/javascript,${code} x`)'",
-    ]) {
+      // What Claude ran while waiting for a review: a program found as the command runs, given its words.
+      `Q=$(command -v qodo || echo "$HOME/.qodo/bin/qodo"); for i in $(seq 1 50); do out=$("$Q" read pr-review-session findings --json 2>/dev/null); st=$(printf '%s' "$out" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status'))"); case "$st" in completed*) exit 0;; esac; sleep 60; done`,
+    ]
+    for (const command of hidden) expect(readShellCommand(command)).toEqual(pass)
+    // Its install words still count beside it.
+    for (const command of hidden.slice(0, 11)) expect(readShellCommand(command.replace('$CMD', '$CMD plugin install x@m')).kind).toBe('unreadable')
+    // What a shell or eval is handed to run whole could be any shell text.
+    for (const command of ['eval "$X"', 'bash -c "$CMD"', `su -c 'bash -c "$CMD"' me`, 'x=$(eval "$X")', 'x=$(bash -c "$CMD")', `watch 'eval "$X"'`]) {
       expect(readShellCommand(command)).toMatchObject({ kind: 'unreadable', label: 'a command built as it runs' })
     }
     // Install words in the template still count.

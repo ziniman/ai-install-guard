@@ -4,6 +4,14 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.16 &nbsp;·&nbsp; 2026-11-03
+
+**Claude's own commands** - A program only known as it runs inside a substitution or backquotes (`out=$("$Q" read …)`, as in a loop that waits for a review) was held as a command built as it runs, though the same program at the top level was not. It is now read as one at the top level is: an install's words beside it count, but nothing else holds it. A shell or `eval` handed text only known as it runs (`bash -c "$CMD"`, `eval "$X"`) is still held. What git or gh keeps as a message, a commit message or a pull request's body (`--body "$(cat <<'EOF' … EOF)"`), is text, beside the scripts git runs and a gh alias; what a program that only prints is fed counts a shell's `$(claude …)` or backquote only when a shell runs the file it made. A substitution in an argument is read once, so `foo "$(claude plugin install …)"` is one install, and nested substitutions are no longer given up on as too deep
+
+**Shell commands** - Code the guard does not read was held whenever its text named a place Claude Code loads from, even as text it only holds: an edit script's old and new text, a line it adds to a memory file, a pattern. In Python and JavaScript a comment or pattern now names no place, and in code that starts no program and hides nothing neither does a string that runs over lines or reads as prose; Python that imports only modules that write nothing names just the files it opens to write. Three ways past the gate are closed: a script the command writes and then runs with a shell or an interpreter is read before it runs, and code run from inside a place Claude Code loads from counts as writing there. An awk `>` that compares no longer counts as a write
+
+---
+
 ## v0.8.15 &nbsp;·&nbsp; 2026-11-03
 
 **Claude's own commands** - A command that runs code the guard does not read was held whenever its text named the `claude` command beside `plugin` or `mcp` anywhere, a comment or a string included: a script that edits docs or code about Claude plugins, written and run, was Could not verify. Those words now count only where they may run: in shell text, in code that can start a program (in Python and JavaScript, looked for outside strings and comments, and counting the ways to reach a call by a name built as the code runs), and in any data when a shell runs text the guard did not read. That now includes a file the command itself wrote and then runs (`./x.sh`, also from a nested script), or one it sources, which was not looked at before. In Perl, Ruby and PHP any backquote runs a shell command, so their code with one counts as starting a program

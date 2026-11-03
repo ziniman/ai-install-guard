@@ -5,7 +5,9 @@
 // given; what it writes on its own, unnamed, is not seen. Nothing here runs
 // anything or touches the disk.
 
-import { CLAUDE, INTERPRETERS, QUIET, SHELLS, gitScripts, isDynamic, programAt, programName, splitShell, type ShellCommand } from './requests'
+import { proseTest } from '../scan/checks/code'
+import { spanKinds, type SpanKind } from '../scan/checks/text'
+import { CLAUDE, INTERPRETERS, QUIET, SHELLS, codeStartsProgram, gitScripts, isDynamic, programAt, programName, splitShell, tokenized, type ShellCommand } from './requests'
 
 /** A path as the command names it, and the folder it is relative to: undefined when that folder is only known as the command runs. */
 export type Named = { path: string; cwd: string | undefined }
@@ -31,15 +33,19 @@ export type ShellWrite =
    * unpacked, a checkout), so a folder holding Claude's own counts too.
    * `edit` is set for a file changed in place (`sed -i`, `perl -i`): what
    * lands is the file already there, edited, never anything brought in.
+   * `given` is set for a path a program the guard does not know is given,
+   * which it may write or only read.
    */
-  | { kind: 'unknown'; to: Named; what: string; deep?: boolean; edit?: boolean }
+  | { kind: 'unknown'; to: Named; what: string; deep?: boolean; edit?: boolean; given?: boolean }
 
 /**
  * A part of the command only known as it runs; `text` is what to look for
  * Claude's folder in, the whole command when unset, and `cwd` the folder that
- * code runs in, when known, which the files it names are read from.
+ * code runs in, when known, which the files it names are read from. `places`
+ * is `text` with what Python or JavaScript code only holds as text blanked
+ * (`placesIn`): where the places it may write to are named.
  */
-export type Unseen = { reason: string; text?: string; cwd?: string }
+export type Unseen = { reason: string; text?: string; cwd?: string; places?: string }
 
 export type ShellWrites = { writes: ShellWrite[]; unseen: Unseen[] }
 
@@ -235,7 +241,9 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       out.unseen.push({ reason: 'it writes to a file only known as it runs' })
       continue
     }
-    out.writes.push(redirected(command, program, args, unknown, named(target.path), target.append, where))
+    const write = redirected(command, program, args, unknown, named(target.path), target.append, where)
+    out.writes.push(write)
+    madeBy.set(write, own)
   }
   if (word === undefined) return
   if (expands.has(placed.index) && isDynamic(word)) {
@@ -250,10 +258,36 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   const writes = (write: ShellWrite): void => {
     // A write whose paths come from input could be anywhere.
     if (fills) out.unseen.push({ reason: `${program} is given paths from its input, which the guard does not see` })
-    else out.writes.push(write)
+    else {
+      out.writes.push(write)
+      madeBy.set(write, own)
+    }
   }
   const dynamicPath = (): void => {
     out.unseen.push({ reason: `${program} writes to a path only known as it runs` })
+  }
+  // A script the command makes or changes before it runs it, by its file name: text the command writes for a shell
+  // is read as commands, and code an interpreter runs as inline code is. Otherwise what made it counts as this run:
+  // code that names it, or the command that edits it in place, each by its own text (all of it, since what it holds
+  // as text may now be code), and anything else with the whole command. A path a program is only given is no file made.
+  const madeFirst = (path: string, runner: 'shell' | 'code' | 'program'): void => {
+    const name = lastPart(path)
+    const made = out.writes.filter(write => lastPart(write.to.path) === name && !(write.kind === 'unknown' && write.given === true))
+    const mentioning = out.unseen.filter(part => part.text !== undefined && namesFile(part.text, name))
+    if (made.length === 0 && mentioning.length === 0) return
+    const [first] = made
+    const text = made.length === 1 && mentioning.length === 0 && first?.kind === 'content' && !first.append ? first.content : undefined
+    const reason = `${program} runs a script the command makes first, which the guard does not read`
+    if (text !== undefined && (runner === 'shell' || (runner === 'program' && (!text.startsWith('#!') || SHELL_LINE.test(text))))) readNested(text, child, out, depth)
+    else if (text !== undefined && runner === 'code') {
+      if (mayChange(text)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, text, ...(where.cwd === undefined ? {} : { cwd: where.cwd }), ...placesOf(language, [], [], text, []) })
+    } else {
+      for (const part of mentioning) out.unseen.push({ reason, text: part.text, ...(part.cwd === undefined ? {} : { cwd: part.cwd }) })
+      for (const write of made) {
+        const by = write.kind === 'unknown' && write.edit === true ? madeBy.get(write) : undefined
+        out.unseen.push(by === undefined ? { reason } : { reason, ...by })
+      }
+    }
   }
 
   if (program === 'cd' || program === 'pushd' || program === 'chdir') {
@@ -292,12 +326,18 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     if (command.input !== undefined) return readNested(command.input, child, out, depth)
     // A script file is code already on disk, judged as any program is, by the paths it is given.
     const file = args.findIndex(arg => !arg.startsWith('-'))
-    if (file !== -1) return pathsGiven(lastPart(args[file] as string), args.slice(file + 1), at => unknown(file + 1 + at), named, writes)
+    if (file !== -1) {
+      madeFirst(args[file] as string, 'shell')
+      return pathsGiven(lastPart(args[file] as string), args.slice(file + 1), at => unknown(file + 1 + at), named, writes)
+    }
     out.unseen.push({ reason: `${program} runs a script from its input, which the guard does not read`, ...own })
     return
   }
   if (program === 'source' || program === '.') {
-    if (args[0] !== undefined) pathsGiven(lastPart(args[0]), args.slice(1), at => unknown(1 + at), named, writes)
+    if (args[0] !== undefined) {
+      madeFirst(args[0], 'shell')
+      pathsGiven(lastPart(args[0]), args.slice(1), at => unknown(1 + at), named, writes)
+    }
     return
   }
   if (program === 'eval') {
@@ -327,7 +367,7 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       const inPlaceWrites = loaded === undefined ? writes : (write: ShellWrite): void => writes(write.kind === 'unknown' ? { kind: 'unknown', to: write.to, what: `${write.what}, beside code ${loaded.name} loads` } : write)
       if (!known) out.unseen.push({ reason: `${program} runs code from its input, which the guard does not read`, ...own })
       else if (filledIn) out.unseen.push({ reason: `${program} runs code only known as it runs` })
-      else if (mayChange(codeText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, ...own })
+      else if (mayChange(codeText)) out.unseen.push({ reason: `${program} runs code that may write files or run programs`, ...own, ...placesOf(language, args, codeAt, command.input, words.slice(0, placed.index + 1)) })
       // Perl or Ruby told to edit files in place (`-i`) writes the files named after its code.
       else if (script !== undefined && switches !== undefined) readInPlace(script, switches, args, unknown, where, inPlaceWrites, dynamicPath, fills, out, own, command.input)
       return
@@ -348,6 +388,7 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     }
     // A script file or a module (`python3 -m pip …`) is code already on disk: judged by the paths it is given, not by where it is.
     const from = module !== -1 ? module + 2 : file + 1
+    if (module === -1 && file !== -1) madeFirst(args[file] as string, 'code')
     pathsGiven(module !== -1 ? (args[module + 1] ?? program) : lastPart(args[file] as string), args.slice(from), at => unknown(from + at), named, writes)
     return
   }
@@ -355,11 +396,12 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     readFind(args, where, out, depth, writes, named)
     return
   }
-  // awk's program can write a file (`print > "f"`) or run a command; one that might is code the guard does not read.
+  // awk's program can write a file (`print > "f"`) or run a command (`print | "cmd"`, `system()`, `"cmd" | getline`);
+  // one that might is code the guard does not read. A `>` anywhere else compares (`length($0) > 80`).
   if (/^[gmn]?awk$/.test(program)) {
     const fromFile = args.some(arg => arg === '-f' || arg.startsWith('--file'))
     const text = args.find(arg => !arg.startsWith('-'))
-    if (fromFile || (text !== undefined && /[>|]|\bsystem\s*\(|\bgetline\b/.test(text))) out.unseen.push({ reason: `${program} runs a program that may write files`, ...own })
+    if (fromFile || (text !== undefined && AWK_WRITES.test(text))) out.unseen.push({ reason: `${program} runs a program that may write files`, ...own })
     return
   }
   if (Object.hasOwn(COPY_VALUES, program)) {
@@ -423,7 +465,23 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
     return
   }
   // A program the guard does not know: judged by the paths it is given.
+  if (/[\\/]/.test(word)) madeFirst(word, 'program')
   pathsGiven(program, args, unknown, named, writes)
+}
+
+/** What in an awk program writes a file or runs a command: a print's redirection or pipe, `system()`, a command piped into getline. */
+const AWK_WRITES = /\bprintf?\b[^;{}\n]*[>|]|\bsystem\s*\(|\|&?\s*getline\b/
+
+/** The command that made each write, by its own text and folder: what counts when it makes a script the command then runs. */
+const madeBy = new WeakMap<ShellWrite, Own>()
+
+/** A first line that starts a shell: `#!/bin/sh`, `#!/usr/bin/env bash`. */
+const SHELL_LINE = /^#![^\n]*\b(?:ba|z|da|k)?sh\b/
+
+/** Whether text names a file by its name: as a word of its own, or the last part of a path. */
+function namesFile(text: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?:^|[\\s/'"\`(=,])${escaped}(?![\\w.-])`).test(text)
 }
 
 /**
@@ -452,6 +510,9 @@ function inlineCodeAt(program: string, args: readonly string[]): number[] {
   return at
 }
 
+/** Code that hides what it does: eval, imports and attributes by name, decoding, characters made or escaped. */
+const HIDES = /\b(?:instance_|class_|module_)?eva\x6c\b|\bFunction\s*\(|__im\x70ort__|\bim\x70ortlib|\bgetattr|\bsetattr|\bglobals\s*\(|\bcom\x70ile\s*\(|\bmarshal|\bpickle|\bbase64|\bb\d\ddecode|\ba85decode|\bunhexlify|\bfromhex|\bcodecs|\\x[0-9a-fA-F]{2}|\bchr\s*\(|\bfromCharCode|\batob\b/i
+
 /**
  * What inline code does that may change something, in the languages run
  * inline: writing, appending, copying, moving, deleting or making files;
@@ -469,7 +530,7 @@ const MAY_CHANGE: readonly RegExp[] = [
   // A mode after a first argument that is itself a call (`open(os.path.join(a, b), 'w')`), within open's own parentheses.
   /\bopen\s*\((?:[^()\n;]|\((?:[^()\n]|\([^()\n]*\))*\))*?,\s*(?:mode\s*=\s*)?['"][rbtU]*[wax+][rwxabtU+]*['"]/i,
   /\bsub\x70rocess|\bchild_\x70rocess|\bs\x70awn|\bexe\x63|\bsyste\x6d\b|\x70open|\bfork\s*\(|\bOpen3|\bProcessBuilder|\bgetRuntime|\bshell_exe\x63|\bpassthru|\bproc_open|\bdo shell s\x63ript|\bDeno\.(?:run|Command)|\bStart-Process|\bInvoke-|\biex\b|\bSet-Content|\bAdd-Content|\bOut-File|\bNew-Item|\bRemove-Item|\bCopy-Item|\bMove-Item|\bRename-Item/i,
-  /\b(?:instance_|class_|module_)?eva\x6c\b|\bFunction\s*\(|__im\x70ort__|\bim\x70ortlib|\bgetattr|\bsetattr|\bglobals\s*\(|\bcom\x70ile\s*\(|\bmarshal|\bpickle|\bbase64|\bb\d\ddecode|\ba85decode|\bunhexlify|\bfromhex|\bcodecs|\\x[0-9a-fA-F]{2}|\bchr\s*\(|\bfromCharCode|\batob\b/i,
+  HIDES,
   /(?<![=-])>|\x60/,
   // Any call on Python's os or Node's fs but the few that only read: os.replace, os.link and
   // os.open with write flags change files as surely as the names above.
@@ -496,6 +557,208 @@ const MAY_CHANGE: readonly RegExp[] = [
 function mayChange(text: string): boolean {
   const apart = text.replace(/(^|\s)(-(?!-)[A-Za-z]*?[ceEpr])(?=\S)/g, '$1$2 ')
   return MAY_CHANGE.some(pattern => pattern.test(text) || pattern.test(apart))
+}
+
+/**
+ * A command's own text, as `Own` joins it, with its Python or JavaScript
+ * code read by `placesIn`: the code inline at `codeAt` among its arguments,
+ * or else its input. Nothing for another language.
+ */
+function placesOf(language: string, args: readonly string[], codeAt: readonly number[], input: string | undefined, lead: readonly string[]): { places?: string } {
+  const read = tokenized(language)
+  if (read === undefined) return {}
+  const code = codeAt.length === 0 && input !== undefined
+  return { places: [...lead, ...args.map((arg, at) => (codeAt.includes(at) ? placesIn(arg, read) : arg)), code ? placesIn(input, read) : (input ?? '')].join(' ') }
+}
+
+/**
+ * Python or JavaScript code with what it only holds as text blanked, so the
+ * paths left are those it may write to: its comments and patterns, never a
+ * path; and, when it starts no program and hides nothing (`HIDES`), its
+ * strings that run over lines (an edit script's old and new text) or read as
+ * prose. Such code reaches a file only by the paths its own calls are given,
+ * and a block of text or a sentence is no path. Code that starts a program
+ * may hand any of its text to a shell, so all of it counts.
+ */
+function placesIn(code: string, language: 'python' | 'js'): string {
+  const kind = spanKinds(code, language)
+  let bare = ''
+  let only = ''
+  for (let at = 0; at < code.length; at += 1) {
+    const text = code[at] === '\n' || kind(at) === 'code' || kind(at) === 'string'
+    bare += text ? code[at] : ' '
+    only += code[at] === '\n' || kind(at) === 'code' ? code[at] : ' '
+  }
+  // What hides is read in the code itself: a string that names `base64` or `\x2e` is text, as a scanner's own source is.
+  if (codeStartsProgram(bare, language) || HIDES.test(only)) return bare
+  // Python that can write only the files it opens by name names just those.
+  const targets = language === 'python' ? pythonWrites(code, only, kind) : undefined
+  if (targets !== undefined) return targets.join('\n')
+  const prose = proseTest(code, kind)
+  let out = ''
+  for (let at = 0; at < bare.length; ) {
+    let end = at + 1
+    while (end < bare.length && (kind(end) === 'string') === (kind(at) === 'string')) end += 1
+    const part = bare.slice(at, end)
+    out += kind(at) === 'string' && (part.includes('\n') || prose(at)) ? part.replace(/[^\n]/g, ' ') : part
+    at = end
+  }
+  return out
+}
+
+/** Python modules whose calls write no file of their own: code that imports only these writes what it opens. */
+const PYTHON_PURE = /^(?:re|sys|json|textwrap|string|collections|itertools|functools|difflib|unicodedata|math|datetime|time|typing|dataclasses|hashlib|fnmatch|glob|pprint|enum|copy|operator|random|statistics|html|shlex|urllib\.parse)$/
+
+/** An import statement, alone: `import a, b as c` or `from a import b, c`. */
+const PYTHON_IMPORT = /^\s*(?:from\s+([\w.]+)\s+import\s+[\w\s,*()]+|import\s+([\w\s.,]+))\s*$/
+
+/**
+ * The files Python code writes, when it can write only by calling `open`
+ * with a path it holds as a literal: given there, named by a literal, or
+ * passed as one to a function of the code's own. Undefined when it imports a
+ * module that can write (`os`, `pathlib`, `shutil`) or reaches one another
+ * way (`sys.modules`, a double-underscore name), uses `open` other than by
+ * calling it, opens a file in a mode it builds, or opens one at a path it
+ * builds. `only` is the code with its strings and comments blanked.
+ */
+function pythonWrites(code: string, only: string, kind: (index: number) => SpanKind): string[] | undefined {
+  for (const statement of only.split(/[;\n]/)) {
+    if (!/\bimport\b/.test(statement)) continue
+    const found = PYTHON_IMPORT.exec(statement)
+    const modules = found === null ? [''] : found[1] !== undefined ? [found[1]] : (found[2] ?? '').split(',').map(part => part.trim().split(/\s+as\s+/)[0] ?? '')
+    if (!modules.every(name => PYTHON_PURE.test(name))) return undefined
+  }
+  if (/\bsys\s*\.\s*modules\b|__(?!(?:name|main|file)__)\w+__|\bbuiltins\b|\bopen\b(?!\s*\()|\.\s*open\b/.test(only)) return undefined
+  const targets: string[] = []
+  for (const found of only.matchAll(/\bopen\s*\(/g)) {
+    const args = callArgs(code, kind, (found.index ?? 0) + found[0].length - 1)
+    if (args === undefined) return undefined
+    const { plain, named } = args
+    const mode = named.get('mode') ?? plain[1]
+    // With no mode it reads.
+    if (mode === undefined) continue
+    const opened = pythonString(mode)
+    if (opened === undefined) return undefined
+    if (!/[wax+]/.test(opened)) continue
+    const file = named.get('file') ?? plain[0]
+    const paths = file === undefined ? undefined : pythonValues(file, code, only, kind, 0)
+    if (paths === undefined) return undefined
+    targets.push(...paths)
+  }
+  return targets
+}
+
+/** A Python string literal on one line with no escapes, as its text: `'a.md'`, `r"b"`. */
+function pythonString(expression: string): string | undefined {
+  return /^(?:[rRbBuU]{1,2})?(['"])((?:(?!\1)[^\\\n])*)\1$/.exec(expression.trim())?.[2]
+}
+
+/**
+ * The texts an expression in Python code may hold: a literal's own, or every
+ * literal a name is bound to, by `name = '…'` or as a parameter of a function
+ * the code defines, through what each call of it passes. Undefined when any
+ * is not a literal, or the name is bound another way (a loop, `as`, a tuple,
+ * `global`), or not at all.
+ */
+function pythonValues(expression: string, code: string, only: string, kind: (index: number) => SpanKind, depth: number): string[] | undefined {
+  const text = pythonString(expression)
+  if (text !== undefined) return [text]
+  const name = expression.trim()
+  if (depth > 1 || !/^[A-Za-z_]\w*$/.test(name)) return undefined
+  const values: string[] = []
+  let bound = false
+  for (const found of only.matchAll(new RegExp(`(?<![\\w.])${name}\\b`, 'g'))) {
+    const at = found.index ?? 0
+    const start = Math.max(only.lastIndexOf('\n', at - 1), only.lastIndexOf(';', at - 1)) + 1
+    const before = only.slice(start, at)
+    const after = only.slice(at + name.length)
+    // `name = '…'` as a statement of its own.
+    const assigned = /^[ \t]*=(?!=)/.exec(after)
+    if (assigned !== null && /^\s*$/.test(before)) {
+      const from = at + name.length + assigned[0].length
+      const ends = [only.indexOf('\n', from), only.indexOf(';', from)].filter(end => end !== -1)
+      const value = pythonString(code.slice(from, ends.length === 0 ? code.length : Math.min(...ends)))
+      if (value === undefined) return undefined
+      values.push(value)
+      bound = true
+      continue
+    }
+    // A parameter of a function of the code's own: what each call passes it, or its default.
+    const parameter = /\bdef\s+(\w+)\s*\(([^()]*?)$/.exec(before)
+    if (parameter !== null && /^\s*(?:,|\)|=)/.test(after) && /(?:^|,)\s*$/.test(parameter[2] ?? '')) {
+      const passed = callValues(parameter[1] as string, (parameter[2] ?? '').split(',').length - 1, name, after, code, only, kind, depth)
+      if (passed === undefined) return undefined
+      values.push(...passed)
+      bound = true
+      continue
+    }
+    // Bound any other way (one of several names a statement assigns, `p, q = …`), or changed in place.
+    const tuple = /^[\s\w,]*$/.test(before) && /^\s*,[^;\n=]*=(?!=)/.test(after)
+    if (tuple || /^\s*(?:[-+*/%&|^@]|\/\/|\*\*|<<|>>)?=(?!=)|^[ \t]*:(?![ \t]*(?:\n|$))/.test(after) || /\b(?:for|as|global|nonlocal|del|lambda|import)\b[^;\n]*$|\*\s*$/.test(before)) return undefined
+  }
+  return bound ? values : undefined
+}
+
+/**
+ * What every call of `func`, a function the code defines, passes the
+ * parameter at `index`, named `name`, or its default when a call passes
+ * none (`after` is the code after the parameter's name in the definition).
+ * Undefined when the function is used other than by a plain call.
+ */
+function callValues(func: string, index: number, name: string, after: string, code: string, only: string, kind: (index: number) => SpanKind, depth: number): string[] | undefined {
+  const fallback = /^\s*=\s*([^,)]*)/.exec(after)?.[1]
+  const values: string[] = []
+  for (const found of only.matchAll(new RegExp(`(?<![\\w.])${func}\\b`, 'g'))) {
+    const at = found.index ?? 0
+    if (/\bdef\s+$/.test(only.slice(Math.max(0, at - 8), at))) continue
+    const open = /^\s*\(/.exec(only.slice(at + func.length))
+    if (open === null) return undefined
+    const args = callArgs(code, kind, at + func.length + open[0].length - 1)
+    if (args === undefined || args.spread) return undefined
+    const given = args.named.get(name) ?? args.plain[index] ?? fallback
+    if (given === undefined) continue
+    const passed = pythonValues(given, code, only, kind, depth + 1)
+    if (passed === undefined) return undefined
+    values.push(...passed)
+  }
+  return values
+}
+
+/**
+ * The arguments of the call whose `(` is at `open`, split at the commas of
+ * its own code: positional ones in order, keyword ones by name, and whether
+ * any is spread (`*args`, `**kw`). Undefined when the call does not close.
+ */
+function callArgs(code: string, kind: (index: number) => SpanKind, open: number): { plain: string[]; named: Map<string, string>; spread: boolean } | undefined {
+  const parts: string[] = []
+  let depth = 0
+  let from = open + 1
+  for (let at = open + 1; at < code.length; at += 1) {
+    if (kind(at) !== 'code') continue
+    const char = code[at] as string
+    if ('([{'.includes(char)) depth += 1
+    else if (')]}'.includes(char)) {
+      if (depth > 0) {
+        depth -= 1
+        continue
+      }
+      parts.push(code.slice(from, at))
+      const plain: string[] = []
+      const named = new Map<string, string>()
+      let spread = false
+      for (const part of parts.map(item => item.trim()).filter(item => item !== '')) {
+        const keyword = /^(\w+)\s*=(?!=)\s*([\s\S]*)$/.exec(part)
+        if (part.startsWith('*')) spread = true
+        else if (keyword !== null) named.set(keyword[1] as string, keyword[2] as string)
+        else plain.push(part)
+      }
+      return { plain, named, spread }
+    } else if (char === ',' && depth === 0) {
+      parts.push(code.slice(from, at))
+      from = at + 1
+    }
+  }
+  return undefined
 }
 
 /**
@@ -676,7 +939,7 @@ function pathsGiven(program: string, args: readonly string[], unknown: (at: numb
     // A path is one word: text with spaces in it is a message, such as a pull request's body.
     if (path === '' || unknown(at) || /\s/.test(path) || /^[A-Za-z][\w+.-]*:\/\//.test(path)) return
     if (path === '.' || path === '..' || path.startsWith('~') || path.includes('/')) {
-      writes({ kind: 'unknown', to: named(path), what: `what ${program} writes when given this path` })
+      writes({ kind: 'unknown', to: named(path), what: `what ${program} writes when given this path`, given: true })
     }
   })
 }
