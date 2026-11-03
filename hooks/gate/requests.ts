@@ -63,7 +63,7 @@ export function readShellCommand(command: string): Reading {
 
 function readShell(command: string): Reading {
   const found: Reading[] = []
-  const { unseen, opaque, others, texts } = collectInstalls(command, found, 0, true)
+  const { unseen, opaque, others, texts, shellRuns, backquoteRuns } = collectInstalls(command, found, 0, true)
   const installs = found.filter(reading => reading.kind !== 'pass')
   if (installs.length > 1) return { kind: 'unreadable', label: 'several installs', reason: 'the command installs more than one thing; run each install as a command of its own' }
   const [only] = installs
@@ -89,8 +89,13 @@ function readShell(command: string): Reading {
     return { kind: 'unreadable', label: 'a command built as it runs', reason: 'it runs a command only known as it runs (as in bash -c "$CMD" or eval "$X"), so the guard cannot tell whether it installs anything; run the command itself instead' }
   }
   // An unseen part may run an install whose words show elsewhere in the command (a variable it reads, code
-  // in another language); a claude command read whole and found to install nothing is no such sign.
-  const rest = texts.join('\n')
+  // in another language); a claude command read whole and found to install nothing is no such sign. Code,
+  // and data fed to a program other than a shell, counts only when it may start a program, unless a shell
+  // runs text the guard did not read: a comment or a string in a script that starts nothing installs nothing.
+  const rest = texts
+    .filter(item => !item.code || shellRuns || startsProgram(backquoteRuns ? { ...item, backquotes: true } : item))
+    .map(item => item.text)
+    .join('\n')
   if (unseen && (mayInstall(rest) || (namesClaude(rest) && /\b(?:plugins?|mcp)\b/i.test(rest)))) {
     return { kind: 'unreadable', label: 'a claude command', reason: 'part of the command is only known as it runs, so the guard cannot tell what it installs; run claude plugin install or claude mcp add as a plain command' }
   }
@@ -154,6 +159,9 @@ const JAVASCRIPT = new Set(['node', 'nodejs', 'deno', 'bun'])
  */
 const NO_BACKQUOTE = new Set(['python', 'python2', 'python3', 'awk', 'gawk', 'mawk', 'nawk', 'sed', 'gsed', 'jq', 'yq'])
 
+/** Languages in which any backquote runs a shell command. */
+const BACKQUOTE_RUNS = new Set(['perl', 'ruby', 'php'])
+
 /** JavaScript with its regular expression literals and comments blanked: a backquote in one, as in a pattern for a fenced code block, opens nothing. */
 function withoutPatterns(code: string): string {
   const kind = spanKinds(code, 'js')
@@ -187,6 +195,47 @@ const PRINT_CALLS = /(?<![\w$.])(?:console\.(?:log|error|warn|info|debug)|proces
  * they do, so none of them only prints.
  */
 const REDEFINES_PRINT = /\b(?:console|globalThis|global|Reflect|Proxy)\b|\bprocess\s*(?:\.\s*std(?:out|err)\b|\[)/
+
+/**
+ * A text `collectInstalls` gathers: `backquotes` is set for code in a language
+ * where a backquote runs a shell command, and `language` for code the
+ * scanner's tokenizer reads, Python or JavaScript.
+ */
+type CollectedText = { text: string; code: boolean; backquotes?: boolean; language?: 'python' | 'js' }
+
+/**
+ * Whether code or data may start a program, so an install's words in it may
+ * run. In Python or JavaScript only the code itself counts, not its strings
+ * and comments: a script that edits a file which names `exec(` starts nothing.
+ */
+function startsProgram(item: CollectedText): boolean {
+  const text = item.language === undefined ? item.text : codeOnly(item.text, item.language)
+  return MAY_RUN_TEXT.test(text) || STARTS_PROGRAM.test(text) || (item.backquotes === true && item.text.includes('`'))
+}
+
+/** Python or JavaScript with its strings and comments blanked. */
+function codeOnly(code: string, language: 'python' | 'js'): string {
+  const kind = spanKinds(code, language)
+  let out = ''
+  for (let at = 0; at < code.length; at += 1) out += kind(at) === 'code' || code[at] === '\n' ? code[at] : ' '
+  return out
+}
+
+/** The tokenizer's name for an interpreter's language, when it reads it. */
+function tokenized(language: string): 'python' | 'js' | undefined {
+  return /^python[23]?$/.test(language) ? 'python' : JAVASCRIPT.has(language) ? 'js' : undefined
+}
+
+/**
+ * Code beside JavaScript's (`MAY_RUN_TEXT`) that may start a program: Python's
+ * subprocess and os calls, a `system`, `exec`, `popen` or `eval` call in any
+ * language, Ruby's, Perl's and PHP's ways, PowerShell's and AppleScript's, a
+ * backquote or `$(…)` around the claude command, which a shell or Perl runs,
+ * and the ways code reaches a call by a name it builds as it runs (Python's
+ * `getattr` and the like, a JavaScript `require` of a name that is no
+ * literal, a call through a computed property `x[…](…)`).
+ */
+const STARTS_PROGRAM = /\b(?:getattr|setattr|globals|vars)\s*\(|__dict__|__builtins__|\bctypes\b|\bpickle\b|\bmarshal\b|\brequire\s*\(\s*[^'"`\s)]|\][\s)]*\(|\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)|\bpty\.spawn|\b(?:system|exec\w*|spawn\w*|popen|Popen|fork|check_output|check_call|getoutput|getstatusoutput|eval|compile|__import__)\s*\(|\b(?:system|exec)\s+['"]|\bimportlib\b|\bOpen3\b|\bIO\.popen\b|\bProcessBuilder\b|\bgetRuntime\b|\bshell_exec\b|\bpassthru\b|\bproc_open\b|%x[({[<|!]|\bqx\b|\bopen\s*\(?[^)\n]*\|\s*['"]|do shell script|\bStart-Process\b|\bInvoke-Expression\b|\biex\b|`[^`\n]*\bclaude(?:-code)?\b[^`\n]*`|\$\([^)\n]*\bclaude(?:-code)?\b/
 
 const MAY_RUN_TEXT = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`|\b(?:eval|Function|vm|Worker)\b|_compile|runIn\w*Context|compileFunction|\bimport\s*\(|\brequire\s*\(\s*`/
 
@@ -297,11 +346,17 @@ type Collected = {
   /** Simple commands that run something other than an install, a quiet program or a shell the guard read into. */
   others: number
   /**
-   * The text of each simple command, with its input, but for a `claude`
+   * The text of each simple command and of its input, but for a `claude`
    * command read whole and found to install nothing: where an install's words
-   * would show when part of the command is unseen.
+   * would show when part of the command is unseen. `code` marks text a shell
+   * does not run as commands: an interpreter's code, or what a program other
+   * than a shell is fed, which counts only when it may start a program.
    */
-  texts: string[]
+  texts: CollectedText[]
+  /** A shell runs text the guard does not read (a file, or its input), which may be any data the command holds. */
+  shellRuns: boolean
+  /** Perl, Ruby or PHP runs, so a backquote in any data the command holds may be one of theirs, which runs a shell command. */
+  backquoteRuns: boolean
 }
 
 /**
@@ -412,36 +467,51 @@ function claudePlugin(words: readonly string[], index: number, expands: Readonly
  * it holds, like every word read from the code, is read as code too. One
  * inside a string is still read as a script, and so is a shell or eval named
  * in the code. `runners` is set for JavaScript that may run text: a template
- * there is a script unless it is only printed or thrown (`` console.log(`…`) ``),
- * since anything else may hand it to what runs it.
+ * there is a script unless it is only printed (`` console.log(`…`) ``), since
+ * anything else may hand it to what runs it. `written` holds the files the
+ * command's redirections write, as named, across every script it holds: one
+ * run as a program later is a script the guard did not read.
  */
-function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean, inCode = false, runners = false): Collected {
-  const out: Collected = { unseen: false, opaque: false, others: 0, texts: [] }
-  if (depth > MAX_DEPTH) return { unseen: true, opaque: asScript, others: 0, texts: [command] }
+function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean, inCode = false, runners = false, written = new Set<string>()): Collected {
+  const out: Collected = { unseen: false, opaque: false, others: 0, texts: [], shellRuns: false, backquoteRuns: false }
+  if (depth > MAX_DEPTH) return { unseen: true, opaque: asScript, others: 0, texts: [{ text: command, code: false }], shellRuns: asScript, backquoteRuns: false }
   const merge = (inner: Collected, counts: boolean): void => {
     out.unseen ||= inner.unseen
     out.opaque ||= inner.opaque
+    out.shellRuns ||= inner.shellRuns
+    out.backquoteRuns ||= inner.backquoteRuns
     if (counts) out.others += inner.others
     out.texts.push(...inner.texts)
   }
-  const nested = (script: string): void => merge(collectInstalls(script, found, depth + 1, true), true)
+  const nested = (script: string): void => merge(collectInstalls(script, found, depth + 1, true, false, false, written), true)
   const functions = definedFunctions(command)
-  for (const { words, input, scripts: substitutions, quotedScripts, scriptLeads, writes, expands, splits } of splitShell(command).commands) {
+  for (const { words, input, scripts: substitutions, quotedScripts, scriptLeads, writes, targets, expands, splits } of splitShell(command).commands) {
     // What its substitutions run comes first, and is read as commands too, but
     // for a JavaScript template, which is the code's own text.
     substitutions?.forEach((script, at) => {
       const template = (inCode || (runners && PRINTS_TEMPLATE.test(scriptLeads?.[at] ?? ''))) && quotedScripts?.includes(at) !== true
-      merge(collectInstalls(script, found, depth + 1, !template, template), true)
+      merge(collectInstalls(script, found, depth + 1, !template, template, false, written), true)
     })
-    const own = out.texts.push([...words, input ?? ''].join(' ')) - 1
+    const { index, scripts, fromInput } = programAt(words)
+    const word = words[index]
+    const program = programName(word)
+    const language = program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1')
+    // An interpreter's words hold its code, and what a program other than a shell is fed is data or code.
+    const read = tokenized(language)
+    const kind = { ...(BACKQUOTE_RUNS.has(language) ? { backquotes: true } : {}), ...(read === undefined ? {} : { language: read }) }
+    const own = out.texts.push({ text: words.join(' '), code: INTERPRETERS.has(language), ...kind }) - 1
+    if (input !== undefined) out.texts.push({ text: input, code: !SHELLS.has(program), ...(INTERPRETERS.has(language) ? kind : {}) })
     // A write to a file is more than an install, whatever program makes it.
     if (writes === true) out.others += 1
-    const { index, scripts, fromInput } = programAt(words)
+    for (const target of targets ?? []) written.add(target.path.replace(/^\.\//, ''))
     scripts.forEach(nested)
-    const word = words[index]
     // Only NAME=value words: nothing runs.
     if (word === undefined) continue
-    const program = programName(word)
+    // A script the command wrote, or one `source` or `.` runs, is shell text the guard did not read.
+    if (written.has(word.replace(/^\.\//, '')) || program === 'source' || program === '.') {
+      out.unseen = true
+      out.shellRuns = true
+    }
     // xargs fills in words from its input, which the guard does not see; for a quiet program that is only text.
     if (fromInput && !(QUIET.has(program) && !writesAnyway(program, words.slice(index + 1)))) out.unseen = true
     if (CLAUDE.has(program)) {
@@ -462,7 +532,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       else {
         out.others += 1
         // Read whole and found to install nothing (`claude plugin test .`): its words are no sign of an install elsewhere.
-        out.texts[own] = ''
+        out.texts[own] = { text: '', code: false }
       }
       continue
     }
@@ -482,6 +552,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       // A shell given no script reads one from its input, often a pipe; one given a file runs that file.
       else {
         out.unseen = true
+        out.shellRuns = true
         out.others += 1
       }
       continue
@@ -491,8 +562,8 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       continue
     }
     // Code in another language, inline, from input or from a file, is not read.
-    const language = program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1')
     if (INTERPRETERS.has(language)) out.unseen = true
+    if (BACKQUOTE_RUNS.has(language)) out.backquoteRuns = true
     if (QUIET.has(program) && !writesAnyway(program, words.slice(index + 1))) continue
     // Any other program may run an install among its arguments (`watch`,
     // `flock`), and may run it again and again: the program around it counts
@@ -510,15 +581,19 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     if (program === 'git') {
       const ran = gitScripts(words.slice(index + 1))
       if (ran.hooks) out.unseen = true
-      for (const script of ran.scripts) merge(collectInstalls(script, found, depth + 1, true), false)
+      for (const script of ran.scripts) merge(collectInstalls(script, found, depth + 1, true, false, false, written), false)
     } else if (!TEXT_ARGUMENTS.has(program)) {
       for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) {
         const code = JAVASCRIPT.has(language) ? withoutPatterns(text) : text
+        // An interpreter's code that can start no program runs no install it names.
+        if (INTERPRETERS.has(language) && !startsProgram({ text, code: true, ...kind })) continue
         const runs = JAVASCRIPT.has(language) && MAY_RUN_TEXT.test(code)
         // Code that redefines what only prints has every template read as a script.
         const prints = runs && !REDEFINES_PRINT.test(code.replace(PRINT_CALLS, ' '))
         // A function the command defines runs its body, read with the rest, so a backquote in its arguments is what the body makes of it.
-        merge(collectInstalls(code, found, depth + 1, false, inCode || functions.has(program) || NO_BACKQUOTE.has(language) || (JAVASCRIPT.has(language) && !runs), prints && !inCode), false)
+        const inner = collectInstalls(code, found, depth + 1, false, inCode || functions.has(program) || NO_BACKQUOTE.has(language) || (JAVASCRIPT.has(language) && !runs), prints && !inCode, written)
+        // An interpreter's code is in its own words, read whole for whether it may start a program.
+        merge(INTERPRETERS.has(language) ? { ...inner, texts: [] } : inner, false)
       }
     }
     out.others += 1

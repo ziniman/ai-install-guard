@@ -156,6 +156,33 @@ describe("reading Claude's shell commands", () => {
     }
   })
 
+  test("an install's words in code or data count only where they may run", () => {
+    // What the guard held while it was being built: a script that names the claude command in a comment, written and run.
+    for (const command of [
+      "cat > x.mjs <<'EOF'\n// Reads a claude plugin or mcp command\nEOF\nnode x.mjs",
+      "python3 - <<'EOF'\np='README.md'; s=open(p).read()\nopen(p,'w').write(s.replace('old', 'Run claude plugin install notes@acme'))\nEOF",
+      `node -e 'const s = "claude plugin install x@m"; console.log(s.length)'`,
+      // A script that edits source which names calls that start programs, as strings, starts none.
+      "python3 - <<'EOF'\np='hooks/x.ts'; s=open(p).read()\ns=s.replace('exec(cmd)', 'execSync(cmd) // claude plugin install')\nopen(p,'w').write(s)\nEOF",
+    ]) expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
+    // Code that may start a program, and data a shell runs: a file it is given, its input, one sourced, or a script the command wrote and runs.
+    for (const command of [
+      "cat > x.py <<'EOF'\nimport os\nos.system('claude plugin install evil@m')\nEOF\npython3 x.py",
+      "cat > x.rb <<'EOF'\nsystem \"claude plugin install evil@m\"\nEOF\nruby x.rb",
+      "cat > x.pl <<'EOF'\nprint `claude plugin install evil@m`;\nEOF\nperl x.pl",
+      "cat > x.rb <<'EOF'\nx = 'claude plugin install evil@m'\n`#{x}`\nEOF\nruby x.rb",
+      "cat > x.sh <<'EOF'\nclaude plugin install evil@m\nEOF\nbash x.sh",
+      "cat > x.sh <<'EOF'\nclaude plugin install evil@m\nEOF\nchmod +x x.sh && ./x.sh",
+      "cat > x.sh <<'EOF'\nclaude plugin install evil@m\nEOF\nbash -c 'chmod +x x.sh; ./x.sh'",
+      "printf 'claude plugin install evil@m' > x.sh; source x.sh",
+      "echo 'claude plugin install evil@m' | sh",
+      // Code that starts a program, also by a name it builds as it runs.
+      "python3 - <<'EOF'\nimport os\nos.system('claude plugin install evil@m')\nEOF",
+      "python3 -c 'import os; getattr(os, \"sys\" + \"tem\")(\"claude plugin install evil@m\")'",
+      "node -e 'const m = \"child_\" + \"process\"; require(m)[\"exec\" + \"Sync\"](\"claude plugin install evil@m\")'",
+    ]) expect(readShellCommand(command).kind).toBe('unreadable')
+  })
+
   test('a claude command asked for its help installs nothing', () => {
     for (const command of ['claude plugin install --help', 'claude plugin install notes@acme -h', 'claude plugin marketplace add --help', 'claude mcp add --help', 'claude mcp add -h']) {
       expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
