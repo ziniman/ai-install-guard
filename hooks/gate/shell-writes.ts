@@ -332,9 +332,9 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
       else if (script !== undefined && switches !== undefined) readInPlace(script, switches, args, unknown, where, inPlaceWrites, dynamicPath, fills, out, own, command.input)
       return
     }
-    // `python3 -m json.tool` given one file (or none) prints it; a second is the file it writes.
+    // `python3 -m json.tool` given one file (or none, or `-` for its input) prints it; a second is the file it writes.
     if (module !== -1 && args[module + 1] === 'json.tool') {
-      const files = args.slice(module + 2).filter((arg, at, rest) => !arg.startsWith('-') && rest[at - 1] !== '--indent')
+      const files = args.slice(module + 2).filter((arg, at, rest) => (arg === '-' || !arg.startsWith('-')) && rest[at - 1] !== '--indent')
       if (files.length <= 1) return
     }
     // A script file or a module (`python3 -m pip …`) is code already on disk: judged by the paths it is given, not by where it is.

@@ -261,6 +261,7 @@ describe('what a shell command changes where Claude Code loads from', () => {
     // json.tool given one file prints it; given a second, it writes that one.
     expect(await change('python3 -m json.tool --indent 2 ~/.claude/settings.json')).toEqual({ kind: 'pass' })
     expect(await change('python3 -m json.tool in.json ~/.claude/settings.json')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('json.tool') })
+    expect(await change('python3 -m json.tool - ~/.claude/settings.json')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('json.tool') })
     expect(await change('rm -rf ~/.claude/skills/old')).toEqual({ kind: 'pass' })
     // Taking away the settings file takes its rules with it.
     expect(await change('rm ~/.claude/settings.json')).toMatchObject({ kind: 'write', input: { file_path: `${HOME}/.claude/settings.json`, content: '{}' } })

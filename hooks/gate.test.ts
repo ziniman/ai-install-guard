@@ -134,6 +134,9 @@ describe("reading Claude's shell commands", () => {
       "CMD=claude; sh -c '$CMD plugin install notes@acme'",
       "CMD='$OTHER'; $CMD plugin install notes@acme",
       'V="a b"; claude plugin install $V',
+      // Local review: an assignment earlier in the same command sets it first, and a name only known as it runs may be any.
+      'A=claude; A=x B="$A"; $B plugin install notes@acme',
+      'CMD=claude; read "$X"; $CMD plugin install notes@acme',
     ]) expect(readShellCommand(command).kind).toBe('unreadable')
     // A single-quoted `$` is the character itself.
     expect(readShellCommand("CMD=claude; echo '$CMD plugin install notes@acme'")).toEqual({ kind: 'pass', browse: false })
@@ -161,6 +164,8 @@ describe("reading Claude's shell commands", () => {
     ]) expect(readShellCommand(command)).toEqual({ kind: 'pass', browse: false })
     for (const command of [
       "node -e 'require(\"child_process\").execSync(`${cmd} --x`)'",
+      // Local review: a template handed to a function of the code's own, which runs it.
+      "node -e 'function run(x){require(\"child_process\").execSync(x)}; run(`${process.env.CMD}`)'",
       "node -e 'const c = `claude plugin install x@m`; require(\"child_process\").execSync(c)'",
       `python3 -c 'import os; os.system("\`$CMD\`")'`,
       "awk 'BEGIN { system(\"`$CMD`\") }'",

@@ -170,8 +170,8 @@ function withoutPatterns(code: string): string {
  * hands to one may run as a command (`` execSync(`${cmd}`) ``, `` Bun.$`…` ``,
  * `` eval(`${code}`) ``), so its backquotes are read as scripts.
  */
-/** What hands a template straight to something that runs it: a call that starts a process or runs code, or a tag that does (`` $`…` ``). */
-const RUNS_TEMPLATE = /(?:\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork|eval|Function|execa\w*|system|runIn\w*Context|compileFunction|require|import)\s*\(\s*|\$\s*)$/
+/** What hands a template to something that only prints it or throws it: whatever else it is handed to may run it, through a function of the code's own as well. */
+const PRINTS_TEMPLATE = /(?:\bconsole\.(?:log|error|warn|info|debug)|\bprint|\bprocess\.std(?:out|err)\.write|\bError)\s*\(\s*$/
 
 const MAY_RUN_TEXT = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`|\b(?:eval|Function|vm|Worker)\b|_compile|runIn\w*Context|compileFunction|\bimport\s*\(|\brequire\s*\(\s*`/
 
@@ -397,9 +397,8 @@ function claudePlugin(words: readonly string[], index: number, expands: Readonly
  * it holds, like every word read from the code, is read as code too. One
  * inside a string is still read as a script, and so is a shell or eval named
  * in the code. `runners` is set for JavaScript that may run text: a template
- * there is a script only when handed straight to what runs it
- * (`` execSync(`…`) ``, `` $`…` ``, `` eval(`…`) ``); any other is the code's own
- * text, as with `inCode`.
+ * there is a script unless it is only printed or thrown (`` console.log(`…`) ``),
+ * since anything else may hand it to what runs it.
  */
 function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean, inCode = false, runners = false): Collected {
   const out: Collected = { unseen: false, opaque: false, others: 0, texts: [] }
@@ -416,7 +415,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     // What its substitutions run comes first, and is read as commands too, but
     // for a JavaScript template, which is the code's own text.
     substitutions?.forEach((script, at) => {
-      const template = (inCode || (runners && !RUNS_TEMPLATE.test(scriptLeads?.[at] ?? ''))) && quotedScripts?.includes(at) !== true
+      const template = (inCode || (runners && PRINTS_TEMPLATE.test(scriptLeads?.[at] ?? ''))) && quotedScripts?.includes(at) !== true
       merge(collectInstalls(script, found, depth + 1, !template, template), true)
     })
     const own = out.texts.push([...words, input ?? ''].join(' ')) - 1
@@ -872,7 +871,9 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   const resolve = (at: number, inQuotes: boolean): { value: string; length: number } | undefined => {
     const found = /^(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})/.exec(text.slice(at + 1, at + 130))
     const name = found?.[1] ?? found?.[2]
-    const value = name === undefined ? undefined : known.get(name)
+    // An assignment earlier in this same command sets it first (`A=x B="$A"`), or not at all for its words (`A=x cmd "$A"`).
+    const assignedHere = name !== undefined && current.words.some(word => ASSIGNMENT.exec(word)?.[1] === name)
+    const value = name === undefined || assignedHere ? undefined : known.get(name)
     if (found === null || value === undefined || (!inQuotes && (value === '' || /[\s*?[\]{}]/.test(value)))) return undefined
     return { value, length: found[0].length }
   }
@@ -945,6 +946,8 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     if (name === undefined) for (const item of assigns) set(item.name, item.value, item.fixed)
     else if (name === 'eval' || name === 'source' || name === '.' || functions.has(name)) known.clear()
     else if (name === 'export' || name === 'readonly' || name === 'declare' || name === 'typeset' || name === 'local' || name === 'unset' || name === 'read' || name === 'mapfile' || name === 'readarray' || name === 'getopts' || name === 'let' || name === 'for' || name === 'select' || name === 'printf') {
+      // Given a name only known as it runs (`read "$X"`), it may change any variable.
+      if (args.some((_, index) => wordsUnresolved[program + 1 + index] === true)) known.clear()
       args.forEach((arg, index) => {
         const found = ASSIGNMENT.exec(arg)
         if (found !== null) set(found[1] as string, arg.slice(found[0].length), name === 'export' && found[2] === '' && wordsUnresolved[program + 1 + index] !== true)
