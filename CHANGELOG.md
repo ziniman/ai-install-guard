@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.8.15 &nbsp;·&nbsp; 2026-11-03
+
+**Claude's own commands** - A command that runs code the guard does not read was held whenever its text named the `claude` command beside `plugin` or `mcp` anywhere, a comment or a string included: a script that edits docs or code about Claude plugins, written and run, was Could not verify. Those words now count only where they may run: in shell text, in code that can start a program (in Python and JavaScript, looked for outside strings and comments, and counting the ways to reach a call by a name built as the code runs), and in any data when a shell runs text the guard did not read. That now includes a file the command itself wrote and then runs (`./x.sh`, also from a nested script), or one it sources, which was not looked at before. In Perl, Ruby and PHP any backquote runs a shell command, so their code with one counts as starting a program
+
+---
+
 ## v0.8.14 &nbsp;·&nbsp; 2026-11-03
 
 **Shell commands** - A variable the command sets earlier to a value written out (`S=/path; cp x "$S/y"`, `I=…/impeccable; "$I/scripts/impeccable" detect`) is now read as that value by both gates, rather than held as a path or program only known as it runs. Only a plain assignment at the top level, after `;` or a new line, counts: one inside `if`, `for`, braces or parentheses, after `&&` or `||`, in a pipeline, or followed by anything that may change it (`read`, `for`, `unset`, `local`, `eval`, `source`, a function the command defines) stays unknown, and a nested `sh -c` script starts with none. A backquote in an `awk`, `sed` or `jq` program, in Python outside a double-quoted string, in a JavaScript pattern or comment, in a template the code only prints, or in the arguments of a function the command defines, is no longer read as a command built as it runs. `claude plugin install --help` and the like install nothing, and `python3 -m json.tool <file>` prints the file. For code that names a path in a `.claude` folder, an escape counts only when it spells `/`, `.` or `\`, and only a copy, move, link, clone or unknown program, never text written into a file, counts as possibly putting a link in place first
