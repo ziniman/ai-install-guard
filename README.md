@@ -18,6 +18,13 @@
 /plugin install ai-install-guard --marketplace ziniman/ai-install-guard
 ```
 
+To update it, refresh its marketplace first, since the plugin's update is looked up there, then run `/reload-plugins`:
+
+```
+claude plugin marketplace update ai-install-guard
+claude plugin update ai-install-guard@ai-install-guard
+```
+
 </div>
 
 ## What it does
