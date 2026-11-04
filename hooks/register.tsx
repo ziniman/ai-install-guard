@@ -1,6 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { atom, update } from 'claude-code'
 
+import type { GuardView } from '../types'
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
 import { configuredServers, refusalByName, servingTool, toolRefusal, type ServerTools } from './gate/configured'
 import { checkAtStart, waitingReport, type StartCheck } from './gate/installed'
@@ -13,7 +14,7 @@ import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
 import { forgetDecisions, loadDecisions, loadLastView, loadReport } from './guard/decisions'
 import { drawPane } from './guard/pane'
-import { showScan } from './guard/run'
+import { showScan, stopScanning, stoppedBecause } from './guard/run'
 import { PANE_ID } from './guard/view'
 import { modHost } from './mod-host'
 import { sha256Hex } from './scan/hash'
@@ -142,7 +143,7 @@ export const register: Register = (on, options) => {
       return { text: `AI Install Guard: forgot ${count} decision${count === 1 ? '' : 's'} about ${safeLine(rest)}.` }
     }
     return { text: USAGE }
-  }).catch(() => ({ text: 'AI Install Guard: the command failed before it could answer.' }))
+  }).catch(async ($, e, next) => (await stopped($, next.error, view => view.request === undefined), { text: 'AI Install Guard: the command failed before it could answer.' }))
 
   // Gate A: the person's own /plugin install and /plugin marketplace add. An
   // install is answered in the command's place, so nothing installs, until
@@ -157,7 +158,7 @@ export const register: Register = (on, options) => {
     if (judged.kind === 'hold') return { text: judged.text }
     if (judged.note !== undefined) $.ui.toast(judged.note)
     return next(e)
-  }).catch(($, e, next) => (next.called ? next(e) : { text: 'AI Install Guard stopped this install: it failed before it could check it, so nothing was installed.' }))
+  }).catch(async ($, e, next) => (next.called ? next(e) : (await stopped($, next.error, view => view.request?.origin === 'command' && view.request.args === e.args), { text: 'AI Install Guard stopped this install: it failed before it could check it, so nothing was installed.' })))
 
   // A `cd` in one shell command carries over to the next: the session says where it went.
   on('classic.CwdChanged', ($, e, next) => {
@@ -184,7 +185,7 @@ export const register: Register = (on, options) => {
     if (judged.kind === 'hold') return { deny: judged.text }
     if (judged.note !== undefined) $.ui.toast(judged.note)
     return next(e)
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'AI Install Guard stopped this command: it may install a plugin or change where Claude Code loads from, and the guard failed before it could check it. Nothing was installed or written.' }))
+  }).catch(async ($, e, next) => (next.called ? next(e) : (await stopped($, next.error, view => view.request?.origin === 'tool' && view.request.args === e.command), { deny: 'AI Install Guard stopped this command: it may install a plugin or change where Claude Code loads from, and the guard failed before it could check it. Nothing was installed or written.' })))
 
   // Gate C: Claude writing or editing a file where Claude Code loads skills,
   // commands, agents, MCP servers and plugins from. Any other file goes on at
@@ -199,7 +200,7 @@ export const register: Register = (on, options) => {
     } finally {
       gate.release()
     }
-  }).catch(($, e, next) => (next.called ? next(e) : writeRefused))
+  }).catch(async ($, e, next) => (next.called ? next(e) : (await stopped($, next.error, view => view.request?.subject === 'write' && view.request.args.startsWith(`Write ${safeLine(normalizePath(e.file_path))} `)), writeRefused)))
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
     const gate = await gateWrite($, { tool: 'Edit', file_path: e.file_path, old_string: e.old_string, new_string: e.new_string, ...(e.replace_all === undefined ? {} : { replace_all: e.replace_all }) }, lookups, await claudeFolder($))
     if ('deny' in gate) return { deny: gate.deny }
@@ -208,7 +209,7 @@ export const register: Register = (on, options) => {
     } finally {
       gate.release()
     }
-  }).catch(($, e, next) => (next.called ? next(e) : writeRefused))
+  }).catch(async ($, e, next) => (next.called ? next(e) : (await stopped($, next.error, view => view.request?.subject === 'write' && view.request.args.startsWith(`Edit ${safeLine(normalizePath(e.file_path))} `)), writeRefused)))
 
   // Gate E: a skill or command that came with no install. Its inline commands
   // run as Claude Code expands it, before skill.prompt, so the person's /name
@@ -219,13 +220,13 @@ export const register: Register = (on, options) => {
     if (judged.kind === 'hold') return { text: judged.toPerson }
     if (judged.note !== undefined) $.ui.toast(judged.note)
     return next(e)
-  }).catch(($, e, next) => (next.called ? next(e) : { text: `AI Install Guard stopped /${safeLine(e.command)}: it failed before it could check the skill by that name, so nothing in it ran.` }))
+  }).catch(async ($, e, next) => (next.called ? next(e) : (await stopped($, next.error, view => view.request?.subject === 'skill' && view.request.label.endsWith(` ${safeLine(e.command)}`)), { text: `AI Install Guard stopped /${safeLine(e.command)}: it failed before it could check the skill by that name, so nothing in it ran.` })))
   on('tool.call', { tool: 'Skill' }, async ($, e, next) => {
     const judged = await judgeByName($, e.skill, skillFolders(), lookups, await claudeFolder($))
     if (judged.kind === 'hold') return { deny: judged.text }
     if (judged.note !== undefined) $.ui.toast(judged.note)
     return next(e)
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: `AI Install Guard stopped the skill ${safeLine(e.skill)}: it failed before it could check it, so nothing in it ran. Tell the person.` }))
+  }).catch(async ($, e, next) => (next.called ? next(e) : (await stopped($, next.error, view => view.request?.subject === 'skill' && view.request.label.endsWith(` ${safeLine(e.skill)}`)), { deny: `AI Install Guard stopped the skill ${safeLine(e.skill)}: it failed before it could check it, so nothing in it ran. Tell the person.` })))
   // And as its instructions load for the model, the net for a skill found
   // anywhere else (a subagent's preload): the model reads why in place of them.
   on('skill.prompt', async ($, e, next) => {
@@ -233,7 +234,7 @@ export const register: Register = (on, options) => {
     if (judged.kind === 'hold') return { text: judged.text }
     if (judged.note !== undefined) $.ui.toast(judged.note)
     return next(e)
-  }).catch(($, e, next) => (next.called ? next(e) : { text: failedSkill(e, next.error) }))
+  }).catch(async ($, e, next) => (next.called ? next(e) : (await stopped($, next.error, view => view.request?.subject === 'skill' && view.request.label.endsWith(` ${safeLine(e.skill)}`)), { text: failedSkill(e, next.error) })))
 
   // A server you rejected starts with the session all the same, before the
   // guard can look: its tools are refused, by the start of their names, from
@@ -259,6 +260,11 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($, e) => drawPane($, e))
+}
+
+/** A gating hook that failed leaves no pane that says its scan, the one `mine` knows, is still running. */
+async function stopped($: EngineInterface, error: { kind: 'throw' | 'timeout'; message?: string } | undefined, mine: (view: GuardView) => boolean): Promise<void> {
+  await stopScanning($, stoppedBecause(error), mine).catch(() => undefined)
 }
 
 /** Where CLAUDE_CONFIG_DIR keeps Claude's own folder, when it moves it from ~/.claude: looked up once, when first needed. */

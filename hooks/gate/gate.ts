@@ -8,7 +8,7 @@ import type { EngineInterface } from 'claude-code'
 import type { GuardRequest } from '../../types'
 import { decisionFor, noteChecked, pinnedDecision } from '../guard/decisions'
 import { takePass } from '../guard/passes'
-import { scanOnly, showScan, showUnverified, type ScanHow, type ShowOptions, type Shown } from '../guard/run'
+import { scanOnly, showScan, showUnverified, type PaneState, type ScanHow, type ShowOptions, type Shown } from '../guard/run'
 import type { Host } from '../scan/host'
 import { landsAt, readWrite, type WriteReading } from './writes'
 import type { ShellChange } from './shell-change'
@@ -43,7 +43,7 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
   if (reading.kind === 'unreadable') {
     const shown = await showUnverified($, reading.label, reading.reason, options)
     // The reason is the guard's own reading of the command, so Claude may read it too.
-    return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed, { why: reading.reason, toClaude: true })
+    return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown, { why: reading.reason, toClaude: true })
   }
   const name = nameOf(reading.request)
   // An MCP server has no repository to fetch: its configuration is what is checked.
@@ -56,7 +56,7 @@ export async function judge($: EngineInterface, reading: Exclude<Reading, { kind
     case 'unverifiable': {
       const shown = await showUnverified($, name, target.reason, options)
       // This reason can quote a marketplace's own catalog: the person reads it, Claude does not.
-      return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed, { why: target.reason, toClaude: false })
+      return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown, { why: target.reason, toClaude: false })
     }
     case 'remote':
       return judgeRemote($, name, target.spec, request, options)
@@ -99,7 +99,7 @@ export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReadi
   const options = { action: 'install' as const, request, lookups }
   if (reading.kind === 'unreadable') {
     const shown = await showUnverified($, reading.label, reading.reason, options)
-    return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed, { why: reading.reason, toClaude: true })
+    return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown, { why: reading.reason, toClaude: true })
   }
   if (reading.kind === 'mcp') {
     // Several servers written at once are decided together, and the decision holds for each, as the check at a session's start judges them one at a time.
@@ -254,7 +254,7 @@ export function mcpCandidate(servers: readonly { name: string; scope?: string; s
 const UNVERIFIED = { kind: 'unverified', recommendation: 'Could not verify' } as const
 
 function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement {
-  if (shown.kind === 'failed') return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown.placed)
+  if (shown.kind === 'failed') return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown)
   const sha = shown.report.source?.sha
   const where = sha === undefined ? '' : ` at commit ${sha.slice(0, 12)}`
   // The same files approved before (through /guard scan, or an earlier install), and judged no
@@ -262,7 +262,7 @@ function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement
   if (shown.view.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${name}${where} on ${day(shown.view.decidedAt ?? Date.now())}; ${wordsFor(request).doing}` }
   if (shown.view.decision === 'rejected') return rejected(request, name, where, shown.view.decidedAt)
   if (shown.superseded) return superseded(request)
-  return hold(request, shown.report.verdict, where, shown.placed, { report: shown.text })
+  return hold(request, shown.report.verdict, where, shown, { report: shown.text })
 }
 
 /** The words an answer uses for what was held: an install, or a write. */
@@ -298,7 +298,7 @@ function hold(
   request: GuardRequest,
   verdict: { kind: VerdictKind; recommendation: string },
   where: string,
-  placed: boolean,
+  pane: PaneState,
   more: { report?: string; why?: string; toClaude?: boolean } = {},
 ): Judgement {
   const unverified = verdict.kind === 'unverified'
@@ -308,13 +308,17 @@ function hold(
   const button = unverified || verdict.kind === 'reject' ? 'Install anyway (it asks you to confirm)' : 'Install'
   if (request.origin === 'tool') {
     const words = wordsFor(request)
-    const next = placed
+    // A pane the guard opened by itself on a narrow terminal waits for the person's own /guard report to draw it.
+    const next = pane.placed
       ? `The verdict and the Install and Reject buttons are in the guard's pane. Tell the person the ${words.thing} waits for their decision there, and ${words.again} only after they say they approved it.`
-      : 'This session cannot show the guard\'s pane, so the person cannot approve it here.'
+      : pane.waiting
+        ? `Tell the person to run /guard report, which opens the guard's pane with the verdict and the Install and Reject buttons, and ${words.again} only after they say they approved it.`
+        : 'This session cannot show the guard\'s pane, so the person cannot approve it here.'
     return { kind: 'hold', text: `AI Install Guard held this ${words.thing} for the person to review: ${unverified ? `it ${what}${more.toClaude === true ? why : ''}` : what}. ${words.done}. Do not retry it or ${request.subject === 'write' || request.subject === 'command' ? 'write it' : 'install it'} another way. ${next}` }
   }
   const said = unverified ? `AI Install Guard ${what}${why}.` : `AI Install Guard: ${what}.`
-  if (!placed) {
+  if (!pane.placed && pane.waiting) return { kind: 'hold', text: `${said} Nothing is installed yet: run /guard report to open the guard's pane, then press ${button} there to install it, or Reject.` }
+  if (!pane.placed) {
     return { kind: 'hold', text: `${more.report === undefined ? '' : `${more.report}\n\n`}${said} Nothing was installed: approving an install needs the guard's pane, which this session cannot show.` }
   }
   return { kind: 'hold', text: `${said} Nothing is installed yet: press ${button} in the guard's pane to install it, or Reject.` }
