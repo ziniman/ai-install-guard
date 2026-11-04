@@ -186,7 +186,9 @@ export async function readShellChange(host: Host, command: string, cwd: string |
   const skillEdits: { part: Unseen; files: string[] }[] = []
   // Paths in a `.claude` folder that reach nothing it loads by their words, unless a link on the way leads there.
   const linked: { part: Unseen; paths: string[] }[] = []
-  const weigh = (text: string, part: Unseen): void => {
+  const weigh = (named: string, part: Unseen): void => {
+    // Code run in a place Claude Code loads from may write there by any name, so that folder is one it names.
+    const text = part.text !== undefined && part.cwd !== undefined && namesClaudeFolder(part.cwd) ? `${part.cwd}/ ${named}` : named
     const { loads, others } = claudePaths(text)
     if (!loads) {
       if (others.length > 0) linked.push({ part, paths: others })
@@ -201,7 +203,8 @@ export async function readShellChange(host: Host, command: string, cwd: string |
     skillEdits.push({ part, files: found.files })
     if (found.others.length > 0) linked.push({ part, paths: found.others })
   }
-  for (const part of read.unseen) weigh(part.text ?? command, part)
+  // Code's own text names where it may write; what it only holds as text (`places`) names nothing.
+  for (const part of read.unseen) weigh(part.places ?? part.text ?? command, part)
 
   let home: string | undefined | null = null
   const homeFolder = async (): Promise<string | undefined> => {

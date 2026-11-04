@@ -103,11 +103,19 @@ export function excerpt(line: string, start = 0, length = 0): string {
   return `${from > 0 ? '…' : ''}${trimmed.slice(from, to).trim()}${to < trimmed.length ? '…' : ''}`
 }
 
+/** The line tables of the texts read last: each file is matched against many patterns in turn. */
+const recentStarts = new Map<string, number[]>()
+const RECENT_STARTS = 8
+
 function lineStarts(text: string): number[] {
+  const known = recentStarts.get(text)
+  if (known !== undefined) return known
   const starts = [0]
   for (let i = 0; i < text.length; i += 1) {
     if (text.charCodeAt(i) === 10) starts.push(i + 1)
   }
+  if (recentStarts.size >= RECENT_STARTS) recentStarts.delete(recentStarts.keys().next().value as string)
+  recentStarts.set(text, starts)
   return starts
 }
 
