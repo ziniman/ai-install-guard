@@ -263,12 +263,17 @@ describe('what a shell command changes where Claude Code loads from', () => {
   test('an ordinary write, a read, or taking a skill away passes', async () => {
     expect(await change('npm test > out.log')).toEqual({ kind: 'pass' })
     expect(await change('ls ~/.claude/skills && cat ~/.claude/settings.json | python3 -m json.tool')).toEqual({ kind: 'pass' })
-    // json.tool given one file prints it; given a second, it writes that one.
+    // json.tool given one file prints it; given a second, it writes that one, which is looked at once written.
     expect(await change('python3 -m json.tool --indent 2 ~/.claude/settings.json')).toEqual({ kind: 'pass' })
-    expect(await change('python3 -m json.tool in.json ~/.claude/settings.json')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('json.tool') })
-    expect(await change('python3 -m json.tool - ~/.claude/settings.json')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('json.tool') })
+    expect(await change('python3 -m json.tool in.json ~/.claude/settings.json')).toMatchObject({ kind: 'watch', reason: expect.stringContaining('json.tool'), named: [`${HOME}/.claude/settings.json`] })
+    expect(await change('python3 -m json.tool - ~/.claude/settings.json')).toMatchObject({ kind: 'watch', reason: expect.stringContaining('json.tool') })
     expect(await change('python3 -m json.tool ~/.claude/settings.json -')).toEqual({ kind: 'pass' })
-    expect(await change('python3 -m json.tool -- --indent ~/.claude/settings.json')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('json.tool') })
+    expect(await change('python3 -m json.tool -- --indent ~/.claude/settings.json')).toMatchObject({ kind: 'watch', reason: expect.stringContaining('json.tool') })
+    // What the guard held while its benchmark read a marketplace: a program it does not know, given one path to read.
+    expect(await change('npm run benchmark -- ~/.claude/plugins/marketplaces/official')).toMatchObject({ kind: 'watch', named: [`${HOME}/.claude/plugins/marketplaces/official`] })
+    expect(await change('markdownlint ~/.claude/skills/old/SKILL.md')).toMatchObject({ kind: 'watch' })
+    // Given a whole area, it may write anything there, as a download or an archive may.
+    expect(await change('npm run benchmark -- ~/.claude/plugins')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('as a whole') })
     expect(await change('rm -rf ~/.claude/skills/old')).toEqual({ kind: 'pass' })
     // Taking away the settings file takes its rules with it.
     expect(await change('rm ~/.claude/settings.json')).toMatchObject({ kind: 'write', input: { file_path: `${HOME}/.claude/settings.json`, content: '{}' } })
