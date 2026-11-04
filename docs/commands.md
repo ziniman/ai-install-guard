@@ -6,7 +6,7 @@
 | `/guard scan <repository>` | Fetch one commit of a repository into the guard's own temporary folder, scan it and remove it. Takes `https://host/owner/repo`, a GitHub `…/tree/<ref>/<folder>` link, `github:owner/repo` or `owner/repo`, with an optional `@ref` |
 | `/guard scan --ref <ref> --path <folder> <repository>` | Scan a branch, tag or full commit id (the default branch otherwise), and a folder inside the repository |
 | `/guard scan --details …` | Any of the above, and print the full report with every finding and its advice |
-| `/guard report` | Reopen the last report |
+| `/guard report` | Reopen the last report, with its buttons when it still waits for you; on a terminal under 144 columns, where a pane the guard opens by itself waits undrawn, this is how you open it |
 | `/guard badge` | A README badge for the last scan, when it was No red flags or Worth a look (see [Review badge](badge.md)) |
 | `/guard list` | Your approved and rejected versions, newest first |
 | `/guard held` | The mods kept from loading in this session, and the plugins on and parts of your configuration that wait for your decision, and the next one undecided in the pane (see [Loading mods](gates.md#loading-mods) and [At the start of a session](gates.md#at-the-start-of-a-session)) |

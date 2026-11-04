@@ -230,10 +230,16 @@ export type UiRecord = {
  * `ui.copy` beneath the plugin, recording each. With `placed: false` no
  * surface takes the pane, as in a headless run.
  */
-export function serveUi(on: On, options: { placed?: boolean } = {}): UiRecord {
+export function serveUi(on: On, options: { placed?: boolean; narrow?: number } = {}): UiRecord {
   const record: UiRecord = { opened: [], closed: [], toasts: [], statuses: [], copied: [] }
+  // The first `narrow` opens wait undrawn, as one the guard opens by itself does on a terminal under 144 columns.
+  let narrow = options.narrow ?? 0
   on('ui.open', ($, e) => {
     record.opened.push(e.id)
+    if (narrow > 0) {
+      narrow -= 1
+      return { value: { isPlaced: false, reason: 'an unasked pane is drawn from 144 columns, and the terminal has 120' } }
+    }
     return { value: options.placed === false ? { isPlaced: false, reason: 'no-surface' } : { isPlaced: true } }
   })
   on('ui.close', ($, e) => {

@@ -62,9 +62,17 @@ export type ShowOptions = {
   parts?: string[]
 }
 
+/**
+ * Where the pane is: drawn (`placed`), or open but waiting to be drawn
+ * (`waiting`): one the guard opened by itself on a terminal too narrow for
+ * that, which a command the person types, /guard report, draws at any width.
+ * Neither is a session no surface can show it in (a headless run).
+ */
+export type PaneState = { placed: boolean; waiting: boolean }
+
 export type Shown =
-  | { kind: 'done'; report: ScanReport; view: GuardView; text: string; placed: boolean; superseded: boolean }
-  | { kind: 'failed'; reason: string; view: GuardView; placed: boolean; superseded: boolean }
+  | ({ kind: 'done'; report: ScanReport; view: GuardView; text: string; superseded: boolean } & PaneState)
+  | ({ kind: 'failed'; reason: string; view: GuardView; superseded: boolean } & PaneState)
 
 let scans = 0
 
@@ -86,11 +94,11 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
   const ifFree = options.ifFree === true
   // A review the guard opens by itself takes the pane before showing it, and only a free one.
   if (ifFree && !(await takePane($, scanning, true))) {
-    return { kind: 'failed', reason: `Could not verify ${safeLine(target)}: the pane holds a verdict still waiting`, view: scanning, placed: false, superseded: true }
+    return { kind: 'failed', reason: `Could not verify ${safeLine(target)}: the pane holds a verdict still waiting`, view: scanning, placed: false, waiting: false, superseded: true }
   }
   const opened = await openPane($)
   if (!ifFree && !(await takePane($, scanning))) {
-    return { kind: 'failed', reason: `Could not verify ${safeLine(target)}: a newer scan has the pane`, view: scanning, placed: opened, superseded: true }
+    return { kind: 'failed', reason: `Could not verify ${safeLine(target)}: a newer scan has the pane`, view: scanning, ...opened, superseded: true }
   }
   $.ui.status(`AI Install Guard: scanning ${safeLine(target)}`)
   try {
@@ -113,17 +121,18 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
     const text = formatReport(report, { details: true, version: await ownVersion($) })
     // A scan started since owns the pane now: this one leaves it, its report
     // and the reopened report alone, so no press lands on the wrong scan.
-    if (!(await owns($, scanId))) return { kind: 'done', report, view, text, placed: opened, superseded: true }
+    if (!(await owns($, scanId))) return { kind: 'done', report, view, text, ...opened, superseded: true }
     // The report is stored under this scan's name before the pane shows the
     // verdict, so Copy report copies it, and never another scan's.
     await saveReport($, scanId, text)
-    if (!(await showOwn($, view))) return { kind: 'done', report, view, text, placed: opened, superseded: true }
-    $.ui.toast(`AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}`)
-    return { kind: 'done', report, view, text, placed: opened, superseded: false }
+    if (!(await showOwn($, view))) return { kind: 'done', report, view, text, ...opened, superseded: true }
+    // A pane that waits to be drawn is opened by the person's own command.
+    $.ui.toast(`AI Install Guard: ${report.verdict.recommendation} for ${safeLine(target)}${opened.waiting && view.decision === undefined ? '. Run /guard report to open it in the pane' : ''}`)
+    return { kind: 'done', report, view, text, ...opened, superseded: false }
   } catch (error) {
     const reason = `Could not verify ${safeLine(target)}: ${safeLine(error instanceof Error ? error.message : String(error))}`
     const failed = await showFailure($, target, reason, options, scanId)
-    return { kind: 'failed', reason, view: failed.view, placed: opened, superseded: !failed.shown }
+    return { kind: 'failed', reason, view: failed.view, ...opened, superseded: !failed.shown }
   } finally {
     $.ui.status(undefined)
   }
@@ -134,16 +143,17 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
  * with the reason, and Install anyway behind a second confirmation.
  * `superseded` says a newer scan has the pane instead.
  */
-export async function showUnverified($: EngineInterface, target: string, reason: string, options: ShowOptions): Promise<{ view: GuardView; placed: boolean; superseded: boolean }> {
+export async function showUnverified($: EngineInterface, target: string, reason: string, options: ShowOptions): Promise<{ view: GuardView; superseded: boolean } & PaneState> {
   const scanId = newScanId()
   const scanning = { ...withRequest(scanningView(target, options.action), options.request), scanId }
   const ifFree = options.ifFree === true
-  if (ifFree && !(await takePane($, scanning, true))) return { view: scanning, placed: false, superseded: true }
-  const placed = await openPane($)
-  if (!ifFree && !(await takePane($, scanning))) return { view: scanning, placed, superseded: true }
+  if (ifFree && !(await takePane($, scanning, true))) return { view: scanning, placed: false, waiting: false, superseded: true }
+  const opened = await openPane($)
+  if (!ifFree && !(await takePane($, scanning))) return { view: scanning, ...opened, superseded: true }
   // The banner already says Could not verify and the title names the target: the pane shows the reason itself.
   const failed = await showFailure($, target, `Could not verify ${safeLine(target)}: ${safeLine(reason)}`, options, scanId, sentence(reason))
-  return { view: failed.view, placed, superseded: !failed.shown }
+  if (failed.shown && opened.waiting) $.ui.toast(`AI Install Guard: could not verify ${safeLine(target)}. Run /guard report to open it in the pane`)
+  return { view: failed.view, ...opened, superseded: !failed.shown }
 }
 
 /** A reason as a sentence of its own: made safe, its first letter a capital. */
@@ -229,10 +239,15 @@ async function showOwn($: EngineInterface, view: GuardView): Promise<boolean> {
   return true
 }
 
-/** Opens the pane; false where no surface can show it (a headless run). */
-async function openPane($: EngineInterface): Promise<boolean> {
-  const opened = await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => ({ isPlaced: false }))
-  return opened.isPlaced
+/**
+ * Opens the pane: drawn, or open and waiting to be drawn, when the reason is
+ * the terminal's width (opened by the guard itself under the columns that
+ * needs), or nowhere: no surface (a headless run), or a reason the guard does
+ * not know, where pointing to /guard report could lead nowhere.
+ */
+async function openPane($: EngineInterface): Promise<PaneState> {
+  const opened = await $.ui.open({ id: PANE_ID, title: 'AI Install Guard', focus: true }).catch(() => ({ isPlaced: false as const, reason: 'no-surface' }))
+  return opened.isPlaced ? { placed: true, waiting: false } : { placed: false, waiting: !/^no-surface/.test(opened.reason) && /\bcolumns?\b/i.test(opened.reason) }
 }
 
 function withRequest(view: GuardView, request: GuardRequest | undefined): GuardView {

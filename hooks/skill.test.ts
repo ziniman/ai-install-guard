@@ -196,6 +196,26 @@ describe('gate E: before a skill expands', () => {
     expect(ran).toEqual([])
   })
 
+  test('on a terminal too narrow for a pane the guard opens by itself, /guard report opens it to decide', async ($, on) => {
+    setup(on)
+    // What a user saw: a pane opened by the guard itself, not by the person, is drawn only from 144 columns.
+    const ui = serveUi(on, { narrow: 1 })
+    const ran = beneath(on)
+    serveFixture(on, HOME, { 'proj/.claude/skills/review/SKILL.md': b64(FLAGGED) })
+    await into($, PROJECT)
+    const refused = await $.tool.call({ tool: 'Skill', skill: 'review' })
+    expect(refused.deny).toContain("Tell the person to run /guard report, which opens the guard's pane with the verdict and the Approve and Reject buttons")
+    expect(refused.deny).not.toContain('cannot approve it here')
+    expect(ui.toasts).toContain('AI Install Guard: Worth a look for the skill review. Run /guard report to open it in the pane')
+    // The person's own command draws it at any width.
+    expect((await $.command.run(typed('guard', 'report'))).text).toBe('AI Install Guard: reopened the report for the skill review.')
+    const pane = await mountPane($)
+    await pane.press({ key: 'install' })
+    await pane.unmount()
+    expect((await $.tool.call({ tool: 'Skill', skill: 'review' })).deny).toBeUndefined()
+    expect(ran).toEqual(['Skill review'])
+  })
+
   test('your own skills, a command in a subfolder, and a project above the folder the session is in are all found', async ($, on) => {
     setup(on)
     serveUi(on)

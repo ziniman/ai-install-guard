@@ -4,7 +4,9 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
-## v0.8.16 &nbsp;·&nbsp; 2026-11-03
+## v0.8.16 &nbsp;·&nbsp; 2026-11-04
+
+**The pane** - A pane the guard opens by itself, as when Claude uses a skill held on its first use, is drawn only on a terminal of 144 columns or more, and waits undrawn on a narrower one. The guard took that for a session that cannot show it, and told Claude and the person the skill or change could not be approved there, so it stayed held. It now tells them to run `/guard report`, which opens the pane at any width with the Approve and Reject buttons, in the toast too.
 
 **Claude's own commands** - Text only known as it runs no longer holds a command by itself: a program inside a substitution or backquotes (`out=$("$Q" read …)`, as in a loop that waits for a review), a script a shell or `eval` is handed (`bash -c "$CMD"`, `eval "$X"`), or code that names the `claude` command anywhere beside the word plugin. Hiding what runs is a risk for any command, which Claude Code's own permission checks are for, and the guard holds installs: such a command is held only beside an install's words, or when it asks `claude plugin` or `claude mcp` to do something it leaves out. What git or gh keeps as a message, a commit message or a pull request's body (`--body "$(cat <<'EOF' … EOF)"`), is text, beside the scripts git runs and a gh alias; what a program that only prints is fed counts a shell's `$(claude …)` or backquote only when a shell runs the file it made. A substitution in an argument is read once, so `foo "$(claude plugin install …)"` is one install, and nested substitutions are no longer given up on as too deep
 
