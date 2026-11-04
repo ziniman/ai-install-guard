@@ -1274,6 +1274,9 @@ describe('PR review round eight', () => {
       'AGENTS.md': injected,
     }
     expect(status(await scanFiles(linked), 'prompts.injection')).toBe('fail')
+    // PR review: a file named with a character words are split at is still found by its whole way.
+    expect(status(await scanFiles({ ...skill('Read ${CLAUDE_PLUGIN_ROOT}/docs/guide,alt.md first.'), 'docs/guide,alt.md': injected }), 'prompts.injection')).toBe('fail')
+    expect(status(await scanFiles({ ...skill('Read ../../docs/guide,alt.md first.'), 'docs/guide,alt.md': injected }), 'prompts.injection')).toBe('fail')
   })
 
   test("a plugin's own project files and notes for its authors are not what its skills tell Claude to read", async () => {

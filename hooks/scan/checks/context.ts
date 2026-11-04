@@ -410,7 +410,13 @@ export function buildContext(tree: ScannedTree): ScanContext {
   }
   const promptNames = (from: string) => (body: string, path: string): boolean => {
     if (kind === 'skill' || underRoot(path)) return namedIn(body, path)
-    return reached(from, body).has(path)
+    if (reached(from, body).has(path)) return true
+    // A file named with a character the words are split at (`guide,alt.md`): its whole way, written out.
+    if (!/[\s;&|()<>=,[\]{}]/.test(path)) return false
+    const { normalized } = indexOf(body)
+    const ways = [`\u0000/${path}`, ...[dirname(from), ...(readFrom.get(from) ?? [])].map(folder => `${'../'.repeat(folder === '' ? 0 : folder.split('/').length)}${path}`)]
+    const marked = normalized.replace(/\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b/g, '\u0000')
+    return ways.some(way => marked.includes(way))
   }
   // Markdown a prompt tells the model to read is a prompt too, however it is
   // named (a skill's own README): followed until nothing new is named.
