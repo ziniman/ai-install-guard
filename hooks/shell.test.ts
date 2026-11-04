@@ -567,9 +567,8 @@ describe('what a shell command changes where Claude Code loads from', () => {
     // A script edited and then run, or one a program is only given, is no more than the edit; a script it writes that runs nothing there passes.
     expect(await change(`python3 - <<'PY'\np = '/home/tester/.claude/commands/expenses.md'\ns = open(p).read()\nopen(p, 'w').write(s.replace("Sort", "File"))\nPY\npython3 -m py_compile scripts/x.py && python3 scripts/x.py selftest`)).toMatchObject({ kind: 'note' })
     expect(await change(`cat > /tmp/x.sh <<'EOF'\necho hi\nEOF\nbash /tmp/x.sh`)).toEqual({ kind: 'pass' })
-    // PR review: a script of the same name in another folder, both written out in full, is another script.
-    expect(await change(`cat > /tmp/notes.sh <<'EOF'\ncp evil.md ~/.claude/skills/x/SKILL.md\nEOF\nbash /opt/tools/notes.sh`)).toEqual({ kind: 'pass' })
-    expect(await change(`cat > /tmp/notes.sh <<'EOF'\ncp evil.md ~/.claude/skills/x/SKILL.md\nEOF\ncd /tmp && bash ./notes.sh`)).toMatchObject({ kind: 'unreadable' })
+    // PR review: by file name, since one file has several names (macOS's /tmp is /private/tmp).
+    expect(await change(`cat > /tmp/x.sh <<'EOF'\ncp evil.md ~/.claude/skills/x/SKILL.md\nEOF\nbash /private/tmp/x.sh`)).toMatchObject({ kind: 'unreadable' })
     expect(await change(`cat > /tmp/x.py <<'EOF'\nprint(open('notes.md').read())\nEOF\npython3 /tmp/x.py; cat ~/.claude/settings.json`)).toEqual({ kind: 'pass' })
     expect(await change(`python3 -m py_compile x.py && python3 x.py; cat ~/.claude/settings.json`)).toEqual({ kind: 'pass' })
   })

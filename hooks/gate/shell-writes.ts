@@ -294,15 +294,8 @@ function readCommand(command: ShellCommand, where: Where, out: ShellWrites, dept
   // as text may now be code), and anything else with the whole command. A path a program is only given is no file made.
   const madeFirst = (path: string, runner: 'shell' | 'code' | 'program'): void => {
     const name = lastPart(path)
-    // By file name, since `~`, `$HOME` and a folder only known as it runs name the same file several ways; but a
-    // file of that name in another folder, both written out in full, is another file.
-    const run = plainPath(join(where.cwd, path))
-    const there = (write: ShellWrite): boolean => {
-      const made = plainPath(join(write.to.cwd, write.to.path))
-      return run === undefined || made === undefined || made === run
-    }
     // Only what came before this command made it: its own code naming the file runs it, nothing more.
-    const made = out.writes.slice(0, writesBefore).filter(write => lastPart(write.to.path) === name && there(write) && !(write.kind === 'unknown' && write.given === true))
+    const made = out.writes.slice(0, writesBefore).filter(write => lastPart(write.to.path) === name && !(write.kind === 'unknown' && write.given === true))
     const mentioning = out.unseen.slice(0, unseenBefore).filter(part => part.text !== undefined && namesFile(part.text, name))
     if (made.length === 0 && mentioning.length === 0) return
     const [first] = made
@@ -1092,22 +1085,6 @@ function join(cwd: string | undefined, path: string): string | undefined {
   // `~user` stands alone too: it is another user's home, never a relative path.
   if (/^(?:\/|~|[A-Za-z]:[\\/])/.test(path)) return path
   return cwd === undefined ? undefined : `${cwd.replace(/\/+$/, '')}/${path}`
-}
-
-/**
- * A path written out in full from the root, with `.`, `..` and doubled
- * slashes taken out; undefined for one that is not, or holds anything only
- * known as it runs.
- */
-function plainPath(path: string | undefined): string | undefined {
-  if (path === undefined || !path.startsWith('/') || /[$`*?[{~\\]/.test(path)) return undefined
-  const parts: string[] = []
-  for (const part of path.split('/')) {
-    if (part === '' || part === '.') continue
-    if (part === '..') parts.pop()
-    else parts.push(part)
-  }
-  return `/${parts.join('/')}`
 }
 
 /** The last part of a path, without the slashes after it. */
