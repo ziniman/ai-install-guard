@@ -3,12 +3,13 @@ import { atom, update } from 'claude-code'
 
 import type { GuardView } from '../types'
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
-import { configuredServers, refusalByName, servingTool, toolRefusal, type ServerTools } from './gate/configured'
-import { checkAtStart, waitingReport, type StartCheck } from './gate/installed'
+import { configuredServers, refusalByName, reviewConfig, servingTool, toolRefusal, type ServerTools } from './gate/configured'
+import { checkAtStart, reviewFound, waitingReport, type StartCheck } from './gate/installed'
 import { failedLoad, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
 import { namesClaudeFolder, readShellChange, type ShellChange } from './gate/shell-change'
 import { failedSkill, judgeByName, judgeSkill } from './gate/skill'
 import { readPluginArgs, readShellCommand } from './gate/requests'
+import { changesSince, judgeMade, keepChanged, loadChanged, LOCK_FREE, lockRefusal, locksOn, madeNote, snapshot, watchFor, type Snapshot, type Watch } from './gate/watch'
 import { claudeConfigDir, keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
 import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
@@ -62,6 +63,8 @@ export const register: Register = (on, options) => {
   let checking: Promise<void> | undefined
   /** The MCP servers in your configuration as their tools are named, read at the session's first MCP tool call. */
   let servers: Promise<{ servers: ServerTools[]; blind: boolean }> | undefined
+  /** Whether a failure to tell if a settings change waits has been named, so it is named once. */
+  let hooksFailed = false
 
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
@@ -136,7 +139,9 @@ export const register: Register = (on, options) => {
     if (sub === 'held') {
       // A check still running at the start of the session is waited for, so the list is whole.
       await checking
-      return { text: await waitingReport($, held, found, lookups, { cwd: projectDir ?? '', configDir: await claudeFolder($) }) }
+      const changed = await loadChanged($).catch(() => ({ configs: [], plugins: [] }))
+      const all: StartCheck = { plugins: [...found.plugins, ...changed.plugins], configs: found.configs, changed: changed.configs }
+      return { text: await waitingReport($, held, all, lookups, { cwd: projectDir ?? '', configDir: await claudeFolder($) }) }
     }
     if (sub === 'forget' && rest !== '') {
       const count = (await forgetDecisions($, rest, await landedName($, rest))).length
@@ -166,15 +171,66 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // While a settings change a command made waits for you, a hook it may have
+  // added is held back: the settings hooks beneath run only once you decide.
+  on('classic.*', async ($, e, next) => ((await locksOn($)).some(lock => lock.settings) ? {} : next(e))).catch(($, e, next) => {
+    if (next.called) return next(e)
+    // Held back all the same, since one may be new: said once, not at every event.
+    if (!hooksFailed) {
+      hooksFailed = true
+      $.ui.toast('AI Install Guard could not tell whether a settings change a command made still waits for you, so it is holding back your settings hooks. Run /guard held.')
+    }
+    return {}
+  })
+
+  // A change a command made that takes effect at once waits for you; until
+  // you decide, Claude may only read files and write them through the write
+  // gate. And a server you rejected starts with the session all the same,
+  // before the guard can look: its tools are refused, by the start of their
+  // names, from the session's first call, whether or not the check has run.
+  on('tool.call', async ($, e, next) => {
+    const locks = await locksOn($).catch(() => undefined)
+    if (locks === undefined && !LOCK_FREE.has(e.tool)) return { deny: 'AI Install Guard refused this tool: it could not tell whether a change a command made still waits for the person. Tell the person.' }
+    const waits = locks === undefined || locks.length === 0 ? undefined : await lockRefusal($, locks, e.tool)
+    if (waits !== undefined) return { deny: waits }
+    if (!e.tool.startsWith('mcp__') || projectDir === undefined) return next(e)
+    const place = { cwd: projectDir, configDir: await claudeFolder($) }
+    servers ??= configuredServers($, place)
+    const read = await servers
+    const serving = servingTool(read.servers, e.tool)
+    // A file of servers it could not read is read again at the next call; meanwhile a server you rejected is refused by its name.
+    if (read.blind) servers = undefined
+    if (serving.length === 0 && !read.blind) return next(e)
+    const decisions = await loadDecisions($)
+    const refused = toolRefusal(serving, decisions) ?? (read.blind ? refusalByName(e.tool, decisions) : undefined)
+    return refused === undefined ? next(e) : { deny: refused }
+  }).catch(($, e, next) => {
+    if (next.called) return next(e)
+    if (!e.tool.startsWith('mcp__')) return next(e)
+    // Read again at the next call; this one is refused, since the guard cannot tell whether you rejected its server.
+    servers = undefined
+    return { deny: 'AI Install Guard stopped this tool: it may come from an MCP server the person rejected, and the guard failed before it could check. Tell the person.' }
+  })
+
   // Gate B: Claude installing a plugin or adding a marketplace with the claude
   // command, or changing where Claude Code loads from with any other command
   // (a redirection, cp, git clone, curl -o, unzip). The command is refused,
-  // with a reason Claude reads, until the person approves what it adds.
+  // with a reason Claude reads, until the person approves what it adds. Code
+  // the guard cannot read that only names such a place runs, and what it
+  // changed there is judged once it has.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const reading = readShellCommand(e.command)
     if (reading.kind === 'pass') {
       const gate = await gateShell($, e.command, cwd, lookups)
       if ('deny' in gate) return { deny: gate.deny }
+      if ('watch' in gate) {
+        const result = await next(e)
+        const note = await lookAfter($, gate.watch, gate.before, lookups)
+        if (note === undefined || result.deny !== undefined) return result
+        // A command that failed may have changed something all the same: Claude reads the note with its error.
+        if (result.isError === true) return { deny: `${result.text ?? 'The command failed.'}\n\n${note}` }
+        return { ...result, context: [...(result.context ?? []), note] }
+      }
       try {
         return await next(e)
       } finally {
@@ -235,29 +291,6 @@ export const register: Register = (on, options) => {
     if (judged.note !== undefined) $.ui.toast(judged.note)
     return next(e)
   }).catch(async ($, e, next) => (next.called ? next(e) : (await stopped($, next.error, view => view.request?.subject === 'skill' && view.request.label.endsWith(` ${safeLine(e.skill)}`)), { text: failedSkill(e, next.error) })))
-
-  // A server you rejected starts with the session all the same, before the
-  // guard can look: its tools are refused, by the start of their names, from
-  // the session's first call, whether or not the check has run.
-  on('tool.call', async ($, e, next) => {
-    if (!e.tool.startsWith('mcp__') || projectDir === undefined) return next(e)
-    const place = { cwd: projectDir, configDir: await claudeFolder($) }
-    servers ??= configuredServers($, place)
-    const read = await servers
-    const serving = servingTool(read.servers, e.tool)
-    // A file of servers it could not read is read again at the next call; meanwhile a server you rejected is refused by its name.
-    if (read.blind) servers = undefined
-    if (serving.length === 0 && !read.blind) return next(e)
-    const decisions = await loadDecisions($)
-    const refused = toolRefusal(serving, decisions) ?? (read.blind ? refusalByName(e.tool, decisions) : undefined)
-    return refused === undefined ? next(e) : { deny: refused }
-  }).catch(($, e, next) => {
-    if (next.called) return next(e)
-    if (!e.tool.startsWith('mcp__')) return next(e)
-    // Read again at the next call; this one is refused, since the guard cannot tell whether you rejected its server.
-    servers = undefined
-    return { deny: 'AI Install Guard stopped this tool: it may come from an MCP server the person rejected, and the guard failed before it could check. Tell the person.' }
-  })
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($, e) => drawPane($, e))
 }
@@ -332,7 +365,7 @@ async function gateWrite($: EngineInterface, input: WriteInput, lookups: boolean
  * Claude reads, or a release to call once it has run. A command that changes
  * nothing where Claude Code loads from claims nothing and goes on at once.
  */
-async function gateShell($: EngineInterface, command: string, cwd: string | undefined, lookups: boolean): Promise<{ deny: string } | { release: () => void }> {
+async function gateShell($: EngineInterface, command: string, cwd: string | undefined, lookups: boolean): Promise<{ deny: string } | { release: () => void } | { watch: Watch; before: Snapshot }> {
   const free = { release: () => undefined }
   let change: ShellChange
   try {
@@ -343,6 +376,17 @@ async function gateShell($: EngineInterface, command: string, cwd: string | unde
     return { deny: 'AI Install Guard stopped this command: it names a place Claude Code loads from, and the guard failed before it could read what it changes there. Nothing was written.' }
   }
   if (change.kind === 'pass') return free
+  if (change.kind === 'watch') {
+    // What the places it names hold now, to compare once it has run; what cannot be looked at first cannot run.
+    try {
+      const host = modHost($)
+      const home = await expandHome(host, '~').catch(() => undefined)
+      const watch = await watchFor(host, change.named, change.cwd, home, await claudeFolder($))
+      return { watch, before: await snapshot(host, watch) }
+    } catch {
+      return { deny: `AI Install Guard stopped this command: ${change.reason}, and the guard could not look at the places in Claude's own folder it names before it runs. Nothing was written.` }
+    }
+  }
   const place = change.claim
   if (place !== undefined && changing.has(place)) return { deny: `AI Install Guard held this command: another change to ${change.label.replace(/^a change to /, '')} is being checked or written. Nothing was written. Make one change at a time, then run this one again.` }
   if (place !== undefined) changing.add(place)
@@ -360,6 +404,36 @@ async function gateShell($: EngineInterface, command: string, cwd: string | unde
   } catch (error) {
     release()
     throw error
+  }
+}
+
+/**
+ * What a watched command changed where Claude Code loads from, judged once it
+ * has run: what has no red flags is named in a toast, and what waits for the
+ * person is kept for /guard held and shown in the pane when it is free. The
+ * answer is the note Claude reads with the command's result, or undefined. A
+ * comparison that fails is named, never thrown: the command has run.
+ */
+async function lookAfter($: EngineInterface, watch: Watch, before: Snapshot, lookups: boolean): Promise<string | undefined> {
+  try {
+    const made = await changesSince(modHost($), watch, before, await claudeFolder($))
+    if (made.length === 0) return undefined
+    const judged = await judgeMade($, made, lookups)
+    await keepChanged($, judged)
+    const [plugin] = judged.plugins
+    const [config] = judged.configs
+    const shows = plugin !== undefined ? await reviewFound($, plugin, lookups, true) : config !== undefined && (await reviewConfig($, config, lookups))
+    const note = madeNote(judged)
+    const waiting = [...judged.configs, ...judged.plugins].map(item => item.label)
+    const locked = judged.locks.some(lock => lock.tools === undefined) ? ' Until you decide, Claude may only read files and use Write or Edit.' : ''
+    const said = waiting.length === 0 ? [] : [`AI Install Guard: a command Claude ran changed ${waiting.join(', ')} where Claude Code loads from. ${shows ? 'The pane shows it: keep it, or reject it.' : '/guard held opens it in the pane.'}${locked}`]
+    const toast = [...judged.notes, ...said].join(' ')
+    if (toast !== '') $.ui.toast(toast)
+    return note
+  } catch (error) {
+    const why = safeLine(error instanceof Error ? error.message : String(error))
+    $.ui.toast(`AI Install Guard could not compare what a command Claude ran changed where Claude Code loads from: ${why}`)
+    return `AI Install Guard could not compare what this command changed where Claude Code loads from (${why}). Tell the person.`
   }
 }
 
