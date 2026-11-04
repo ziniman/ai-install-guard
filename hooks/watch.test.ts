@@ -27,6 +27,10 @@ describe('what a command changed where Claude Code loads from', () => {
     // One plugin's own folder, by marketplace, name and version, or the folder a shorter path's file is in; a skill
     // is checked before it is used, so it is not watched.
     expect(watch.plugins).toEqual([`${HOME}/.claude/plugins/cache/m/p/1.0`, `${HOME}/.claude/plugins/cache/x`])
+    // Local review: a wildcard in the first name may reach any part of the folder.
+    const any = await watchFor(host, ['~/.claude/settings*.json'], PROJECT, HOME, undefined)
+    expect(any.files).toEqual([`${HOME}/.claude/settings.json`, `${HOME}/.claude/settings.local.json`])
+    expect(any.prompts).toEqual([`${HOME}/.claude/agents`, `${HOME}/.claude/output-styles`])
     // The folder CLAUDE_CONFIG_DIR names is Claude's own.
     const moved = await watchFor(host, ['$CLAUDE_CONFIG_DIR', '/opt/claude/agents/a.md'], PROJECT, HOME, '/opt/claude')
     expect(moved.files).toEqual(['/opt/claude/settings.json', '/opt/claude/settings.local.json'])
@@ -111,7 +115,7 @@ describe('gate B: code the guard cannot read runs, and what it changed is judged
   const mountPane = ($: Engine) => $.ui.mount({ plugin: 'ai-install-guard', surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: paneProps() })
   const bash = (command: string) => ({ tool: 'Bash' as const, command })
   /** The engine beneath: Bash runs a command by making the change `makes` gives for it; Read and the settings hooks are counted. */
-  const setup = (on: On, makes: Record<string, (files: FixtureFiles) => void> = {}) => {
+  const setup = (on: On, makes: Record<string, (files: FixtureFiles) => void | 'fails'> = {}) => {
     const files: FixtureFiles = {
       'proj/README.md': b64('# proj\n'),
       '.claude/settings.json': b64('{"permissions":{"allow":["Read"]}}'),
@@ -127,7 +131,7 @@ describe('gate B: code the guard cannot read runs, and what it changed is judged
     })
     on('tool.call', { tool: 'Bash' }, ($, e) => {
       ran.push(e.command)
-      makes[e.command]?.(files)
+      if (makes[e.command]?.(files) === 'fails') return { isError: true, result: 'exit 1', text: 'Exit code 1' } as never
       return { result: { stdout: '', stderr: '', interrupted: false } }
     })
     on('tool.call', { tool: 'Read' }, () => {
@@ -218,6 +222,20 @@ describe('gate B: code the guard cannot read runs, and what it changed is judged
     const held = await $.tool.call(bash(flagged))
     expect(held.context?.[0]).toContain('this command changed the agent mirror.md')
     expect((await $.tool.call(bash('ls'))).deny).toContain('the agent mirror.md')
+  })
+
+  test('local review: a command that fails after it changed something still tells Claude what waits', async ($, on) => {
+    seededStore(on)
+    serveUi(on)
+    setup(on, {
+      [widens]: files => {
+        widen(files)
+        return 'fails'
+      },
+    })
+    const failed = await $.tool.call(bash(widens))
+    expect(failed.deny).toContain('Exit code 1')
+    expect(failed.deny).toContain(`AI Install Guard: this command changed the settings in ${HOME}/.claude/settings.json`)
   })
 
   test('local review: an MCP server a command added that waits has its tools refused, and /guard held lists it', async ($, on) => {

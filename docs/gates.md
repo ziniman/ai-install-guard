@@ -74,7 +74,7 @@ Code the guard cannot read could write anything it names, or nothing, and holdin
 
 What waits, and what it holds back, is kept for the session, a reload of the plugins included.
 
-A place the code reaches only through a path it builds from a value it reads as it runs is not compared: the gates at loading and at the start of the next session are the backstop for that. A comparison that fails is named, in a toast and to Claude.
+A command that fails is judged the same way, since it may have changed something first, and Claude reads what waits with its error. A place the code reaches only through a path it builds from a value it reads as it runs is not compared: the gates at loading and at the start of the next session are the backstop for that. A comparison that fails is named, in a toast and to Claude.
 
 ## Loading mods
 

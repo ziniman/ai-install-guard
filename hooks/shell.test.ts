@@ -403,6 +403,9 @@ describe('what a shell command changes where Claude Code loads from', () => {
     expect(await change(`python3 -c "open('/home/tester/.claude/skills/x/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'watch', reason: expect.stringContaining('python3 runs code that may write files or run programs'), named: ['/home/tester/.claude/skills/x/SKILL.md'], cwd: PROJECT })
     expect(await change(`D=~/.claude/skills; cp -r review "$D"`)).toMatchObject({ kind: 'folder', claim: `${SKILLS}/review` })
     expect(await change(`D=$(echo ~/.claude/skills); cp -r review "$D"`)).toMatchObject({ kind: 'watch', reason: expect.stringContaining('only known as it runs') })
+    // Local review: a relative path is read from where its own part runs, after a `cd` between the parts.
+    const later = await change(`python3 -c "open('/home/tester/.claude/agents/a.md','w').write('x')" && cd /home/tester/other && python3 -c "open('.claude/settings.json','w').write('{}')"`)
+    expect(later).toMatchObject({ kind: 'watch', named: ['/home/tester/.claude/agents/a.md', '/home/tester/other/.claude/settings.json'], cwd: PROJECT })
     expect(await change('python3 build.py')).toEqual({ kind: 'pass' })
     expect(await change('cd "$X" && echo a > b')).toEqual({ kind: 'pass' })
     expect(await change('cd "$X" && echo a > .claude/commands/a.md')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('relative to a folder only known') })

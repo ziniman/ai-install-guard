@@ -226,7 +226,10 @@ export const register: Register = (on, options) => {
       if ('watch' in gate) {
         const result = await next(e)
         const note = await lookAfter($, gate.watch, gate.before, lookups)
-        return note === undefined || result.deny !== undefined || result.isError === true ? result : { ...result, context: [...(result.context ?? []), note] }
+        if (note === undefined || result.deny !== undefined) return result
+        // A command that failed may have changed something all the same: Claude reads the note with its error.
+        if (result.isError === true) return { deny: `${result.text ?? 'The command failed.'}\n\n${note}` }
+        return { ...result, context: [...(result.context ?? []), note] }
       }
       try {
         return await next(e)

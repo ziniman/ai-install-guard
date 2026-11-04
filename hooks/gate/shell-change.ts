@@ -31,8 +31,9 @@ export type ShellChange =
    * Code the guard cannot read, that names a place Claude Code loads from but
    * makes no change there the guard can see: it runs, and the places it names
    * are compared before and after (`watch.ts`). `named` holds each `.claude`
-   * path and configuration file it names, as written, and `cwd` the folder a
-   * relative one is read from.
+   * path and configuration file it names, read from the folder its own part
+   * runs in when that is known, and `cwd` the session's folder, which one
+   * still relative is read from.
    */
   | { kind: 'watch'; label: string; reason: string; named: string[]; cwd: string | undefined }
 
@@ -318,13 +319,15 @@ export async function readShellChange(host: Host, command: string, cwd: string |
     if (first !== undefined) skills = { part: first.part, files: [...files] }
   }
 
-  // Code that only names such a place, and edits in place to files there, run and are looked at after.
+  // Code that only names such a place, and edits in place to files there, run and are looked at after. A
+  // relative path is read from the folder its own part runs in, after any `cd` before it.
+  const fromPart = (path: string, folder: string | undefined): string => (folder === undefined || /^(?:\/|~|\$|[A-Za-z]:[\\/])/.test(path) ? path : `${folder.replace(/\/+$/, '')}/${path}`)
   const watched = (reason: string, edited: readonly string[] = []): ShellChange => ({
     kind: 'watch',
     label: "a shell command whose code names Claude Code's own folder",
     reason,
-    named: [...new Set([...edited, ...hiddenParts.flatMap(item => [...namedPlaces(item.text), ...(item.part.cwd !== undefined && namesClaudeFolder(item.part.cwd) ? [item.part.cwd] : [])])])],
-    cwd: hidden?.cwd ?? cwd,
+    named: [...new Set([...edited, ...hiddenParts.flatMap(item => [...namedPlaces(item.text).map(path => fromPart(path, item.part.cwd)), ...(item.part.cwd !== undefined && namesClaudeFolder(item.part.cwd) ? [item.part.cwd] : [])])])],
+    cwd,
   })
   if (read.writes.length === 0) {
     await settle()

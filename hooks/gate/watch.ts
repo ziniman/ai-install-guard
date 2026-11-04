@@ -82,7 +82,8 @@ export async function watchFor(host: Host, named: readonly string[], cwd: string
   }
   const part = (root: string, tail: readonly string[]): void => {
     const [first, second, ...rest] = tail
-    if (first === undefined) return whole(root)
+    // A wildcard in the first name (`settings*.json`, `*`) may reach any part of the folder.
+    if (first === undefined || /[*?[{]/.test(first)) return whole(root)
     const name = first.toLowerCase()
     if (name === 'settings.json' || name === 'settings.local.json') add(watch.files, `${root}/${first}`)
     else if (name === 'agents' || name === 'output-styles') add(watch.prompts, `${root}/${first}`)
@@ -267,7 +268,8 @@ export async function judgeMade($: EngineInterface, made: readonly Made[], looku
     // An agent or an output style: what it says is used as soon as Claude reaches for it.
     const how = await promptCandidate(host, reading)
     const report = await scanOnly(host, reading.label, how, { lookups }).catch(() => undefined)
-    const treeHash = report?.inventory?.treeHash
+    // Laid out from its own text, it has a hash to wait on even when the scan failed, so it is held back all the same.
+    const treeHash = report?.inventory?.treeHash ?? ('files' in how ? await laidHash(how).catch(() => undefined) : undefined)
     if (report !== undefined && treeHash !== undefined) {
       const decided = await decisionFor($, { treeHash }, report.verdict.kind).catch(() => undefined)
       if (decided?.decision === 'approved') continue
