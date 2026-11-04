@@ -1259,8 +1259,10 @@ describe('PR review round eight', () => {
     // The plugin's own file, named from its root or by climbing to it from the skill's folder.
     expect(status(await scanFiles(payload('Read ${CLAUDE_PLUGIN_ROOT}/docs/guide.md first.')), 'prompts.injection')).toBe('fail')
     expect(status(await scanFiles(payload('Read ../../docs/guide.md first.')), 'prompts.injection')).toBe('fail')
-    // Claude reads a skill's paths from the skill's own folder: a bare docs/guide.md is not the plugin's root's.
+    // Claude reads a skill's paths from the skill's own folder: a bare docs/guide.md is not the plugin's root's,
+    // nor is one that climbs past the plugin's root.
     expect(status(await scanFiles(payload('Read docs/guide.md first.')), 'prompts.injection')).toBe('pass')
+    expect(status(await scanFiles(payload('Read ../../../docs/guide.md first.')), 'prompts.injection')).toBe('pass')
   })
 
   test("a plugin's own project files and notes for its authors are not what its skills tell Claude to read", async () => {

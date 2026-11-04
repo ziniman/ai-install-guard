@@ -6,7 +6,7 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ## v0.8.18 &nbsp;·&nbsp; 2026-11-04
 
-**Shell commands** - A program the guard does not know counts by the paths it is given, so one that only reads a path in Claude's folder (`npm run benchmark -- ~/.claude/plugins/marketplaces/x`, a linter given a skill) was held as a change there. Such a path, one file or folder deep, now runs and is judged by what it changed, as an edit in place is; one naming a whole area (`~/.claude/plugins`) is still held before it runs
+**Shell commands** - A program the guard does not know counts by the paths it is given, so one that only reads a path in Claude's folder (`npm run benchmark -- ~/.claude/plugins/marketplaces/x`, a linter given a skill) was held as a change there. Such a path, one file or folder deep, now runs and is judged by what it changed, as an edit in place is; one naming a whole area (`~/.claude/plugins`) is still held before it runs, and a change to a marketplace's copy is named
 
 **`/guard scan`** - A plugin that is also its own development repository could scan as Do not install from its tests. Its skills name the project Claude works in by bare name ("read STRATEGY.md at the repo root"), and the scanner took the plugin's own files by those names for the ones meant, then followed what they name to its docs, plans and tests, which then counted in full. Claude reads a skill's paths from the skill's own folder, so a plugin's file outside its skills, commands, agents and output styles now counts as named only through a way to it, from the plugin's root (`${CLAUDE_PLUGIN_ROOT}/docs/guide.md`) or climbing to it (`../../docs/guide.md`), and a file loose in the skills folder, or in a folder with no SKILL.md, is no part of a skill
 

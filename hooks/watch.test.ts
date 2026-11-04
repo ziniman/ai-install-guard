@@ -27,6 +27,14 @@ describe('what a command changed where Claude Code loads from', () => {
     // One plugin's own folder, by marketplace, name and version, or the folder a shorter path's file is in; a skill
     // is checked before it is used, so it is not watched.
     expect(watch.plugins).toEqual([`${HOME}/.claude/plugins/cache/m/p/1.0`, `${HOME}/.claude/plugins/cache/x`])
+    // Local review: a marketplace's copy is watched, to name a change to it.
+    const market = await watchFor(host, ['~/.claude/plugins/marketplaces/official/plugins/x'], PROJECT, HOME, undefined)
+    expect(market.marketplaces).toEqual([`${HOME}/.claude/plugins/marketplaces/official`])
+    const files: FixtureFiles = { '.claude/plugins/marketplaces/official/catalog.json': b64('{}') }
+    const was = await snapshot(memoryHost(HOME, files), market)
+    expect(await changesSince(memoryHost(HOME, { ...files, '.claude/plugins/marketplaces/official/catalog.json': b64('{"plugins":[]}') }), market, was, undefined)).toEqual([
+      { kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces/official` },
+    ])
     // Local review: a wildcard in the first name may reach any part of the folder.
     const any = await watchFor(host, ['~/.claude/settings*.json'], PROJECT, HOME, undefined)
     expect(any.files).toEqual([`${HOME}/.claude/settings.json`, `${HOME}/.claude/settings.local.json`])
@@ -62,7 +70,7 @@ describe('what a command changed where Claude Code loads from', () => {
       '.claude/plugins/cache/m/p/1.0/README.md': b64('# p, changed\n'),
     })
     const made = await changesSince(after, watch, was, undefined)
-    expect(made.map(item => (item.kind === 'plugin' ? `plugin ${item.id} ${item.root}` : `${item.reading.kind} ${item.path}`))).toEqual([
+    expect(made.map(item => (item.kind === 'plugin' ? `plugin ${item.id} ${item.root}` : item.kind === 'marketplace' ? `marketplace ${item.root}` : `${item.reading.kind} ${item.path}`))).toEqual([
       `settings ${HOME}/.claude/settings.json`,
       `mcp ${HOME}/.claude.json`,
       `prompt ${HOME}/.claude/agents/evil.md`,

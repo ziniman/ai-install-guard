@@ -40,6 +40,8 @@ export type Watch = {
   plugins: string[]
   /** The lists of plugins Claude Code installed, compared by each plugin's entry. */
   registry: string[]
+  /** The copies of marketplaces it keeps, compared by what they hold as listed. */
+  marketplaces: string[]
 }
 
 /** What each place held before the command ran. */
@@ -48,10 +50,15 @@ export type Snapshot = {
   prompts: Map<string, Map<string, string>>
   plugins: Map<string, string>
   registry: Map<string, string | undefined>
+  marketplaces: Map<string, string>
 }
 
 /** A change the command made, read as the gate judges it. */
-export type Made = { kind: 'reading'; path: string; reading: Exclude<WriteReading, { kind: 'pass' }> } | { kind: 'plugin'; root: string; id: string }
+export type Made =
+  | { kind: 'reading'; path: string; reading: Exclude<WriteReading, { kind: 'pass' }> }
+  | { kind: 'plugin'; root: string; id: string }
+  /** A marketplace's copy: what it lists is scanned as it is installed, so the change is only named. */
+  | { kind: 'marketplace'; root: string }
 
 /**
  * The places a command's code names, read from `named` (as `namedPlaces`
@@ -63,7 +70,7 @@ export type Made = { kind: 'reading'; path: string; reading: Exclude<WriteReadin
  * path that leads through a link counts where it lands as well.
  */
 export async function watchFor(host: Host, named: readonly string[], cwd: string | undefined, home: string | undefined, configDir: string | undefined): Promise<Watch> {
-  const watch: Watch = { files: [], prompts: [], plugins: [], registry: [] }
+  const watch: Watch = { files: [], prompts: [], plugins: [], registry: [], marketplaces: [] }
   const add = (list: string[], path: string): void => {
     if (!list.includes(path)) list.push(path)
   }
@@ -92,6 +99,7 @@ export async function watchFor(host: Host, named: readonly string[], cwd: string
       const where = second?.toLowerCase()
       if (where === undefined || (where === 'cache' && (rest.length === 0 || rest.some(item => /[*?[{]/.test(item))))) every.add(root)
       else if (where === 'cache') cached.push({ cache: `${root}/plugins/${second}`, rest })
+      else if (where === 'marketplaces' && rest[0] !== undefined && !/[*?[{]/.test(rest[0])) add(watch.marketplaces, `${root}/plugins/${second}/${rest[0]}`)
     }
   }
   const classify = (path: string): void => {
@@ -147,7 +155,9 @@ export async function snapshot(host: Host, watch: Watch): Promise<Snapshot> {
   for (const root of watch.plugins) plugins.set(root, await listed(host, root))
   const registry = new Map<string, string | undefined>()
   for (const path of watch.registry) registry.set(path, await textOf(host, path))
-  return { files, prompts, plugins, registry }
+  const marketplaces = new Map<string, string>()
+  for (const root of watch.marketplaces) marketplaces.set(root, await listed(host, root))
+  return { files, prompts, plugins, registry, marketplaces }
 }
 
 /** What the command changed in the watched places, as the gate reads each change. */
@@ -187,6 +197,7 @@ export async function changesSince(host: Host, watch: Watch, before: Snapshot, c
     if (now === before.plugins.get(root) && !now.startsWith(PARTIAL)) continue
     if (!made.some(item => item.kind === 'plugin' && item.root === root)) made.push({ kind: 'plugin', root, id: ids.get(root) ?? '' })
   }
+  for (const root of watch.marketplaces) if ((await listed(host, root)) !== before.marketplaces.get(root)) made.push({ kind: 'marketplace', root })
   return made
 }
 
@@ -207,6 +218,10 @@ export async function judgeMade($: EngineInterface, made: readonly Made[], looku
     if (await noteChecked($, treeHash).catch(() => false)) judged.notes.push(text)
   }
   for (const one of made) {
+    if (one.kind === 'marketplace') {
+      judged.notes.push(`AI Install Guard: the command changed the files of the marketplace ${safeLine(one.root.slice(one.root.lastIndexOf('/') + 1))}; a plugin from it is scanned as it is installed or updated`)
+      continue
+    }
     if (one.kind === 'plugin') {
       // The guard's own folder is not one it judges, as at the start of a session.
       if (normalizePath(one.root).replace(/\/+$/, '') === normalizePath($.plugin.root).replace(/\/+$/, '')) continue
