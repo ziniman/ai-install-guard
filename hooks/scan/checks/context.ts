@@ -239,8 +239,16 @@ export function buildContext(tree: ScannedTree): ScanContext {
   for (const { link, target } of dirAliases) {
     if (promptRoots.some(root => root !== '' && (link === root || link.startsWith(`${root}/`)))) roots.push(target)
   }
+  // Claude Code loads a skill from its own folder: a file loose in the skills folder, or in a folder with no
+  // SKILL.md (notes for the plugin's own authors), is no part of one.
+  const skillFolders = new Set(tree.inventory.entries.flatMap(entry => ((entry.kind === 'file' || entry.kind === 'link') && /^skills\/.+\/skill\.md$/i.test(entry.path) ? [entry.path.slice(0, entry.path.lastIndexOf('/'))] : [])))
+  const inSkill = (path: string): boolean => {
+    const parts = path.split('/')
+    for (let depth = 2; depth < parts.length; depth += 1) if (skillFolders.has(parts.slice(0, depth).join('/'))) return true
+    return false
+  }
   const underRoot = (path: string): boolean =>
-    roots.some(root => (root === '' ? !DOC_NAMES.test(basename(path)) || path.includes('/') : path === root || path.startsWith(`${root}/`)))
+    roots.some(root => (root === '' ? !DOC_NAMES.test(basename(path)) || path.includes('/') : (path === root || path.startsWith(`${root}/`)) && (root !== 'skills' || inSkill(path))))
   const prompts = files.map(file => file.path).filter(path => isMarkdown(path) && underRoot(path))
   // A markdown link under a prompt root (skills/x/SKILL.md -> ../../docs/x.md)
   // makes the file it lands on a prompt too.
@@ -333,10 +341,10 @@ export function buildContext(tree: ScannedTree): ScanContext {
     }
     return words.has(basename(path)) && nameCount.get(basename(path)) === 1
   }
-  const referenced = (haystack: string, role: FileRole, skipMarkdown: boolean): void => {
+  const referenced = (haystack: string, role: FileRole, skipMarkdown: boolean, names: (haystack: string, path: string) => boolean = namedIn): void => {
     for (const path of [...paths, ...linkPaths]) {
       if (skipMarkdown && isMarkdown(path)) continue
-      const named = namedIn(haystack, path)
+      const named = names(haystack, path)
       if (!named) continue
       assign(path, role)
       const real = aliases.get(path)
@@ -369,6 +377,24 @@ export function buildContext(tree: ScannedTree): ScanContext {
     referenced(command, 'server', false)
     for (const path of [...paths, ...linkPaths]) if (namedIn(command, path)) noteInterpreter(command, path)
   }
+  // Claude reads the paths a skill names from the skill's own folder, never from the plugin's root, so a file
+  // of a plugin outside its skills, commands, agents and output styles, named as a path from the plugin's root
+  // or by its bare name (README.md, `docs/guide.md`, `tests/x.ts`), is the project's Claude works in, as a skill
+  // means it ("read STRATEGY.md at the repo root"). The plugin's own is named as a way to it: from its root
+  // (`${CLAUDE_PLUGIN_ROOT}/docs/guide.md`) or climbing to it (`../../docs/guide.md`). A standalone skill's root
+  // is its own folder, where every path counts.
+  const promptNames = (body: string, path: string): boolean => {
+    if (kind === 'skill' || underRoot(path)) return namedIn(body, path)
+    const { normalized } = indexOf(body)
+    for (let at = normalized.indexOf(path); at !== -1; at = normalized.indexOf(path, at + 1)) {
+      const after = normalized[at + path.length]
+      if (after !== undefined && /[\w-]/.test(after)) continue
+      // What leads to it in the same word: the plugin's root, or a climb to it.
+      const lead = /[^\s;&|()<>=,]*$/.exec(normalized.slice(Math.max(0, at - 200), at))?.[0] ?? ''
+      if (/^(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT)\/$|^(?:\.\.\/)+$/.test(lead)) return true
+    }
+    return false
+  }
   // Markdown a prompt tells the model to read is a prompt too, however it is
   // named (a skill's own README): followed until nothing new is named.
   const promptSet = new Set(prompts)
@@ -376,7 +402,7 @@ export function buildContext(tree: ScannedTree): ScanContext {
     const body = text(prompts[index] as string) ?? ''
     for (const path of [...paths, ...linkPaths]) {
       // Markdown or plain text: a skill may keep its instructions in references/notes.txt.
-      if (!(isMarkdown(path) || PROMPT_TEXT.test(path)) || !namedIn(body, path)) continue
+      if (!(isMarkdown(path) || PROMPT_TEXT.test(path)) || !promptNames(body, path)) continue
       const real = aliases.get(path) ?? path
       if (paths.has(real) && !promptSet.has(real)) {
         promptSet.add(real)
@@ -387,7 +413,7 @@ export function buildContext(tree: ScannedTree): ScanContext {
   for (const path of prompts) assign(path, 'prompt')
   for (const prompt of prompts) {
     const body = text(prompt) ?? ''
-    referenced(body, 'prompt-script', true)
+    referenced(body, 'prompt-script', true, promptNames)
     // A script named relative to the skill's own folder.
     for (const path of paths) {
       if (!isMarkdown(path) && path.startsWith(`${dirname(prompt)}/`) && body.includes(path.slice(dirname(prompt).length + 1))) {
