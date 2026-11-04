@@ -240,6 +240,30 @@ async function showOwn($: EngineInterface, view: GuardView): Promise<boolean> {
 }
 
 /**
+ * Marks a scan the pane still shows as running as stopped, with why: a hook
+ * that ran past the time Claude Code gives it, or failed, leaves no pane that
+ * says it is still scanning. Saved for /guard report too. Should the scan
+ * finish after all, its own verdict takes the pane back.
+ */
+export async function stopScanning($: EngineInterface, why: string): Promise<void> {
+  let stopped: GuardView | undefined
+  await update($, viewAtom, current => {
+    if (current === null || current.verdict !== undefined || current.stage === '') return current
+    stopped = { ...current, stage: '', verdict: { kind: 'unverified', recommendation: 'Could not verify', reasons: [sentence(why)], counts: { pass: 0, warn: 0, fail: 0, info: 0 } } }
+    return stopped
+  })
+  if (stopped === undefined) return
+  await saveLastView($, stopped).catch(() => undefined)
+  $.ui.toast(`AI Install Guard: the scan of ${stopped.target} stopped before it finished: ${safeLine(why)}`)
+}
+
+/** Why a gating hook failed, in the words the pane and the person read. */
+export function stoppedBecause(error: { kind: 'throw' | 'timeout'; message?: string } | undefined): string {
+  if (error?.kind === 'timeout') return 'it took longer than Claude Code lets the guard spend checking one thing, so nothing was let through'
+  return `the guard failed while checking it (${safeLine(error?.message ?? 'no reason given')}), so nothing was let through`
+}
+
+/**
  * Opens the pane: drawn, or open and waiting to be drawn, when the reason is
  * the terminal's width (opened by the guard itself under the columns that
  * needs), or nowhere: no surface (a headless run), or a reason the guard does

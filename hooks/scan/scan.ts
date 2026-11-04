@@ -79,7 +79,6 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
   const ctx = buildContext(tree)
   let results: CheckResult[]
   try {
-    await options.onStage?.('running the checks')
     results = await checksFor(host, ctx, options)
     // A marketplace's local plugins are plugins in their own right: each is
     // checked from its own folder, as Claude Code would read it.
@@ -92,7 +91,6 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
         results = mergeResults(results, [remoteSourceNote(source.name, source.description)])
         continue
       }
-      await options.onStage?.(`checking ${source.name}`)
       const nested = await subTree(tree, source.path)
       if (nested === undefined) {
         results = mergeResults(results, [missingSourceRow(source.name, source.path)])
@@ -101,7 +99,7 @@ export async function scanFolder(host: Host, target: string, path: string, rawOp
       // A listed plugin's own README badge is judged against its own rows.
       const nestedCtx = buildContext(nested)
       const nestedVersion = { treeHash: nested.inventory.treeHash, badgeHash: await badgeHash(nested.inventory.entries, readmeBytes(nested, nestedCtx)) }
-      const nestedResults = withBadgeClaim(await checksFor(host, nestedCtx, options), badgeClaim(nestedCtx.readme), nestedVersion)
+      const nestedResults = withBadgeClaim(await checksFor(host, nestedCtx, options, ` for ${source.name}`), badgeClaim(nestedCtx.readme), nestedVersion)
       results = mergeResults(results, prefixed(nestedResults, source.path))
     }
   } catch (error) {
@@ -152,11 +150,17 @@ export function withBadgeClaim(results: readonly CheckResult[], claim: BadgeClai
   return sortResults(mergeResults(rest, [badgeRow(claim, decide(rest).kind, version)]))
 }
 
-async function checksFor(host: Host, ctx: ScanContext, options: ScanOptions): Promise<CheckResult[]> {
+async function checksFor(host: Host, ctx: ScanContext, options: ScanOptions, of = ''): Promise<CheckResult[]> {
   // Claude Code validates plugins and marketplaces; a standalone skill or a
   // plain folder has no manifest for it to read.
   const hasManifest = ctx.files.some(file => file.path === '.claude-plugin/plugin.json' || file.path === '.claude-plugin/marketplace.json')
-  const validator = options.validate === false || ctx.kind === 'folder' || (ctx.kind === 'skill' && !hasManifest) ? undefined : await runValidator(host, ctx.tree.inventory.root)
+  // Each step that waits on something outside the scan names itself, so a slow one shows where it is.
+  const validates = !(options.validate === false || ctx.kind === 'folder' || (ctx.kind === 'skill' && !hasManifest))
+  if (validates) await options.onStage?.(`running Claude Code's validator${of}`)
+  const validator = validates ? await runValidator(host, ctx.tree.inventory.root) : undefined
+  if (options.lookups === true) await options.onStage?.(`looking its packages up${of}`)
+  const lookedUp = options.lookups === true ? await outsideLookups(host, ctx, options.lookupCache) : []
+  await options.onStage?.(`running the checks${of}`)
   return [
     licenseCheck(ctx),
     ...marketplacePinsCheck(ctx),
@@ -164,7 +168,7 @@ async function checksFor(host: Host, ctx: ScanContext, options: ScanOptions): Pr
     ...modChecks(ctx, validator),
     ...hookChecks(ctx),
     ...mcpChecks(ctx),
-    ...(options.lookups === true ? await outsideLookups(host, ctx, options.lookupCache) : []),
+    ...lookedUp,
     ...promptChecks(ctx),
     ...codeChecks(ctx),
     ...secretChecks(ctx),

@@ -304,18 +304,27 @@ export function buildContext(tree: ScannedTree): ScanContext {
   // `hooks//run.sh`, `"hooks/run.sh"` and `cd hooks && sh run.sh` all name
   // hooks/run.sh: paths are compared with quotes and doubled slashes
   // removed, and a bare file name counts when one file has it.
-  const nameIndexes = new Map<string, { normalized: string; words: Set<string> }>()
-  const indexOf = (haystack: string): { normalized: string; words: Set<string> } => {
+  const nameIndexes = new Map<string, { normalized: string; words: Set<string>; ends: Set<string> }>()
+  const indexOf = (haystack: string): { normalized: string; words: Set<string>; ends: Set<string> } => {
     const cached = nameIndexes.get(haystack)
     if (cached !== undefined) return cached
     const normalized = haystack.replace(/["'`]/g, ' ').replace(/\/{2,}/g, '/')
     const words = new Set(normalized.split(/[\s;&|()<>=,]+/).map(word => word.split('/').pop() ?? word))
-    const index = { normalized, words }
+    // Where a whole path can end: each run of name characters up to a `.` in it or to its end. A path whose
+    // file name is made of those characters is named as a whole only where its file name is one of these.
+    const ends = new Set<string>()
+    for (const [run] of normalized.matchAll(/[\w.-]+/g)) {
+      for (let at = run.indexOf('.'); at !== -1; at = run.indexOf('.', at + 1)) ends.add(run.slice(0, at))
+      ends.add(run)
+    }
+    const index = { normalized, words, ends }
     nameIndexes.set(haystack, index)
     return index
   }
   const namedIn = (haystack: string, path: string): boolean => {
-    const { normalized, words } = indexOf(haystack)
+    const { normalized, words, ends } = indexOf(haystack)
+    const name = basename(path)
+    if (/^[\w.-]+$/.test(name) && !ends.has(name)) return words.has(name) && nameCount.get(name) === 1
     // The full path, as a whole: openapi.md does not name api.md.
     for (let at = normalized.indexOf(path); at !== -1; at = normalized.indexOf(path, at + 1)) {
       const before = normalized[at - 1]
