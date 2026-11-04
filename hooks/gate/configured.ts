@@ -44,6 +44,8 @@ export type FoundConfig = {
   how?: ScanHow
   /** What the check found, shown in the pane as it is rather than made again. */
   report?: ScanReport
+  /** The pane's line for where it was found, when not at the start of a session: a change a command Claude ran made. */
+  display?: string
 }
 
 /** A configured MCP server as its tools are named: what the tool hook refuses by. */
@@ -303,7 +305,7 @@ function asAdded(server: Record<string, unknown>): Record<string, unknown> {
 }
 
 /** What the guard does not check in a server's configuration, as a row of its report. */
-function problemRow(problem: string) {
+export function problemRow(problem: string) {
   return row(
     {
       id: 'mcp.config',
@@ -389,7 +391,7 @@ export function toReviewConfig(found: readonly FoundConfig[]): FoundConfig | und
  * you; says whether the pane shows it.
  */
 export async function reviewConfig($: EngineInterface, item: FoundConfig, lookups: boolean): Promise<boolean> {
-  const request: GuardRequest = { origin: 'command', args: item.key, label: item.label, subject: 'configured', display: `In your configuration, not approved: ${item.label}` }
+  const request: GuardRequest = { origin: 'command', args: item.key, label: item.label, subject: 'configured', display: item.display ?? `In your configuration, not approved: ${item.label}` }
   const options = { action: 'approve' as const, request, lookups, report: item.report, ifFree: true }
   if (item.how === undefined || item.treeHash === undefined) return !(await showUnverified($, item.label, item.why, options)).superseded
   return !(await showScan($, item.label, item.how, options)).superseded
@@ -446,6 +448,7 @@ function removal(key: string, refuses: boolean): string {
   }
   const path = safeLine(key.slice(key.indexOf(' ') + 1))
   if (kind === 'file') return `the guard could not read ${path}, so nothing in it was judged`
+  if (kind === 'prompt') return `the guard does not change your files itself: delete ${path}, or restore what it held, to take it away`
   return `the guard cannot hold back one hook on its own: remove what you do not want from ${path}`
 }
 

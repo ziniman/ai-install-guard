@@ -9,6 +9,8 @@ export type HostEntry = {
   kind: HostEntryKind
   size: number
   isLink: boolean
+  /** When it last changed, where the host says. */
+  mtimeMs?: number
 }
 
 export type HostStat = {

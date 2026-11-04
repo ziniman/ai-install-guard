@@ -143,7 +143,7 @@ async function scanThenHold($: EngineInterface, label: string, how: ScanHow, req
  * the skill gate checks them before they are used; anything else is Could
  * not verify, which Install anyway lets through once, as that exact command.
  */
-export async function judgeShell($: EngineInterface, change: Exclude<ShellChange, { kind: 'pass' }>, command: string, lookups: boolean): Promise<Judgement> {
+export async function judgeShell($: EngineInterface, change: Exclude<ShellChange, { kind: 'pass' | 'watch' }>, command: string, lookups: boolean): Promise<Judgement> {
   if (change.kind === 'note') return { kind: 'allow', note: change.note }
   const request = (label: string): GuardRequest => ({ origin: 'tool', args: command, label, subject: 'command' })
   if (change.kind === 'write') {
@@ -193,7 +193,7 @@ export async function settingsTree(path: string, content: string): Promise<{ ent
 }
 
 /** Where a prompt Claude writes is scanned: a skill as its real folder once the write lands, a command or agent as the one file. */
-async function promptCandidate(host: Host, reading: Extract<WriteReading, { kind: 'prompt' }>): Promise<ScanHow> {
+export async function promptCandidate(host: Host, reading: Extract<WriteReading, { kind: 'prompt' }>): Promise<ScanHow> {
   // The scan reads the folder where it really is, links followed (on macOS /tmp is /private/tmp).
   if (reading.folder !== undefined) return { overlay: { root: await landsAt(host, reading.folder), rel: reading.rel, content: reading.content }, kind: 'skill' }
   return { files: { [reading.rel]: reading.content }, root: `/ai-install-guard/${reading.what}/${reading.rel.slice(reading.rel.lastIndexOf('/') + 1)}`, kind: reading.what }
