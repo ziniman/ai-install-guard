@@ -10,13 +10,13 @@
 // goes on with a note; anything else waits in the pane, and one that takes
 // effect at once (a settings file that widens what Claude may do, an agent or
 // output style with a red flag) leaves Claude only reading and writing files
-// until the person decides. Nothing here runs anything: it lists, reads and
-// hashes.
+// until the person decides, as an MCP server that waits has its tools
+// refused. Nothing here runs anything: it lists, reads and hashes.
 
 import type { EngineInterface } from 'claude-code'
 import { atom, read, update } from 'claude-code'
 
-import type { GuardLock } from '../../types'
+import type { GuardChanged, GuardLock } from '../../types'
 import { decisionFor, loadDecisions, noteChecked } from '../guard/decisions'
 import { scanOnly } from '../guard/run'
 import { modHost } from '../mod-host'
@@ -24,7 +24,7 @@ import { sha256Hex } from '../scan/hash'
 import type { Host } from '../scan/host'
 import { takeInventory } from '../scan/inventory'
 import { safeLine } from '../scan/safe-text'
-import { problemRow, type FoundConfig } from './configured'
+import { problemRow, toolsOf, type FoundConfig } from './configured'
 import { laidHash, mcpCandidate, promptCandidate, settingsReport, settingsTree } from './gate'
 import type { FoundPlugin } from './installed'
 import { mcpServerProblem } from './requests'
@@ -57,20 +57,28 @@ export type Made = { kind: 'reading'; path: string; reading: Exclude<WriteReadin
  * The places a command's code names, read from `named` (as `namedPlaces`
  * finds them): a relative one from `cwd`, and from the home folder too, since
  * code joins `.claude` onto a root it has. A `.claude` folder named whole is
- * watched in each part; a path into one, in the part it reaches. A path that
- * leads through a link counts where it lands as well.
+ * watched in each part; a path into one, in the part it reaches. Your own
+ * folder named whole, or the plugins in it named by no one plugin's folder
+ * (`plugins/cache`, a wildcard), has every plugin it installed watched. A
+ * path that leads through a link counts where it lands as well.
  */
 export async function watchFor(host: Host, named: readonly string[], cwd: string | undefined, home: string | undefined, configDir: string | undefined): Promise<Watch> {
   const watch: Watch = { files: [], prompts: [], plugins: [], registry: [] }
   const add = (list: string[], path: string): void => {
     if (!list.includes(path)) list.push(path)
   }
+  const yours = normalizePath(configDir ?? (home === undefined ? '' : `${home}/.claude`))
+  // Paths named in the folder plugins are installed in, each found to its plugin's own folder below.
+  const cached: { cache: string; rest: string[] }[] = []
+  // Folders whose plugins are watched, each one Claude Code installed.
+  const every = new Set<string>()
   const whole = (root: string): void => {
     add(watch.files, `${root}/settings.json`)
     add(watch.files, `${root}/settings.local.json`)
     add(watch.prompts, `${root}/agents`)
     add(watch.prompts, `${root}/output-styles`)
     add(watch.registry, `${root}/plugins/installed_plugins.json`)
+    if (yours !== '' && root.toLowerCase() === yours.toLowerCase()) every.add(root)
   }
   const part = (root: string, tail: readonly string[]): void => {
     const [first, second, ...rest] = tail
@@ -80,8 +88,9 @@ export async function watchFor(host: Host, named: readonly string[], cwd: string
     else if (name === 'agents' || name === 'output-styles') add(watch.prompts, `${root}/${first}`)
     else if (name === 'plugins') {
       add(watch.registry, `${root}/plugins/installed_plugins.json`)
-      // One plugin's own folder: cache/<marketplace>/<plugin>/<version>.
-      if (second?.toLowerCase() === 'cache' && rest.length >= 3) add(watch.plugins, `${root}/plugins/cache/${rest.slice(0, 3).join('/')}`)
+      const where = second?.toLowerCase()
+      if (where === undefined || (where === 'cache' && (rest.length === 0 || rest.some(item => /[*?[{]/.test(item))))) every.add(root)
+      else if (where === 'cache') cached.push({ cache: `${root}/plugins/${second}`, rest })
     }
   }
   const classify = (path: string): void => {
@@ -103,8 +112,7 @@ export async function watchFor(host: Host, named: readonly string[], cwd: string
   }
   for (const raw of named) {
     if (raw === '$CLAUDE_CONFIG_DIR') {
-      const yours = configDir ?? (home === undefined ? undefined : `${home}/.claude`)
-      if (yours !== undefined) whole(normalizePath(yours))
+      if (yours !== '') whole(yours)
       continue
     }
     for (const path of resolve(raw)) {
@@ -114,6 +122,17 @@ export async function watchFor(host: Host, named: readonly string[], cwd: string
       if (landed !== plain) classify(landed)
     }
   }
+  // A plugin's own folder is cache/<marketplace>/<plugin>/<version>; a shorter path is the folder it names, or the one its file is in.
+  for (const { cache, rest } of cached) {
+    if (rest.length >= 3) {
+      add(watch.plugins, `${cache}/${rest.slice(0, 3).join('/')}`)
+      continue
+    }
+    const kind = (await host.stat(`${cache}/${rest.join('/')}`).catch(() => undefined))?.kind
+    const folder = kind === 'dir' ? rest : rest.slice(0, -1)
+    if (folder.length > 0) add(watch.plugins, `${cache}/${folder.join('/')}`)
+  }
+  for (const root of every) for (const plugin of installedIn(await textOf(host, `${root}/plugins/installed_plugins.json`)).keys()) add(watch.plugins, plugin)
   return watch
 }
 
@@ -136,12 +155,19 @@ export async function changesSince(host: Host, watch: Watch, before: Snapshot, c
   for (const path of watch.files) {
     const was = before.files.get(path)
     if ((await textOf(host, path)) === was) continue
-    const reading = await readMade(host, path, was === UNREADABLE ? undefined : was, configDir)
+    const reading = await readMade(host, path, was?.startsWith(UNREADABLE) === true ? undefined : was, configDir)
     if (reading.kind !== 'pass') made.push({ kind: 'reading', path, reading })
   }
   for (const folder of watch.prompts) {
     const was = before.prompts.get(folder) ?? new Map<string, string>()
-    for (const [rel, hash] of await filesIn(host, folder)) {
+    const now = await filesIn(host, folder)
+    // A folder that cannot be read now may hold anything.
+    const blind = now.get(UNREADABLE)
+    if (blind !== undefined) {
+      if (was.get(UNREADABLE) !== blind) made.push({ kind: 'reading', path: folder, reading: { kind: 'unreadable', label: `a change to ${safeLine(folder)}`, reason: 'the guard could not read the folder after the command ran' } })
+      continue
+    }
+    for (const [rel, hash] of now) {
       if (was.get(rel) === hash) continue
       const reading = await readMade(host, `${folder}/${rel}`, undefined, configDir)
       if (reading.kind !== 'pass') made.push({ kind: 'reading', path: `${folder}/${rel}`, reading })
@@ -155,7 +181,9 @@ export async function changesSince(host: Host, watch: Watch, before: Snapshot, c
     for (const [root, id] of changedEntries(before.registry.get(path), now)) made.push({ kind: 'plugin', root, id })
   }
   for (const root of watch.plugins) {
-    if ((await listed(host, root)) === before.plugins.get(root)) continue
+    const now = await listed(host, root)
+    // Too large to list whole, a plugin is judged by its files instead.
+    if (now === before.plugins.get(root) && !now.startsWith(PARTIAL)) continue
     if (!made.some(item => item.kind === 'plugin' && item.root === root)) made.push({ kind: 'plugin', root, id: ids.get(root) ?? '' })
   }
   return made
@@ -166,36 +194,38 @@ export type Judged = { notes: string[]; configs: FoundConfig[]; plugins: FoundPl
 
 /**
  * Judges each change the command made, as the write gate judges a Write of
- * it, but after the fact: what was approved before, or has no red flags,
- * goes on; anything else waits.
+ * it, but after the fact: what was approved at a verdict no better than the
+ * one it gets now goes on, as does what has no red flags, named once;
+ * anything else waits.
  */
 export async function judgeMade($: EngineInterface, made: readonly Made[], lookups: boolean): Promise<Judged> {
   const host = modHost($)
   const judged: Judged = { notes: [], configs: [], plugins: [], locks: [] }
   const display = (label: string): string => `Changed by a command Claude ran: ${label}`
+  const note = async (treeHash: string, text: string): Promise<void> => {
+    if (await noteChecked($, treeHash).catch(() => false)) judged.notes.push(text)
+  }
   for (const one of made) {
     if (one.kind === 'plugin') {
+      // The guard's own folder is not one it judges, as at the start of a session.
+      if (normalizePath(one.root).replace(/\/+$/, '') === normalizePath($.plugin.root).replace(/\/+$/, '')) continue
       const label = safeLine(one.id === '' ? one.root : one.id)
-      const tree = await takeInventory(host, one.root).then(
-        scanned => scanned.inventory.treeHash,
-        () => undefined,
-      )
       const base = { id: one.id, label, root: one.root, display: display(label) }
-      if (tree === undefined) {
+      const report = await scanOnly(host, label, { folder: one.root }, { lookups }).catch(() => undefined)
+      const treeHash = report?.inventory?.treeHash
+      if (report === undefined || treeHash === undefined) {
         judged.plugins.push({ ...base, why: 'the command changed its files, and the guard could not read them' })
         continue
       }
-      const decided = (await loadDecisions($)).find(item => item.treeHash === tree)
+      const decided = await decisionFor($, { treeHash }, report.verdict.kind).catch(() => undefined)
       if (decided?.decision === 'approved') continue
-      const report = await scanOnly(host, label, { folder: one.root }, { lookups }).catch(() => undefined)
-      const mod = report?.results.some(result => result.group === 'mod') === true
-      if (decided === undefined && report?.verdict.kind === 'safe' && !mod) {
-        await noteChecked($, tree).catch(() => false)
-        judged.notes.push(`AI Install Guard: the command changed the files of ${label}; checked them: No red flags`)
+      const mod = report.results.some(result => result.group === 'mod')
+      if (decided === undefined && report.verdict.kind === 'safe' && !mod) {
+        await note(treeHash, `AI Install Guard: the command changed the files of ${label}; checked them: No red flags`)
         continue
       }
-      const why = decided?.decision === 'rejected' ? 'the command changed its files to ones you rejected' : report === undefined ? 'the command changed its files, and the scan failed' : `the command changed its files: ${report.verdict.recommendation}`
-      judged.plugins.push({ ...base, treeHash: tree, why, ...(report === undefined ? {} : { report }) })
+      const why = decided?.decision === 'rejected' ? 'the command changed its files to ones you rejected' : `the command changed its files: ${report.verdict.kind === 'safe' ? 'a mod whose files you have not approved' : report.verdict.recommendation}`
+      judged.plugins.push({ ...base, treeHash, why, report })
       continue
     }
     const { reading, path } = one
@@ -218,17 +248,19 @@ export async function judgeMade($: EngineInterface, made: readonly Made[], looku
         const problem = mcpServerProblem(entry.name, entry.server)
         const how = problem === undefined ? laid : { ...laid, notes: [...(laid.notes ?? []), problemRow(problem)] }
         const treeHash = await laidHash(laid)
-        const label = `MCP server ${safeLine(entry.name)} (${entry.scope.split(' ')[0] ?? 'user'} scope)`
-        const decided = (await loadDecisions($)).find(item => item.treeHash === treeHash)
-        if (decided?.decision === 'approved') continue
+        const scope = entry.scope.split(' ')[0] ?? 'user'
+        const label = `MCP server ${safeLine(entry.name)} (${scope} scope)`
         const report = await scanOnly(host, label, how, { lookups }).catch(() => undefined)
+        const decided = report === undefined ? undefined : await decisionFor($, { treeHash }, report.verdict.kind).catch(() => undefined)
+        if (decided?.decision === 'approved') continue
         if (decided === undefined && report?.verdict.kind === 'safe') {
-          await noteChecked($, treeHash).catch(() => false)
-          judged.notes.push(`AI Install Guard: the command added ${label}; checked it: No red flags`)
+          await note(treeHash, `AI Install Guard: the command added ${label}; checked it: No red flags`)
           continue
         }
         const why = decided?.decision === 'rejected' ? 'you rejected this server before' : report === undefined ? 'the scan failed' : report.verdict.recommendation
-        judged.configs.push({ key: `mcp ${entry.scope.split(' ')[0] ?? 'user'} ${entry.name}`, label, treeHash, why, how, ...(report === undefined ? {} : { report }), display: display(label) })
+        judged.configs.push({ key: `mcp ${scope} ${entry.name}`, label, treeHash, why, how, ...(report === undefined ? {} : { report }), display: display(label) })
+        // Its tools are refused until you keep it: a server starts as a session does, and may serve them before you decide.
+        judged.locks.push({ label, treeHash, path, hash: await contentHash(host, path), settings: false, tools: toolsOf(entry.name) })
       }
       continue
     }
@@ -240,8 +272,7 @@ export async function judgeMade($: EngineInterface, made: readonly Made[], looku
       const decided = await decisionFor($, { treeHash }, report.verdict.kind).catch(() => undefined)
       if (decided?.decision === 'approved') continue
       if (decided === undefined && report.verdict.kind === 'safe') {
-        await noteChecked($, treeHash).catch(() => false)
-        judged.notes.push(`AI Install Guard: the command changed ${reading.label}; checked it: No red flags`)
+        await note(treeHash, `AI Install Guard: the command changed ${reading.label}; checked it: No red flags`)
         continue
       }
     }
@@ -253,16 +284,37 @@ export async function judgeMade($: EngineInterface, made: readonly Made[], looku
 }
 
 const locksAtom = atom({ plugin: 'ai-install-guard', key: 'locks' } as const, [] as GuardLock[])
+const changedAtom = atom({ plugin: 'ai-install-guard', key: 'changed' } as const, { configs: [], plugins: [] } as GuardChanged)
 
-/** Adds locks for changes that wait, each once. */
-export async function addLocks($: EngineInterface, locks: readonly GuardLock[]): Promise<void> {
-  if (locks.length === 0) return
-  await update($, locksAtom, current => [...current.filter(item => !locks.some(lock => lock.treeHash === item.treeHash && lock.path === item.path)), ...locks])
+/** Most changes kept for /guard held: the oldest fall off. */
+const MAX_CHANGED = 50
+
+/**
+ * Keeps what waits for /guard held, and its locks, in the session's state, so
+ * a reload, which starts the guard's own hooks again, loses neither. A
+ * plugin's scan is left out, to be made again when it is shown.
+ */
+export async function keepChanged($: EngineInterface, judged: Judged): Promise<void> {
+  if (judged.configs.length + judged.plugins.length > 0) {
+    await update($, changedAtom, current => ({
+      configs: [...current.configs, ...judged.configs].slice(-MAX_CHANGED),
+      plugins: [...current.plugins, ...judged.plugins.map(({ report: _report, ...plugin }) => plugin)].slice(-MAX_CHANGED),
+    }))
+  }
+  if (judged.locks.length === 0) return
+  await update($, locksAtom, current => [...current.filter(item => !judged.locks.some(lock => lock.treeHash === item.treeHash && lock.path === item.path)), ...judged.locks])
+}
+
+/** What commands Claude ran changed that waits for the person, as kept. */
+export async function loadChanged($: EngineInterface): Promise<{ configs: FoundConfig[]; plugins: FoundPlugin[] }> {
+  const kept = await read($, changedAtom)
+  return { configs: kept.configs as FoundConfig[], plugins: kept.plugins as FoundPlugin[] }
 }
 
 /**
  * The locks still on: a change you kept is let go, and one you rejected
- * once its file no longer holds it; the rest wait.
+ * once its file no longer holds it, but for a server's tools, refused for
+ * the session; the rest wait.
  */
 export async function locksOn($: EngineInterface): Promise<GuardLock[]> {
   const current = await read($, locksAtom)
@@ -273,7 +325,7 @@ export async function locksOn($: EngineInterface): Promise<GuardLock[]> {
   for (const lock of current) {
     const decided = decisions.find(item => item.treeHash === lock.treeHash)
     if (decided?.decision === 'approved') continue
-    if (decided?.decision === 'rejected' && (await contentHash(host, lock.path)) !== lock.hash) continue
+    if (decided?.decision === 'rejected' && lock.tools === undefined && (await contentHash(host, lock.path)) !== lock.hash) continue
     on.push(lock)
   }
   if (on.length !== current.length) await update($, locksAtom, latest => latest.filter(item => on.some(lock => lock.treeHash === item.treeHash && lock.path === item.path)))
@@ -283,12 +335,21 @@ export async function locksOn($: EngineInterface): Promise<GuardLock[]> {
 /** Tools that only read, or write files the write gate judges: what Claude may still use while a change waits. */
 export const LOCK_FREE = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS', 'TodoWrite', 'ToolSearch', 'AskUserQuestion'])
 
-/** What Claude reads for a tool refused while changes wait. */
-export async function lockRefusal($: EngineInterface, locks: readonly GuardLock[]): Promise<string> {
+/** The refusal Claude reads for `tool` while changes wait, or undefined when none holds it back. */
+export async function lockRefusal($: EngineInterface, locks: readonly GuardLock[], tool: string): Promise<string | undefined> {
   const decisions = await loadDecisions($).catch(() => [])
-  const rejected = locks.filter(lock => decisions.some(item => item.treeHash === lock.treeHash && item.decision === 'rejected'))
-  const names = locks.map(lock => lock.label).join(', ')
-  const undo = rejected.length === 0 ? '' : ` The person rejected ${rejected.map(lock => lock.label).join(', ')}, which is still there: restore what the file held, with Edit or Write, or ask the person to.`
+  const rejected = (lock: GuardLock): boolean => decisions.some(item => item.treeHash === lock.treeHash && item.decision === 'rejected')
+  const server = locks.find(lock => lock.tools !== undefined && tool.startsWith(lock.tools))
+  if (server !== undefined) {
+    return rejected(server)
+      ? `AI Install Guard refused this tool: it comes from the ${server.label}, which a command Claude ran added and the person rejected. Tell the person.`
+      : `AI Install Guard refused this tool: it comes from the ${server.label}, which a command Claude ran added, and which waits for the person's decision in the guard's pane (/guard held opens it). Tell the person.`
+  }
+  const all = locks.filter(lock => lock.tools === undefined)
+  if (all.length === 0 || LOCK_FREE.has(tool)) return undefined
+  const names = all.map(lock => lock.label).join(', ')
+  const back = all.filter(rejected)
+  const undo = back.length === 0 ? '' : ` The person rejected ${back.map(lock => lock.label).join(', ')}, which is still there: restore what the file held, with Edit or Write, or ask the person to.`
   return `AI Install Guard refused this tool: a command Claude ran changed ${names} where Claude Code loads from, and the change waits for the person's decision in the guard's pane (/guard held opens it).${undo} Until then, Claude may only read files and use Write or Edit. Tell the person.`
 }
 
@@ -296,35 +357,47 @@ export async function lockRefusal($: EngineInterface, locks: readonly GuardLock[
 export function madeNote(judged: Judged): string | undefined {
   const waiting = [...judged.configs.map(item => item.label), ...judged.plugins.map(item => item.label)]
   if (waiting.length === 0) return undefined
-  const locked = judged.locks.length > 0 ? ' Until they decide, Claude may only read files and use Write or Edit.' : ''
+  const locked = judged.locks.some(lock => lock.tools === undefined) ? ' Until they decide, Claude may only read files and use Write or Edit.' : ''
   return `AI Install Guard: this command changed ${waiting.join(', ')} where Claude Code loads from, and the change waits for the person's decision in the guard's pane. Tell the person; do not change it again or work around it.${locked}`
 }
 
-/** Read where a file's text cannot be: there, but not readable. */
+/** What stands for a file's text, or for a folder's files, where it cannot be read: with what the guard can tell of it. */
 const UNREADABLE = '\u0000unreadable'
 
+/**
+ * A file's text; undefined when it is not there; one too large or that
+ * cannot be read stands as its size and when it last changed, so a change
+ * to it still shows.
+ */
 async function textOf(host: Host, path: string): Promise<string | undefined> {
   const text = await readText(host, path, MAX_CONFIG_BYTES)
-  return 'text' in text ? text.text : UNREADABLE
+  if ('text' in text) return text.text
+  const stat = await host.stat(path).catch(() => undefined)
+  return `${UNREADABLE} ${stat?.size ?? ''} ${stat?.mtimeMs ?? ''}`
 }
 
 async function contentHash(host: Host, path: string): Promise<string> {
   return sha256Hex((await textOf(host, path)) ?? '\u0000none')
 }
 
-/** A folder's files by path, each with its hash; empty when it is not there. */
+/** A folder's files by path, each with its hash; empty when it is not there; one key, UNREADABLE, when it cannot be read. */
 async function filesIn(host: Host, folder: string): Promise<Map<string, string>> {
-  const scanned = await takeInventory(host, folder).catch(() => undefined)
   const out = new Map<string, string>()
-  for (const entry of scanned?.inventory.entries ?? []) {
+  if ((await host.stat(folder).catch(() => undefined)) === undefined) return out
+  const scanned = await takeInventory(host, folder).catch((error: unknown) => (error instanceof Error ? error.message : String(error)))
+  if (typeof scanned === 'string') return new Map([[UNREADABLE, scanned]])
+  for (const entry of scanned.inventory.entries) {
     if (entry.kind === 'file') out.set(entry.path, entry.sha256)
     else if (entry.kind === 'link') out.set(entry.path, `link ${entry.target}`)
   }
   return out
 }
 
-/** The most entries a plugin folder is listed to: past it, the first ones are what is compared. */
+/** The most entries a plugin folder is listed to; past it, the plugin is judged by its files. */
 const MAX_LISTED = 5000
+
+/** What marks a listing cut short. */
+const PARTIAL = 'partial '
 
 /**
  * A plugin folder as it lists, entry by entry (kind, size, when it changed),
@@ -333,6 +406,7 @@ const MAX_LISTED = 5000
  */
 async function listed(host: Host, root: string): Promise<string> {
   const lines: string[] = []
+  let partial = false
   const walk = async (dir: string, rel: string): Promise<void> => {
     const entries = await host.list(dir).catch(() => undefined)
     if (entries === undefined) {
@@ -340,7 +414,10 @@ async function listed(host: Host, root: string): Promise<string> {
       return
     }
     for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
-      if (lines.length >= MAX_LISTED) return
+      if (lines.length >= MAX_LISTED) {
+        partial = true
+        return
+      }
       if (rel === '' && entry.name === '.in_use') continue
       const path = rel === '' ? entry.name : `${rel}/${entry.name}`
       lines.push(`${entry.kind} ${entry.size} ${entry.mtimeMs ?? ''} ${entry.isLink ? 'link ' : ''}${path}`)
@@ -348,7 +425,7 @@ async function listed(host: Host, root: string): Promise<string> {
     }
   }
   await walk(root, '')
-  return sha256Hex(lines.join('\n'))
+  return `${partial ? PARTIAL : ''}${await sha256Hex(lines.join('\n'))}`
 }
 
 /** Each plugin's folder in a list of installed plugins, with its id. */
@@ -376,7 +453,7 @@ function changedEntries(before: string | undefined, after: string | undefined): 
 
 function pluginsOf(text: string | undefined): Record<string, Record<string, unknown>[]> {
   try {
-    const parsed: unknown = JSON.parse(text === undefined || text === UNREADABLE ? '{}' : text)
+    const parsed: unknown = JSON.parse(text === undefined || text.startsWith(UNREADABLE) ? '{}' : text)
     const plugins = isRecord(parsed) && isRecord(parsed.plugins) ? parsed.plugins : {}
     return Object.fromEntries(Object.entries(plugins).map(([id, list]) => [id, Array.isArray(list) ? list.filter(isRecord) : []]))
   } catch {

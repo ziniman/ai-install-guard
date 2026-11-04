@@ -194,7 +194,7 @@ export function refusalByName(tool: string, decisions: readonly Decision[]): str
 }
 
 /** How Claude Code begins the names of a server's tools: every character but a letter, digit, `_` or `-` made `_`. */
-function toolsOf(name: string): string {
+export function toolsOf(name: string): string {
   return `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`
 }
 

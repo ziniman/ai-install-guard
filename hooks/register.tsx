@@ -3,13 +3,13 @@ import { atom, update } from 'claude-code'
 
 import type { GuardView } from '../types'
 import { BROWSE_NOTE, judge, judgeShell, judgeWrite } from './gate/gate'
-import { configuredServers, refusalByName, reviewConfig, servingTool, toolRefusal, type FoundConfig, type ServerTools } from './gate/configured'
-import { checkAtStart, reviewFound, waitingReport, type FoundPlugin, type StartCheck } from './gate/installed'
+import { configuredServers, refusalByName, reviewConfig, servingTool, toolRefusal, type ServerTools } from './gate/configured'
+import { checkAtStart, reviewFound, waitingReport, type StartCheck } from './gate/installed'
 import { failedLoad, heldToast, judgeLoad, release, remember, reviewHeld, toReview, type HeldMod } from './gate/load'
 import { namesClaudeFolder, readShellChange, type ShellChange } from './gate/shell-change'
 import { failedSkill, judgeByName, judgeSkill } from './gate/skill'
 import { readPluginArgs, readShellCommand } from './gate/requests'
-import { addLocks, changesSince, judgeMade, LOCK_FREE, lockRefusal, locksOn, madeNote, snapshot, watchFor, type Snapshot, type Watch } from './gate/watch'
+import { changesSince, judgeMade, keepChanged, loadChanged, LOCK_FREE, lockRefusal, locksOn, madeNote, snapshot, watchFor, type Snapshot, type Watch } from './gate/watch'
 import { claudeConfigDir, keptAt, landsAt, normalizePath, readWrite, type WriteInput, type WriteReading } from './gate/writes'
 import { expandHome } from './gate/resolve'
 import { badgeFor } from './guard/badge'
@@ -63,8 +63,8 @@ export const register: Register = (on, options) => {
   let checking: Promise<void> | undefined
   /** The MCP servers in your configuration as their tools are named, read at the session's first MCP tool call. */
   let servers: Promise<{ servers: ServerTools[]; blind: boolean }> | undefined
-  /** What the commands Claude ran changed where Claude Code loads from that waits for you, for /guard held. */
-  const changed: { configs: FoundConfig[]; plugins: FoundPlugin[] } = { configs: [], plugins: [] }
+  /** Whether a failure to tell if a settings change waits has been named, so it is named once. */
+  let hooksFailed = false
 
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
@@ -139,6 +139,7 @@ export const register: Register = (on, options) => {
     if (sub === 'held') {
       // A check still running at the start of the session is waited for, so the list is whole.
       await checking
+      const changed = await loadChanged($).catch(() => ({ configs: [], plugins: [] }))
       const all: StartCheck = { plugins: [...found.plugins, ...changed.plugins], configs: found.configs, changed: changed.configs }
       return { text: await waitingReport($, held, all, lookups, { cwd: projectDir ?? '', configDir: await claudeFolder($) }) }
     }
@@ -172,7 +173,15 @@ export const register: Register = (on, options) => {
 
   // While a settings change a command made waits for you, a hook it may have
   // added is held back: the settings hooks beneath run only once you decide.
-  on('classic.*', async ($, e, next) => ((await locksOn($)).some(lock => lock.settings) ? {} : next(e))).catch(($, e, next) => (next.called ? next(e) : {}))
+  on('classic.*', async ($, e, next) => ((await locksOn($)).some(lock => lock.settings) ? {} : next(e))).catch(($, e, next) => {
+    if (next.called) return next(e)
+    // Held back all the same, since one may be new: said once, not at every event.
+    if (!hooksFailed) {
+      hooksFailed = true
+      $.ui.toast('AI Install Guard could not tell whether a settings change a command made still waits for you, so it is holding back your settings hooks. Run /guard held.')
+    }
+    return {}
+  })
 
   // A change a command made that takes effect at once waits for you; until
   // you decide, Claude may only read files and write them through the write
@@ -180,11 +189,10 @@ export const register: Register = (on, options) => {
   // before the guard can look: its tools are refused, by the start of their
   // names, from the session's first call, whether or not the check has run.
   on('tool.call', async ($, e, next) => {
-    if (!LOCK_FREE.has(e.tool)) {
-      const locks = await locksOn($).catch(() => undefined)
-      if (locks === undefined) return { deny: 'AI Install Guard refused this tool: it could not tell whether a change a command made still waits for the person. Tell the person.' }
-      if (locks.length > 0) return { deny: await lockRefusal($, locks) }
-    }
+    const locks = await locksOn($).catch(() => undefined)
+    if (locks === undefined && !LOCK_FREE.has(e.tool)) return { deny: 'AI Install Guard refused this tool: it could not tell whether a change a command made still waits for the person. Tell the person.' }
+    const waits = locks === undefined || locks.length === 0 ? undefined : await lockRefusal($, locks, e.tool)
+    if (waits !== undefined) return { deny: waits }
     if (!e.tool.startsWith('mcp__') || projectDir === undefined) return next(e)
     const place = { cwd: projectDir, configDir: await claudeFolder($) }
     servers ??= configuredServers($, place)
@@ -217,7 +225,7 @@ export const register: Register = (on, options) => {
       if ('deny' in gate) return { deny: gate.deny }
       if ('watch' in gate) {
         const result = await next(e)
-        const note = await lookAfter($, gate.watch, gate.before, lookups, changed)
+        const note = await lookAfter($, gate.watch, gate.before, lookups)
         return note === undefined || result.deny !== undefined || result.isError === true ? result : { ...result, context: [...(result.context ?? []), note] }
       }
       try {
@@ -403,20 +411,19 @@ async function gateShell($: EngineInterface, command: string, cwd: string | unde
  * answer is the note Claude reads with the command's result, or undefined. A
  * comparison that fails is named, never thrown: the command has run.
  */
-async function lookAfter($: EngineInterface, watch: Watch, before: Snapshot, lookups: boolean, changed: { configs: FoundConfig[]; plugins: FoundPlugin[] }): Promise<string | undefined> {
+async function lookAfter($: EngineInterface, watch: Watch, before: Snapshot, lookups: boolean): Promise<string | undefined> {
   try {
     const made = await changesSince(modHost($), watch, before, await claudeFolder($))
     if (made.length === 0) return undefined
     const judged = await judgeMade($, made, lookups)
-    await addLocks($, judged.locks)
-    changed.configs.push(...judged.configs)
-    changed.plugins.push(...judged.plugins)
+    await keepChanged($, judged)
     const [plugin] = judged.plugins
     const [config] = judged.configs
     const shows = plugin !== undefined ? await reviewFound($, plugin, lookups, true) : config !== undefined && (await reviewConfig($, config, lookups))
     const note = madeNote(judged)
     const waiting = [...judged.configs, ...judged.plugins].map(item => item.label)
-    const said = waiting.length === 0 ? [] : [`AI Install Guard: a command Claude ran changed ${waiting.join(', ')} where Claude Code loads from. ${shows ? 'The pane shows it: keep it, or reject it.' : '/guard held opens it in the pane.'}${judged.locks.length > 0 ? ' Until you decide, Claude may only read files and use Write or Edit.' : ''}`]
+    const locked = judged.locks.some(lock => lock.tools === undefined) ? ' Until you decide, Claude may only read files and use Write or Edit.' : ''
+    const said = waiting.length === 0 ? [] : [`AI Install Guard: a command Claude ran changed ${waiting.join(', ')} where Claude Code loads from. ${shows ? 'The pane shows it: keep it, or reject it.' : '/guard held opens it in the pane.'}${locked}`]
     const toast = [...judged.notes, ...said].join(' ')
     if (toast !== '') $.ui.toast(toast)
     return note

@@ -113,7 +113,20 @@ export type GuardLock = {
   hash: string
   /** A settings file: its hooks are held back too, since one may be new. */
   settings: boolean
+  /**
+   * An MCP server's tools, by the start of their names: only those are
+   * refused, until the person keeps the server; a rejected one's stay refused
+   * for the session.
+   */
+  tools?: string
 }
+
+/**
+ * What commands Claude ran changed where Claude Code loads from that waits
+ * for the person, for /guard held: kept as the checks at the start of a
+ * session keep what they find (a configuration item, a plugin found on).
+ */
+export type GuardChanged = { configs: object[]; plugins: object[] }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -123,6 +136,8 @@ declare module 'claude-code' {
       passes: GuardPass[]
       /** Changes a command made that wait for the person before Claude may do more than read and write files. */
       locks: GuardLock[]
+      /** What commands Claude ran changed that waits for the person. */
+      changed: GuardChanged
     }
   }
 }
