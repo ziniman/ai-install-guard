@@ -383,19 +383,34 @@ export function buildContext(tree: ScannedTree): ScanContext {
   // means it ("read STRATEGY.md at the repo root"). The plugin's own is named as a way to it: from its root
   // (`${CLAUDE_PLUGIN_ROOT}/docs/guide.md`) or climbing to it (`../../docs/guide.md`). A standalone skill's root
   // is its own folder, where every path counts.
-  // `from` is the prompt's own path: a climb counts only when it lands on the plugin's root from the prompt's folder.
+  // Where each prompt is read from: its own folder, and that of every link Claude Code loads it through (a skill's
+  // SKILL.md that is one); a link anywhere else is not how Claude reaches it.
+  const readFrom = new Map<string, Set<string>>()
+  for (const [link, real] of aliases) if (underRoot(link)) readFrom.set(real, new Set([...(readFrom.get(real) ?? []), dirname(link)]))
+  // Each path a prompt's words lead to, resolved as Claude resolves them: from the plugin's root after
+  // `${CLAUDE_PLUGIN_ROOT}/`, and otherwise from the folder the prompt is read in, so a climb that leaves the
+  // plugin leads nowhere.
+  const reachedBy = new Map<string, Set<string>>()
+  const reached = (prompt: string, body: string): Set<string> => {
+    const known = reachedBy.get(prompt)
+    if (known !== undefined) return known
+    const out = new Set<string>()
+    const folders = [dirname(prompt), ...(readFrom.get(prompt) ?? [])]
+    // The plugin's root as one mark, so the braces of `${CLAUDE_PLUGIN_ROOT}` do not split the word it starts.
+    const words = indexOf(body).normalized.replace(/\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b/g, '\u0000')
+    for (const raw of words.split(/[\s;&|()<>=,[\]{}]+/)) {
+      const word = raw.replace(/[#?].*$/, '').replace(/[.,:;!?*]+$/, '')
+      // A path from the system's root, a home folder or a variable is not one inside the plugin.
+      if (word === '' || /^[/~$]/.test(word)) continue
+      const rooted = word.startsWith('\u0000/') ? word.slice(2) : undefined
+      for (const path of rooted === undefined ? folders.map(folder => joinPath(folder, word)) : [joinPath('', rooted)]) if (path !== undefined) out.add(path)
+    }
+    reachedBy.set(prompt, out)
+    return out
+  }
   const promptNames = (from: string) => (body: string, path: string): boolean => {
     if (kind === 'skill' || underRoot(path)) return namedIn(body, path)
-    const climb = '../'.repeat(from.split('/').length - 1)
-    const { normalized } = indexOf(body)
-    for (let at = normalized.indexOf(path); at !== -1; at = normalized.indexOf(path, at + 1)) {
-      const after = normalized[at + path.length]
-      if (after !== undefined && /[\w-]/.test(after)) continue
-      // What leads to it in the same word: the plugin's root, or a climb to it.
-      const lead = /[^\s;&|()<>=,]*$/.exec(normalized.slice(Math.max(0, at - 200), at))?.[0] ?? ''
-      if (/^(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT)\/$/.test(lead) || (climb !== '' && lead === climb)) return true
-    }
-    return false
+    return reached(from, body).has(path)
   }
   // Markdown a prompt tells the model to read is a prompt too, however it is
   // named (a skill's own README): followed until nothing new is named.

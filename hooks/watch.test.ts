@@ -33,8 +33,13 @@ describe('what a command changed where Claude Code loads from', () => {
     const files: FixtureFiles = { '.claude/plugins/marketplaces/official/catalog.json': b64('{}') }
     const was = await snapshot(memoryHost(HOME, files), market)
     expect(await changesSince(memoryHost(HOME, { ...files, '.claude/plugins/marketplaces/official/catalog.json': b64('{"plugins":[]}') }), market, was, undefined)).toEqual([
-      { kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces/official` },
+      { kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces/official`, partial: false },
     ])
+    // PR review: the marketplaces folder named whole, or by a wildcard, watches each copy in it.
+    const markets = memoryHost(HOME, { ...files, '.claude/plugins/marketplaces/other/catalog.json': b64('{}') })
+    for (const named of ['~/.claude/plugins/marketplaces', '~/.claude/plugins/marketplaces/*/catalog.json']) {
+      expect((await watchFor(markets, [named], PROJECT, HOME, undefined)).marketplaces).toEqual([`${HOME}/.claude/plugins/marketplaces/official`, `${HOME}/.claude/plugins/marketplaces/other`])
+    }
     // Local review: a wildcard in the first name may reach any part of the folder.
     const any = await watchFor(host, ['~/.claude/settings*.json'], PROJECT, HOME, undefined)
     expect(any.files).toEqual([`${HOME}/.claude/settings.json`, `${HOME}/.claude/settings.local.json`])

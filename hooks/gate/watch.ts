@@ -58,7 +58,7 @@ export type Made =
   | { kind: 'reading'; path: string; reading: Exclude<WriteReading, { kind: 'pass' }> }
   | { kind: 'plugin'; root: string; id: string }
   /** A marketplace's copy: what it lists is scanned as it is installed, so the change is only named. */
-  | { kind: 'marketplace'; root: string }
+  | { kind: 'marketplace'; root: string; partial: boolean }
 
 /**
  * The places a command's code names, read from `named` (as `namedPlaces`
@@ -77,8 +77,9 @@ export async function watchFor(host: Host, named: readonly string[], cwd: string
   const yours = normalizePath(configDir ?? (home === undefined ? '' : `${home}/.claude`))
   // Paths named in the folder plugins are installed in, each found to its plugin's own folder below.
   const cached: { cache: string; rest: string[] }[] = []
-  // Folders whose plugins are watched, each one Claude Code installed.
+  // Folders whose plugins are watched, each one Claude Code installed; and folders of marketplace copies watched each.
   const every = new Set<string>()
+  const markets = new Set<string>()
   const whole = (root: string): void => {
     add(watch.files, `${root}/settings.json`)
     add(watch.files, `${root}/settings.local.json`)
@@ -99,7 +100,11 @@ export async function watchFor(host: Host, named: readonly string[], cwd: string
       const where = second?.toLowerCase()
       if (where === undefined || (where === 'cache' && (rest.length === 0 || rest.some(item => /[*?[{]/.test(item))))) every.add(root)
       else if (where === 'cache') cached.push({ cache: `${root}/plugins/${second}`, rest })
-      else if (where === 'marketplaces' && rest[0] !== undefined && !/[*?[{]/.test(rest[0])) add(watch.marketplaces, `${root}/plugins/${second}/${rest[0]}`)
+      else if (where === 'marketplaces') {
+        // Every copy in the folder when it is named whole or by a wildcard, else the one named.
+        if (rest[0] === undefined || /[*?[{]/.test(rest[0])) markets.add(`${root}/plugins/${second}`)
+        else add(watch.marketplaces, `${root}/plugins/${second}/${rest[0]}`)
+      }
     }
   }
   const classify = (path: string): void => {
@@ -142,6 +147,7 @@ export async function watchFor(host: Host, named: readonly string[], cwd: string
     if (folder.length > 0) add(watch.plugins, `${cache}/${folder.join('/')}`)
   }
   for (const root of every) for (const plugin of installedIn(await textOf(host, `${root}/plugins/installed_plugins.json`)).keys()) add(watch.plugins, plugin)
+  for (const folder of markets) for (const entry of await host.list(folder).catch(() => [])) if (entry.kind === 'dir' && !entry.isLink) add(watch.marketplaces, `${folder}/${entry.name}`)
   return watch
 }
 
@@ -197,7 +203,11 @@ export async function changesSince(host: Host, watch: Watch, before: Snapshot, c
     if (now === before.plugins.get(root) && !now.startsWith(PARTIAL)) continue
     if (!made.some(item => item.kind === 'plugin' && item.root === root)) made.push({ kind: 'plugin', root, id: ids.get(root) ?? '' })
   }
-  for (const root of watch.marketplaces) if ((await listed(host, root)) !== before.marketplaces.get(root)) made.push({ kind: 'marketplace', root })
+  for (const root of watch.marketplaces) {
+    const now = await listed(host, root)
+    // Too large to list whole, it cannot be compared: said so, rather than taken as unchanged.
+    if (now !== before.marketplaces.get(root) || now.startsWith(PARTIAL)) made.push({ kind: 'marketplace', root, partial: now.startsWith(PARTIAL) })
+  }
   return made
 }
 
@@ -219,7 +229,8 @@ export async function judgeMade($: EngineInterface, made: readonly Made[], looku
   }
   for (const one of made) {
     if (one.kind === 'marketplace') {
-      judged.notes.push(`AI Install Guard: the command changed the files of the marketplace ${safeLine(one.root.slice(one.root.lastIndexOf('/') + 1))}; a plugin from it is scanned as it is installed or updated`)
+      const name = safeLine(one.root.slice(one.root.lastIndexOf('/') + 1))
+      judged.notes.push(one.partial ? `AI Install Guard: the marketplace ${name} is too large for the guard to tell whether the command changed it; a plugin from it is scanned as it is installed or updated` : `AI Install Guard: the command changed the files of the marketplace ${name}; a plugin from it is scanned as it is installed or updated`)
       continue
     }
     if (one.kind === 'plugin') {
@@ -435,7 +446,8 @@ async function listed(host: Host, root: string): Promise<string> {
         partial = true
         return
       }
-      if (rel === '' && entry.name === '.in_use') continue
+      // Claude Code's in-use marks, and a marketplace copy's own git store, which a fetch changes.
+      if (rel === '' && (entry.name === '.in_use' || entry.name === '.git')) continue
       const path = rel === '' ? entry.name : `${rel}/${entry.name}`
       lines.push(`${entry.kind} ${entry.size} ${entry.mtimeMs ?? ''} ${entry.isLink ? 'link ' : ''}${path}`)
       if (entry.kind === 'dir' && !entry.isLink) await walk(`${dir}/${entry.name}`, path)
