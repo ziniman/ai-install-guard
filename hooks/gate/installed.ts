@@ -38,6 +38,8 @@ export type FoundPlugin = {
   quiet?: true
   /** The scan that found it, shown in the pane as it is rather than made again. */
   report?: ScanReport
+  /** The pane's line for where it was found, when not at the start of a session: a change a command Claude ran made. */
+  display?: string
 }
 
 /**
@@ -154,8 +156,12 @@ async function loadBaseline($: EngineInterface): Promise<Baseline | undefined> {
   return { at: isRecord(stored) && typeof stored.at === 'number' ? stored.at : 0, waiting }
 }
 
-/** What the check at the start of a session found waiting: plugins on, and MCP servers and settings files in your configuration. */
-export type StartCheck = { plugins: FoundPlugin[]; configs: FoundConfig[] }
+/**
+ * What the check at the start of a session found waiting: plugins on, and MCP
+ * servers and settings files in your configuration; and `changed`, what the
+ * commands Claude ran since changed there, which waits wherever it is.
+ */
+export type StartCheck = { plugins: FoundPlugin[]; configs: FoundConfig[]; changed?: FoundConfig[] }
 
 /**
  * The check as a session starts, run beside it: the plugins on, then your
@@ -247,7 +253,7 @@ export function toReviewFound(found: readonly FoundPlugin[]): FoundPlugin | unde
  * verdict still waiting for you; says whether the pane shows it.
  */
 export async function reviewFound($: EngineInterface, plugin: FoundPlugin, lookups: boolean, ifFree = true): Promise<boolean> {
-  const request: GuardRequest = { origin: 'command', args: plugin.id, label: plugin.label, subject: 'installed', display: `On in this session, not approved: ${plugin.label}` }
+  const request: GuardRequest = { origin: 'command', args: plugin.id, label: plugin.label, subject: 'installed', display: plugin.display ?? `On in this session, not approved: ${plugin.label}` }
   const options = { action: 'approve' as const, request, lookups, report: plugin.report, ifFree }
   if (plugin.treeHash === undefined) return !(await showUnverified($, plugin.label, plugin.why, options)).superseded
   return !(await showScan($, plugin.label, { folder: plugin.root }, options)).superseded
@@ -266,8 +272,8 @@ export async function waitingReport($: EngineInterface, held: readonly HeldMod[]
   const on = found.plugins.length === 0 ? undefined : await installedPlugins(modHost($)).then(list => new Set(list.map(plugin => trimmed(plugin.root))), () => undefined)
   const plugins = on === undefined ? found.plugins : found.plugins.filter(plugin => on.has(trimmed(plugin.root)))
   const now = found.configs.length === 0 ? undefined : await configuredNow($, place).catch(() => undefined)
-  // One that could not be read is named until it can be.
-  const configs = now === undefined ? found.configs : found.configs.filter(item => (item.treeHash === undefined ? now.unreadable.has(item.key) : now.hashes.has(item.treeHash)))
+  // One that could not be read is named until it can be; a change a command made is named until it is decided.
+  const configs = [...(now === undefined ? found.configs : found.configs.filter(item => (item.treeHash === undefined ? now.unreadable.has(item.key) : now.hashes.has(item.treeHash)))), ...(found.changed ?? [])]
   if (plugins.length === 0 && configs.length === 0) return heldReport($, held, lookups)
   const decisions = await loadDecisions($)
   const mods = heldStatus(held, decisions)

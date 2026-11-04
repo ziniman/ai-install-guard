@@ -27,6 +27,15 @@ export type ShellChange =
    * the skill or command before Claude Code next uses it.
    */
   | { kind: 'note'; label: string; note: string; claim?: string }
+  /**
+   * Code the guard cannot read, that names a place Claude Code loads from but
+   * makes no change there the guard can see: it runs, and the places it names
+   * are compared before and after (`watch.ts`). `named` holds each `.claude`
+   * path and configuration file it names, read from the folder its own part
+   * runs in when that is known, and `cwd` the session's folder, which one
+   * still relative is read from.
+   */
+  | { kind: 'watch'; label: string; reason: string; named: string[]; cwd: string | undefined }
 
 const PASS: ShellChange = { kind: 'pass' }
 
@@ -143,6 +152,28 @@ export function namesClaudeFolder(text: string): boolean {
   return claudePaths(text).loads
 }
 
+/**
+ * Each `.claude` path and Claude configuration file text names, as written,
+ * for the gate to look at once the command has run, with the home folder's
+ * variable read as `~`. One after another root only known as it runs cannot
+ * be found, so it is left out.
+ */
+export function namedPlaces(text: string): string[] {
+  const out: string[] = []
+  for (const match of text.matchAll(CLAUDE_PATH)) {
+    const [, before = '', tail = ''] = match
+    const lead = text.slice(0, match.index ?? 0)
+    const variable = /\$$/.test(lead) ? /^\w+/.exec(before)?.[0] : undefined
+    const home = variable === 'HOME' || /\$\{HOME\}$/.test(lead)
+    if (variable !== undefined && !home) continue
+    const names = tail.split(/[\\/]+/).filter(name => name !== '' && name !== '.')
+    out.push(`${home ? '~' : ''}${variable === undefined ? before : before.slice(variable.length)}.claude${names.length === 0 ? '' : `/${names.join('/')}`}`)
+  }
+  for (const match of text.matchAll(/([^\s"'`;|&<>(),$={}%#]*?)(\.mcp\.json|\.claude\.json|managed-settings\.json)(?![\w.-])/gi)) out.push(`${match[1] ?? ''}${match[2] ?? ''}`)
+  if (/CLAUDE_CONFIG_DIR/.test(text)) out.push('$CLAUDE_CONFIG_DIR')
+  return out
+}
+
 /** A path into, or of, a `.claude` folder. */
 const IN_CLAUDE = /(?:^|[\\/])\.claude(?:[\\/]|$)/i
 
@@ -174,13 +205,17 @@ type Found = { write: ShellWrite; path: string; landed: string; place: Place; co
  * session's current folder, when known). A command that changes nothing
  * there passes; one that changes one thing is turned into what the gate
  * judges; changes to skills and commands alone that the guard cannot read
- * go on with a note; anything else there is held as one the guard cannot read.
+ * go on with a note; code it cannot read that only names such a place runs,
+ * to be looked at after; anything else there is held as one the guard
+ * cannot read.
  */
 export async function readShellChange(host: Host, command: string, cwd: string | undefined, claudeFolder: () => Promise<string | undefined> = async () => undefined): Promise<ShellChange> {
   const read = readShellWrites(command, cwd)
   // A part only known as it runs counts when it names Claude's own folder; when all it
   // names there is skill and command files already there, it edits them: ordinary work.
   let hidden: Unseen | undefined
+  // Every part that names a place there, for what to look at once the command has run.
+  const hiddenParts: { part: Unseen; text: string }[] = []
   let skills: { part: Unseen; files: string[] } | undefined
   // Each part that names only skill and command files, all of which must be there for any to be an edit.
   const skillEdits: { part: Unseen; files: string[] }[] = []
@@ -198,6 +233,7 @@ export async function readShellChange(host: Host, command: string, cwd: string |
     const found = part.text === undefined ? undefined : onlySkillFiles(text)
     if (found === undefined) {
       hidden ??= part
+      hiddenParts.push({ part, text })
       return
     }
     skillEdits.push({ part, files: found.files })
@@ -257,11 +293,13 @@ export async function readShellChange(host: Host, command: string, cwd: string |
       // A link the command or its code may make or move there is not on disk yet to follow.
       if (claudeChanged || MAY_PLACE_LINK.test(part.text ?? command)) {
         hidden = part
+        hiddenParts.push({ part, text: paths.join(' ') })
         break
       }
       for (const path of paths) {
         if (await leadsIn(path, part.text === undefined ? cwd : part.cwd)) {
           hidden = part
+          hiddenParts.push({ part, text: paths.join(' ') })
           break
         }
       }
@@ -272,6 +310,7 @@ export async function readShellChange(host: Host, command: string, cwd: string |
       const paths = await there(named, part.cwd)
       if (paths === undefined) {
         hidden ??= part
+        hiddenParts.push({ part, text: named.join(' ') })
         return
       }
       for (const path of paths) files.add(path)
@@ -280,9 +319,19 @@ export async function readShellChange(host: Host, command: string, cwd: string |
     if (first !== undefined) skills = { part: first.part, files: [...files] }
   }
 
+  // Code that only names such a place, and edits in place to files there, run and are looked at after. A
+  // relative path is read from the folder its own part runs in, after any `cd` before it.
+  const fromPart = (path: string, folder: string | undefined): string => (folder === undefined || /^(?:\/|~|\$|[A-Za-z]:[\\/])/.test(path) ? path : `${folder.replace(/\/+$/, '')}/${path}`)
+  const watched = (reason: string, edited: readonly string[] = []): ShellChange => ({
+    kind: 'watch',
+    label: "a shell command whose code names Claude Code's own folder",
+    reason,
+    named: [...new Set([...edited, ...hiddenParts.flatMap(item => [...namedPlaces(item.text).map(path => fromPart(path, item.part.cwd)), ...(item.part.cwd !== undefined && namesClaudeFolder(item.part.cwd) ? [item.part.cwd] : [])])])],
+    cwd,
+  })
   if (read.writes.length === 0) {
     await settle()
-    return hidden !== undefined ? unseen(hidden) : skills !== undefined ? noteFiles(skills.files) : PASS
+    return hidden !== undefined ? watched(hidden.reason) : skills !== undefined ? noteFiles(skills.files) : PASS
   }
   // Only a command that writes, or whose code names a path in a `.claude` folder, looks up where CLAUDE_CONFIG_DIR keeps Claude's folder.
   const configDir = config !== null ? config : await claudeFolder()
@@ -314,9 +363,19 @@ export async function readShellChange(host: Host, command: string, cwd: string |
     }
   }
   await settle()
-  if (hidden !== undefined) return unseen(hidden)
   const total = found.length + unreadable.length
+  // Edits in place to files already there (`sed -i`, `perl -i`) bring nothing in: what they make is judged
+  // once it is made, exactly, where the guard could not replay them before.
+  const editing = unreadable.length === 0 && found.length > 0 && found.every(item => item.write.kind === 'unknown' && item.write.edit === true && !item.covers)
+  const edited = found.map(item => item.landed)
+  // Beside a change there the guard can see, which must be judged before it is made, the code cannot run first.
+  if (hidden !== undefined) return total === 0 ? watched(hidden.reason) : editing ? watched(hidden.reason, edited) : unseen(hidden)
   if (total === 0) return skills !== undefined ? noteFiles(skills.files) : PASS
+  // Skills and commands alone are checked before they are used; an edit elsewhere is looked at once made.
+  if (editing && !found.every(item => checkedAtUse(item.place)) && skills === undefined) {
+    const [first] = found
+    return watched(first?.write.kind === 'unknown' ? `${first.write.what} would land there` : 'it edits a file there', edited)
+  }
   const edits = (item: (typeof unreadable)[number]): boolean => item.edit && checkedAtUse(item.place) && !item.covers
   if (total > 1 || skills !== undefined) {
     // Edits to several skills and commands already there go on, each checked before it is used;
