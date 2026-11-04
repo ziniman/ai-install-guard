@@ -246,14 +246,17 @@ async function showOwn($: EngineInterface, view: GuardView): Promise<boolean> {
  * says it is still scanning. Saved for /guard report too. Should the scan
  * finish after all, its own verdict takes the pane back.
  */
-export async function stopScanning($: EngineInterface, why: string): Promise<void> {
+export async function stopScanning($: EngineInterface, why: string, mine: (view: GuardView) => boolean): Promise<void> {
   let stopped: GuardView | undefined
   await update($, viewAtom, current => {
-    if (current === null || current.verdict !== undefined || current.stage === '') return current
+    // Only the failed hook's own scan: another's that has the pane since goes on.
+    if (current === null || current.verdict !== undefined || current.stage === '' || !mine(current)) return current
     stopped = { ...current, stage: '', verdict: { kind: 'unverified', recommendation: 'Could not verify', reasons: [sentence(why)], counts: { pass: 0, warn: 0, fail: 0, info: 0 } } }
     return stopped
   })
   if (stopped === undefined) return
+  // Its report is why it stopped, for Copy report and for /guard report where no pane shows.
+  if (stopped.scanId !== undefined) await saveReport($, stopped.scanId, `Could not verify ${stopped.target}: ${safeLine(why)}`).catch(() => undefined)
   await saveLastView($, stopped).catch(() => undefined)
   $.ui.toast(`AI Install Guard: the scan of ${stopped.target} stopped before it finished: ${safeLine(why)}`)
 }
