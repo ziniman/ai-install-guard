@@ -105,7 +105,8 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
     const scanOptions = {
       lookups: options.lookups,
       // Stage names can carry a candidate's own words (a plugin's name).
-      onStage: (stage: string) => update($, viewAtom, current => (current === null || current.scanId !== scanId ? current : { ...current, stage: safeLine(stage) })).then(() => undefined),
+      // A scan marked stopped keeps its verdict: what it does after its hook was cut off moves the pane no more.
+      onStage: (stage: string) => update($, viewAtom, current => (current === null || current.scanId !== scanId || current.verdict !== undefined ? current : { ...current, stage: safeLine(stage) })).then(() => undefined),
     }
     const resolved = typeof how === 'function' ? await how() : how
     const report = options.report ?? (await scanOnly(host, target, resolved, scanOptions))
