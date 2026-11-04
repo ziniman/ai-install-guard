@@ -63,14 +63,14 @@ export function readShellCommand(command: string): Reading {
 
 function readShell(command: string): Reading {
   const found: Reading[] = []
-  const { unseen, opaque, others, texts, shellRuns, backquoteRuns } = collectInstalls(command, found, 0, true)
+  const { unseen, others, texts, shellRuns, backquoteRuns } = collectInstalls(command, found, 0, true)
   const installs = found.filter(reading => reading.kind !== 'pass')
   if (installs.length > 1) return { kind: 'unreadable', label: 'several installs', reason: 'the command installs more than one thing; run each install as a command of its own' }
   const [only] = installs
   if (only !== undefined) {
     if (only.kind !== 'install') return only
     // Approving the install approves the whole command, so nothing else may ride along.
-    if (unseen || opaque) return { kind: 'unreadable', label: only.label, reason: `part of the command is only known as it runs, so approving it could run more than the install; run ${only.label} as a command of its own` }
+    if (unseen) return { kind: 'unreadable', label: only.label, reason: `part of the command is only known as it runs, so approving it could run more than the install; run ${only.label} as a command of its own` }
     if (others > 0) return { kind: 'unreadable', label: only.label, reason: `the command runs more than the install; run ${only.label} as a command of its own, so approving it approves only the install` }
     // The guard cannot see the shell's current folder, so a source named
     // relative to it could be another folder than the one the guard scans.
@@ -84,19 +84,18 @@ function readShell(command: string): Reading {
     }
     return only
   }
-  // A shell or eval told to run text only known as it runs could run anything, an install included.
-  if (opaque) {
-    return { kind: 'unreadable', label: 'a command built as it runs', reason: 'it runs a command only known as it runs (as in bash -c "$CMD" or eval "$X"), so the guard cannot tell whether it installs anything; run the command itself instead' }
-  }
-  // An unseen part may run an install whose words show elsewhere in the command (a variable it reads, code
-  // in another language); a claude command read whole and found to install nothing is no such sign. Code,
-  // and data fed to a program other than a shell, counts only when it may start a program, unless a shell
-  // runs text the guard did not read: a comment or a string in a script that starts nothing installs nothing.
+  // Text only known as it runs (`$CMD arg`, `bash -c "$CMD"`, `eval "$X"`) holds nothing by itself: it could run
+  // anything, which Claude Code's own permission checks are for, and the guard holds installs. It counts only
+  // beside an install's words, which an unseen part may run (a variable it reads, code in another language),
+  // or `claude plugin` or `claude mcp` with what it is asked to do left out. A claude command read whole and
+  // found to install nothing is no such sign. Code, and data fed to a program other than a shell, counts only
+  // when it may start a program, unless a shell runs text the guard did not read: a comment or a string in a
+  // script that starts nothing installs nothing.
   const rest = texts
     .filter(item => !item.code || shellRuns || startsProgram(backquoteRuns && item.data === true ? { ...item, backquotes: true } : item))
     .map(item => item.text)
     .join('\n')
-  if (unseen && (mayInstall(rest) || (namesClaude(rest) && /\b(?:plugins?|mcp)\b/i.test(rest)))) {
+  if (unseen && (mayInstall(rest) || CLAUDE_SUBCOMMAND.test(rest))) {
     return { kind: 'unreadable', label: 'a claude command', reason: 'part of the command is only known as it runs, so the guard cannot tell what it installs; run claude plugin install or claude mcp add as a plain command' }
   }
   return PASS
@@ -132,6 +131,14 @@ const CLAUDE_STRING = /(["'`])claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?\1/i
 function namesClaude(text: string): boolean {
   return CLAUDE_WORD.test(text) || CLAUDE_STRING.test(text)
 }
+
+/**
+ * The `claude` command joined to `plugin` or `mcp`, by spaces, quotes or the
+ * commas of a list over lines (`"claude",\n "plugin", sub`), and not followed
+ * by a subcommand that installs nothing: what it is asked to do is left out,
+ * or is an install.
+ */
+const CLAUDE_SUBCOMMAND = new RegExp(`${CLAUDE_WORD.source}[^\\w/\\\\]{1,16}(?:plugins?|mcp)(?![\\w.-])(?![^\\w/\\\\]{1,16}(?:list|validate|test|details|get|remove|uninstall|disable|enable|serve|help|h)\\b)`)
 
 /** Names the `claude` command goes by, Windows' launchers included. */
 export const CLAUDE = new Set(['claude', 'claude-code'].flatMap(name => [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`, `${name}.ps1`]))
@@ -387,8 +394,6 @@ const MAX_DEPTH = 4
 type Collected = {
   /** Part of what runs is only known as it runs, or comes from input or a file the guard does not read. */
   unseen: boolean
-  /** A shell or eval is told to run a command whose program is only known as it runs. */
-  opaque: boolean
   /** Simple commands that run something other than an install, a quiet program or a shell the guard read into. */
   others: number
   /**
@@ -527,9 +532,9 @@ function claudePlugin(words: readonly string[], index: number, expands: Readonly
 
 /**
  * Adds every install `command` asks for to `found`, and says whether part of
- * what runs is unseen or opaque and how many other commands run beside it.
- * `asScript` is set for text a shell runs as commands; an argument of another
- * program, read only for installs it may run, cannot be opaque. `inCode` is
+ * what runs is unseen and how many other commands run beside it. `asScript`
+ * is set for text a shell runs as commands, not an argument of another
+ * program, read only for installs it may run. `inCode` is
  * set for JavaScript that starts no process and runs no text as code, where
  * a backquote outside a string opens a template, the code's own text, so what
  * it holds, like every word read from the code, is read as code too. One
@@ -539,23 +544,19 @@ function claudePlugin(words: readonly string[], index: number, expands: Readonly
  * anything else may hand it to what runs it. `files` holds, across every
  * script the command holds, the files its redirections write and the files
  * it names by a path, by file name: one run as a program later is a script
- * the guard did not read. `handed` is set for a script a shell or eval is
- * handed to run (`sh -c '…'`, `eval …`, a wrapper's script), where a program
- * only known as it runs is opaque; a substitution's commands run as the
- * command's own do, so one there is only unseen.
+ * the guard did not read.
  */
-function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean, inCode = false, runners = false, files: ShellFiles = { written: new Set(), named: new Set() }, handed = false): Collected {
-  const out: Collected = { unseen: false, opaque: false, others: 0, texts: [], shellRuns: false, backquoteRuns: false }
-  if (depth > MAX_DEPTH) return { unseen: true, opaque: asScript, others: 0, texts: [{ text: command, code: false }], shellRuns: asScript, backquoteRuns: false }
+function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean, inCode = false, runners = false, files: ShellFiles = { written: new Set(), named: new Set() }): Collected {
+  const out: Collected = { unseen: false, others: 0, texts: [], shellRuns: false, backquoteRuns: false }
+  if (depth > MAX_DEPTH) return { unseen: true, others: 0, texts: [{ text: command, code: false }], shellRuns: asScript, backquoteRuns: false }
   const merge = (inner: Collected, counts: boolean): void => {
     out.unseen ||= inner.unseen
-    out.opaque ||= inner.opaque
     out.shellRuns ||= inner.shellRuns
     out.backquoteRuns ||= inner.backquoteRuns
     if (counts) out.others += inner.others
     out.texts.push(...inner.texts)
   }
-  const nested = (script: string): void => merge(collectInstalls(script, found, depth + 1, true, false, false, files, true), true)
+  const nested = (script: string): void => merge(collectInstalls(script, found, depth + 1, true, false, false, files), true)
   const functions = definedFunctions(command)
   for (const { words, input, scripts: substitutions, quotedScripts, scriptLeads, writes, targets, expands, splits } of splitShell(command).commands) {
     const { index, scripts, fromInput } = programAt(words)
@@ -620,10 +621,9 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
       }
       continue
     }
-    // A program only known as it runs; inside a script a shell or eval is handed, nothing can be told about it.
+    // A program only known as it runs.
     if (isDynamic(word)) {
       out.unseen = true
-      if (asScript && handed) out.opaque = true
       out.others += 1
       continue
     }
@@ -665,7 +665,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
     if (program === 'git') {
       const ran = gitScripts(words.slice(index + 1))
       if (ran.hooks) out.unseen = true
-      for (const script of ran.scripts) merge(collectInstalls(script, found, depth + 1, true, false, false, files, true), false)
+      for (const script of ran.scripts) merge(collectInstalls(script, found, depth + 1, true, false, false, files), false)
     } else if (!TEXT_ARGUMENTS.has(program)) {
       for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) {
         // The shell ran its own substitutions before the program starts, read above: here they are only what they print.

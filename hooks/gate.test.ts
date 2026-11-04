@@ -338,9 +338,11 @@ describe("reading Claude's shell commands", () => {
   test('PR review: what runs only once the shell has expanded it is held', () => {
     // xargs fills in the plugin from its input, after the guard has read the command.
     expect(readShellCommand(`echo evil | xargs -I good sh -c 'claude plugin install good@m'`).kind).toBe('unreadable')
-    // A shell or eval told to run a variable could run anything.
-    expect(readShellCommand('bash -c "$CMD"')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('bash -c "$CMD"') })
-    expect(readShellCommand('eval "$X"').kind).toBe('unreadable')
+    // A shell or eval told to run a variable could run anything, which Claude Code's own permission checks are for:
+    // only an install's words beside it count.
+    expect(readShellCommand('bash -c "$CMD"')).toEqual({ kind: 'pass', browse: false })
+    expect(readShellCommand('eval "$X"')).toEqual({ kind: 'pass', browse: false })
+    expect(readShellCommand('bash -c "$CMD" claude plugin install evil@m').kind).toBe('unreadable')
     expect(readShellCommand('bash -c "cd $HOME && make"')).toEqual({ kind: 'pass', browse: false })
     // An unquoted here-document's substitutions run; a quoted one's do not.
     expect(readShellCommand('cat <<EOF\n$(claude plugin install notes@acme)\nEOF').kind).not.toBe('pass')
@@ -413,8 +415,8 @@ describe("reading Claude's shell commands", () => {
     expect(readShellCommand(`python3 -c "import os; os.system('claude plugin i x@y')"`)).toMatchObject({ kind: 'unreadable' })
     expect(readShellCommand(`ACTION=install python3 -c 'import os; os.system("claude mcp " + os.environ["ACTION"])'`)).toMatchObject({ kind: 'unreadable' })
     expect(readShellCommand(`python3 -c "import os; os.system('CLAUDE PLUGIN INSTALL X'.lower())"`)).toMatchObject({ kind: 'unreadable' })
-    // Local review: a name or a verb as a string of its own, whose case code may change, and the command named by its path.
-    expect(readShellCommand(`ACTION=install python3 -c 'import os,subprocess; subprocess.run(["Claude".lower(),"plugin",os.environ["ACTION"],"evil@m"])'`)).toMatchObject({ kind: 'unreadable' })
+    // Local review: a name or a verb as a string of its own, and the command named by its path.
+    expect(readShellCommand(`ACTION=install python3 -c 'import os,subprocess; subprocess.run(["claude",\n  "plugin",\n  os.environ["ACTION"], "evil@m"])'`)).toMatchObject({ kind: 'unreadable' })
     expect(readShellCommand(`python3 -c 'import os; os.system("/usr/local/bin/claude plugin " + "I".lower() + " evil@m")'`)).toMatchObject({ kind: 'unreadable' })
     expect(readShellCommand(`ACTION=install python3 -c 'import os; os.system("/usr/local/bin/claude mcp " + os.environ["ACTION"])'`)).toMatchObject({ kind: 'unreadable' })
     expect(readShellCommand(`ACTION=install python3 -c 'import os; os.system("./claude plugin " + os.environ["ACTION"])'`)).toMatchObject({ kind: 'unreadable' })
@@ -456,12 +458,35 @@ describe("reading Claude's shell commands", () => {
     for (const command of hidden) expect(readShellCommand(command)).toEqual(pass)
     // Its install words still count beside it.
     for (const command of hidden.slice(0, 11)) expect(readShellCommand(command.replace('$CMD', '$CMD plugin install x@m')).kind).toBe('unreadable')
-    // What a shell or eval is handed to run whole could be any shell text.
-    for (const command of ['eval "$X"', 'bash -c "$CMD"', `su -c 'bash -c "$CMD"' me`, 'x=$(eval "$X")', 'x=$(bash -c "$CMD")', `watch 'eval "$X"'`]) {
-      expect(readShellCommand(command)).toMatchObject({ kind: 'unreadable', label: 'a command built as it runs' })
-    }
+    // So is what a shell or eval is handed to run whole, which could be any shell text: the guard holds installs.
+    const handed = ['eval "$X"', 'bash -c "$CMD"', `su -c 'bash -c "$CMD"' me`, 'x=$(eval "$X")', 'x=$(bash -c "$CMD")', `watch 'eval "$X"'`]
+    for (const command of handed) expect(readShellCommand(command)).toEqual(pass)
+    for (const command of handed) expect(readShellCommand(`${command}; echo claude plugin install x@m`).kind).toBe('unreadable')
     // Install words in the template still count.
     expect(readShellCommand("node -e 'require(\"child_process\").execSync(`claude plugin install ${x}`)'")).toMatchObject({ kind: 'unreadable' })
+  })
+
+  test('what is only known as it runs holds nothing by itself; claude plugin or mcp asked to do something left out does', () => {
+    const pass = { kind: 'pass', browse: false }
+    // Hiding what runs is for Claude Code's own permission checks: the guard holds installs.
+    for (const command of [
+      'X=$(cat cmd.txt); $X',
+      'eval "$(ssh-agent -s)"',
+      'bash -c "$(cat steps.sh)"',
+      `python3 -c "import subprocess; subprocess.run(['claude', 'plugin', 'list', '--json'])"`,
+      `node -e 'require("child_process").execFileSync("claude", ["mcp", "get", "github"])'`,
+      `python3 - <<'EOF'\nimport subprocess\np = 'hooks/installed.ts'\ns = open(p).read().replace("claude plugin list", "claude plugin list --json")\nopen(p, 'w').write(s)\nsubprocess.run(['git', 'diff'])\nEOF`,
+    ]) {
+      expect(readShellCommand(command)).toEqual(pass)
+    }
+    // The claude command joined to plugin or mcp, with what it is asked to do left out, may be an install.
+    for (const command of [
+      `python3 -c "import subprocess,sys; subprocess.run(['claude', 'plugin', sys.argv[1], 'x@m'])" install`,
+      `node -e 'require("child_process").execFileSync("claude", ["mcp", process.argv[1], "evil"])' add`,
+      `CMD="claude plugin"; read SUB; eval "$CMD $SUB x@m"`,
+    ]) {
+      expect(readShellCommand(command)).toMatchObject({ kind: 'unreadable', label: 'a claude command' })
+    }
   })
 
   test('splits like a shell: quotes, separators, redirections and here-documents', () => {
