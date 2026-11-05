@@ -21,7 +21,7 @@ import {
   WRITE_SHELL,
 } from './patterns'
 import { basename, extension, findAll, findFirst, spanKinds, type Match, type SpanKind } from './text'
-import { belongsTo, sameService } from './mcp'
+import { belongsTo } from './mcp'
 import { describePrograms, programNames, programsIn, type ProgramUse } from './programs'
 import { row, worse, type CheckResult, type Evidence, type Status } from './types'
 
@@ -1042,8 +1042,28 @@ function ownBase(ctx: ScanContext, file: CodeFile, brackets: Brackets, base: str
   const variables = Array.from(value.matchAll(ENV_READ), found => found.slice(1).find(part => part !== undefined) ?? '')
   const defaults = Array.from(value.matchAll(/https?:\/\/[^\s'"`]+/g), found => ownHost(found[0], name))
   if (variables.length === 0 || defaults.length === 0 || defaults.some(host => host === undefined)) return undefined
-  if (variables.some(variable => !sameService(variable, name) || setByPlugin(ctx, variable, file.path, set.index, from + value.length))) return undefined
+  if (variables.some(variable => !isBaseOf(variable, name) || setByPlugin(ctx, variable, file.path, set.index, from + value.length))) return undefined
   return defaults[0]
+}
+
+/** What a service's own base-address variable ends in, after the words it shares with the key. */
+const BASE_SUFFIXES = new Set(['BASE_URL', 'BASE', 'API_BASE', 'API_BASE_URL', 'API_URL', 'URL', 'ENDPOINT', 'API_ENDPOINT', 'HOST', 'API_HOST'])
+
+/**
+ * Whether `variable` is the base address of the service the key `name`
+ * belongs to: the key's own leading words, then only a base address's
+ * (`OPENAI_BASE_URL` and `OPENAI_API_BASE` for OPENAI_API_KEY, `HF_ENDPOINT`
+ * for HF_TOKEN), never another word between (`OPENAI_EVIL_URL`).
+ */
+function isBaseOf(variable: string, name: string): boolean {
+  const words = variable.split('_')
+  const keyWords = name.split('_')
+  let shared = 0
+  while (shared < words.length && words[shared] === keyWords[shared]) shared += 1
+  // The service's own word, at least: a shared API_ alone names no service.
+  if (shared === 0 || (shared === 1 && words[0] === 'API')) return false
+  for (let at = shared; at >= 1; at -= 1) if (BASE_SUFFIXES.has(words.slice(at).join('_'))) return true
+  return false
 }
 
 /**

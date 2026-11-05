@@ -436,7 +436,11 @@ export function buildContext(tree: ScannedTree): ScanContext {
     if (!/[\s;&|()<>=,[\]{}]/.test(path)) return false
     const ways = [`\u0000/${path}`, ...[dirname(from), ...(readFrom.get(from) ?? [])].map(folder => `${'../'.repeat(folder === '' ? 0 : folder.split('/').length)}${path}`)]
     const marked = rootMarked(body)
-    return ways.some(way => marked.includes(way))
+    // The whole way, as a word of its own: `../../../docs/x,y.md` climbs past the plugin, and holds the shorter way.
+    return ways.some(way => {
+      for (let at = marked.indexOf(way); at !== -1; at = marked.indexOf(way, at + 1)) if (!/[\w./\\-]/.test(marked[at - 1] ?? ' ')) return true
+      return false
+    })
   }
   // Markdown a prompt tells the model to read is a prompt too, however it is
   // named (a skill's own README): followed until nothing new is named.
