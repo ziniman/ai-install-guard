@@ -449,7 +449,12 @@ async function filesIn(host: Host, folder: string): Promise<Map<string, string>>
 
 /** The marketplace copies a folder holds, one name a line; empty when it is not there; UNREADABLE when it cannot be listed. */
 async function copiesOf(host: Host, folder: string): Promise<string> {
-  if ((await host.stat(folder).catch(() => undefined)) === undefined) return ''
+  // Missing only when nothing is there; a look that fails any other way may hide a copy.
+  const there = await host.stat(folder).then(
+    () => true,
+    (error: unknown) => !/\b(?:ENOENT|ENOTDIR)\b/.test(error instanceof Error ? error.message : String(error)),
+  )
+  if (!there) return ''
   const entries = await host.list(folder).catch(() => undefined)
   if (entries === undefined) return UNREADABLE
   return entries

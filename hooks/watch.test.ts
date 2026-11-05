@@ -52,6 +52,9 @@ describe('what a command changed where Claude Code loads from', () => {
     expect(await changesSince(added, whole, held, undefined)).toEqual([{ kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces/new`, change: 'added' }])
     const blind = Object.assign(Object.create(markets) as typeof markets, { list: () => Promise.reject(new Error('EACCES')) })
     expect(await changesSince(blind, whole, held, undefined)).toContainEqual({ kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces`, change: 'unreadable' })
+    // PR review: a look at the folder that fails is not a folder that is not there.
+    const unstated = (base: typeof markets) => Object.assign(Object.create(base) as typeof base, { stat: () => Promise.reject(new Error('EACCES')) })
+    expect(await changesSince(unstated(added), whole, await snapshot(unstated(markets), whole), undefined)).toEqual([{ kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces/new`, change: 'added' }])
     // PR review: unreadable before as well as after, it is still named.
     const unlisted = await watchFor(blind, ['~/.claude/plugins/marketplaces'], PROJECT, HOME, undefined)
     expect(await changesSince(blind, unlisted, await snapshot(blind, unlisted), undefined)).toEqual([{ kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces`, change: 'unreadable' }])

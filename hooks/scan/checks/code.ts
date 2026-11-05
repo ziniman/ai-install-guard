@@ -603,7 +603,8 @@ function credentialsCheck(ctx: ScanContext): CheckResult {
     }
     if (paths.length + names.length > 0) {
       files.add(file.path)
-      if (sends && !ownService) sending.add(file.path)
+      // A credential file in code that can reach the network is sendable whatever its keys do.
+      if (sends && (!ownService || paths.length > 0)) sending.add(file.path)
     }
   }
   const summary: string[] = []
@@ -886,6 +887,33 @@ function onlyGroups(file: CodeFile, brackets: Brackets, index: number, outer: nu
   return true
 }
 
+/**
+ * Where the statement going on at `from` ends: a `;`, or a line end at its
+ * own level that nothing carries on past (an operator ending the line or
+ * starting the next, as JavaScript continues `"https://a.example"` then a
+ * line `+ ".b.example/"`, or Python's `\`).
+ */
+function statementEnd(file: CodeFile, brackets: Brackets, from: number, level: number): number {
+  const { text } = file
+  for (let i = from; i < text.length; i += 1) {
+    if (brackets.inner[i] !== level || file.kindAt(i) !== 'code') continue
+    if (text[i] === ';') return i
+    if (text[i] !== '\n') continue
+    // The code on either side of the line end, comments and blanks passed over.
+    const passed = (at: number): boolean => /\s/.test(text[at] as string) || ['comment', 'trailing-comment'].includes(file.kindAt(at))
+    let last = i - 1
+    while (last >= from && passed(last)) last -= 1
+    // Nothing set yet (`const base =` alone on its line): the value is on the next.
+    if (last < from) continue
+    let next = i + 1
+    while (next < text.length && passed(next)) next += 1
+    const endsOpen = file.kindAt(last) === 'code' && /[-+*/%&|^?:.,=<>!([{\\]/.test(text[last] as string)
+    const startsOn = next < text.length && file.kindAt(next) === 'code' && /[-+*/%&|^?:.,=<>!([]/.test(text[next] as string)
+    if (!endsOpen && !startsOn) return i
+  }
+  return text.length
+}
+
 /** Whether `index` starts a statement, at the top level or in a block: never an argument (`f(data=key)`) or an entry. */
 function atStatement(file: CodeFile, brackets: Brackets, index: number): boolean {
   const open = brackets.inner[index] ?? -1
@@ -926,9 +954,11 @@ function ownHost(address: string, name: string): string | undefined {
  */
 function addressParts(file: CodeFile, brackets: Brackets, from: number, to: number): [number, number][] | undefined {
   const parts: [number, number][] = []
+  // Blanks and remarks around a part are no part of it.
+  const passed = (at: number): boolean => /\s/.test(file.text[at] as string) || ['comment', 'trailing-comment'].includes(file.kindAt(at))
   const part = (a: number, b: number): [number, number] => {
-    while (a < b && /\s/.test(file.text[a] as string)) a += 1
-    while (b > a && /\s/.test(file.text[b - 1] as string)) b -= 1
+    while (a < b && passed(a)) a += 1
+    while (b > a && passed(b - 1)) b -= 1
     return [a, b]
   }
   let depth = 0
@@ -1003,8 +1033,7 @@ function ownBase(ctx: ScanContext, file: CodeFile, brackets: Brackets, base: str
   const spelled = findAll(file.text, new RegExp(`(?<![\\w$.])${base.replace(/\$/g, '\\$')}(?![\\w$])`), 200, index => !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(index)))
   if (spelled.length >= 200 || spelled.some(use => use.index !== set.index && setsAgain(file, brackets, use.index, use.index + use.text.length))) return undefined
   const from = set.index + set.text.length
-  const lineEnd = file.text.indexOf('\n', from)
-  const value = file.text.slice(from, lineEnd < 0 ? file.text.length : lineEnd).replace(/;\s*$/, '')
+  const value = file.text.slice(from, statementEnd(file, brackets, from, brackets.inner[set.index] ?? -1))
   const address = ownAddress(ctx, file, brackets, [from, from + value.length], name, depth + 1)
   if (address !== undefined) return address
   const code = Array.from(value, (char, i) => (file.kindAt(from + i) === 'code' ? char : ' '))
