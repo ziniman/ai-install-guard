@@ -117,6 +117,9 @@ describe("reading Claude's shell commands", () => {
     // What claude is asked to do, only known as it runs, could be an install.
     expect(readShellCommand('claude plugin "$SUB" notes@acme')).toMatchObject({ kind: 'unreadable', label: 'a claude command' })
     expect(readShellCommand('claude plugin marketplace "$VERB" https://github.com/acme/market')).toMatchObject({ kind: 'unreadable', label: 'a claude command' })
+    // Local review: nested deeper than the guard reads, an install's words still count.
+    expect(readShellCommand('echo $(echo $(echo $(echo $(echo $(claude plugin install notes@acme)))))')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('nested too deep') })
+    expect(readShellCommand('echo $(echo $(echo $(echo $(echo $(date)))))')).toEqual(pass)
     // A bare owner/repo could also be a folder in the shell's current folder.
     expect(readShellCommand('claude plugin install notes --marketplace acme/market')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('https://github.com/<owner>/<repo>') })
     expect(readShellCommand('claude plugin install notes --marketplace https://github.com/acme/market')).toMatchObject({ kind: 'install', request: { marketplaceSource: 'https://github.com/acme/market' } })

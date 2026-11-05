@@ -234,7 +234,9 @@ type Found = { installs: Reading[]; others: number }
  */
 function collect(text: string, found: Found, depth: number): void {
   if (depth > MAX_DEPTH) {
-    found.others += 1
+    // Nested deeper than the guard reads: an install's words in it still count.
+    if (MAY_INSTALL.test(text)) found.installs.push({ kind: 'unreadable', label: 'a claude command', reason: 'it is nested too deep for the guard to read; run claude plugin install or claude mcp add as a plain command' })
+    else found.others += 1
     return
   }
   const nested = (script: string): void => collect(script, found, depth + 1)
