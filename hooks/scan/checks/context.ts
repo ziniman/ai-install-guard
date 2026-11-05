@@ -411,11 +411,13 @@ export function buildContext(tree: ScannedTree): ScanContext {
     if (known !== undefined) return known
     const out = new Set<string>()
     const add = (raw: string, folders: readonly string[]): void => {
-      const word = raw.replace(/[#?].*$/, '').replace(/[.,:;!?*]+$/, '')
-      // A path from the system's root, a home folder or a variable is not one inside the plugin.
-      if (word === '' || /^[/~$]/.test(word)) return
-      const rooted = word.startsWith('\u0000/') ? word.slice(2) : undefined
-      for (const path of rooted === undefined ? folders.map(folder => joinPath(folder, word)) : [joinPath('', rooted)]) if (path !== undefined) out.add(path)
+      // A link's anchor or query (`guide.md#setup`) is no part of the file, though a file's own name may hold one.
+      for (const word of new Set([raw, raw.replace(/[#?].*$/, '')].map(each => each.replace(/[.,:;!?*]+$/, '')))) {
+        // A path from the system's root, a home folder or a variable is not one inside the plugin.
+        if (word === '' || /^[/~$]/.test(word)) continue
+        const rooted = word.startsWith('\u0000/') ? word.slice(2) : undefined
+        for (const path of rooted === undefined ? folders.map(folder => joinPath(folder, word)) : [joinPath('', rooted)]) if (path !== undefined) out.add(path)
+      }
     }
     const marked = rootMarked(body)
     // Each word once: a long prompt repeats the same few.
