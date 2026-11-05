@@ -131,7 +131,8 @@ function isConfig(place: Place | undefined): place is { kind: 'mcp-project' } | 
  */
 async function startsServers(host: Host, path: string, place: { kind: 'mcp-project' } | { kind: 'mcp-user' }, where: { configDir?: string; project?: string }): Promise<boolean> {
   const folder = normalizePath(path.slice(0, path.lastIndexOf('/')) || '/').toLowerCase()
-  const same = (dir: string | undefined): boolean => dir !== undefined && normalizePath(dir).replace(/\/+$/, '').toLowerCase() === folder
+  // Normalized alike on both sides, so the root folder is `/` on both.
+  const same = (dir: string | undefined): boolean => dir !== undefined && normalizePath(dir).toLowerCase() === folder
   if (place.kind === 'mcp-project') {
     if (where.project === undefined) return true
     return same(where.project) || same(await landsAt(host, slashed(where.project)).catch(() => undefined))

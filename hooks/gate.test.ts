@@ -1235,6 +1235,13 @@ describe("gate C: Claude writing an MCP server into a configuration", () => {
     expect(await readWrite(nothing, { tool: 'Write', file_path: 'C:\\Users\\me\\src\\app.ts', content: 'x' })).toEqual({ kind: 'pass' })
   })
 
+  test('a session at the root of the disk, or a folder named with a trailing slash, is still the folder its .mcp.json is in', async () => {
+    const nothing: Host = { list: async () => [], stat: async () => Promise.reject(new Error('ENOENT')), readBytes: async () => new Uint8Array(), readLink: async () => '', run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) }
+    expect(await readWrite(nothing, { tool: 'Write', file_path: '/.mcp.json', content: server }, { project: '/' })).toMatchObject({ kind: 'mcp' })
+    expect(await readWrite(nothing, { tool: 'Write', file_path: '/work/proj/.mcp.json', content: server }, { project: '/work/proj/' })).toMatchObject({ kind: 'mcp' })
+    expect(await readWrite(nothing, { tool: 'Write', file_path: '/work/.mcp.json', content: server }, { project: '/work/proj' })).toEqual({ kind: 'pass' })
+  })
+
   test('an ordinary file goes on at once, with nothing read or shown', async ($, on) => {
     seededStore(on)
     const ui = serveUi(on)

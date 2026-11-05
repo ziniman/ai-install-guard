@@ -237,7 +237,7 @@ export function checkToast(check: InstalledCheck, opensPane: boolean): string | 
 }
 
 /** The first found plugin the pane should open by itself: one you have not rejected, and not one the first check already named. */
-export function toReviewFound(found: readonly FoundPlugin[]): FoundPlugin | undefined {
+function toReviewFound(found: readonly FoundPlugin[]): FoundPlugin | undefined {
   return found.find(plugin => plugin.rejected !== true && plugin.quiet !== true)
 }
 
@@ -246,7 +246,7 @@ export function toReviewFound(found: readonly FoundPlugin[]): FoundPlugin | unde
  * Could not verify when it could not be read. Only when the pane holds no
  * verdict still waiting for you; says whether the pane shows it.
  */
-export async function reviewFound($: EngineInterface, plugin: FoundPlugin, lookups: boolean, ifFree = true): Promise<boolean> {
+async function reviewFound($: EngineInterface, plugin: FoundPlugin, lookups: boolean, ifFree = true): Promise<boolean> {
   const request: GuardRequest = { origin: 'command', args: plugin.id, label: plugin.label, subject: 'installed', display: `On in this session, not approved: ${plugin.label}` }
   const options = { action: 'approve' as const, request, lookups, report: plugin.report, ifFree }
   if (plugin.treeHash === undefined) return !(await showUnverified($, plugin.label, plugin.why, options)).superseded
