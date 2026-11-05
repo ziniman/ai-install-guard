@@ -250,12 +250,10 @@ function collect(text: string, found: Found, depth: number): void {
     const program = programName(word)
     const expanded = new Set(expands ?? [])
     const split = new Set(splits ?? [])
-    if (expanded.has(index) && !HOME_ONLY.test(word)) {
-      // A program only known as it runs: what it does is for Claude Code's own permission prompts.
-      found.others += 1
-      continue
-    }
-    if (CLAUDE.has(program)) {
+    // A program only known as it runs (`$X`, or `env "$OPTS"` taken for one) is none the guard knows: what it does is
+    // for Claude Code's own permission prompts, but an install written out among its words still counts, as for any other.
+    const known = !expanded.has(index) || HOME_ONLY.test(word)
+    if (known && CLAUDE.has(program)) {
       // Every `plugin` or `mcp` word is a possible subcommand: one may be a global
       // option's value (`claude --settings mcp mcp add …`), so each is tried.
       const places = words.flatMap((item, place) => (place > index && /^(?:plugins?|mcp)$/i.test(item) ? [place] : []))
@@ -270,7 +268,7 @@ function collect(text: string, found: Found, depth: number): void {
       else found.installs.push(reading)
       continue
     }
-    if (SHELLS.has(program)) {
+    if (known && SHELLS.has(program)) {
       // `sh -c '…'`, `bash -lc '…'`, `bash <<'EOF'`: the script, written out, is read as commands too.
       const flag = words.findIndex((item, at) => at > index && /^-[A-Za-z]*c[A-Za-z]*$/.test(item))
       const script = flag === -1 ? input : words[flag + 1]
@@ -279,11 +277,11 @@ function collect(text: string, found: Found, depth: number): void {
       else found.others += 1
       continue
     }
-    if (program === 'eval') {
+    if (known && program === 'eval') {
       nested(words.slice(index + 1).join(' '))
       continue
     }
-    if (QUIET.has(program) && !writesAnyway(program, words.slice(index + 1))) continue
+    if (known && QUIET.has(program) && !writesAnyway(program, words.slice(index + 1))) continue
     // Any other program may run an install among its arguments (`watch`, `flock`, `then` in an `if`), and may run it
     // again and again: the install is found, and the program around it counts as more than it.
     const inside = words.findIndex((item, at) => at > index && isClaudePlugin(words, at))

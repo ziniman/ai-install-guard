@@ -132,6 +132,9 @@ describe("reading Claude's shell commands", () => {
       'sort -o out.txt list && claude plugin install notes@acme',
       'echo "$(git pull)"; claude plugin install notes@acme',
       '$CMD; claude plugin install notes@acme',
+      // Local review: a program only known as it runs, before an install written out.
+      'env "$OPTS" claude plugin install notes@acme',
+      '$RUN claude plugin install notes@acme',
       // watch would run the install again and again on one approval.
       'watch claude plugin install notes@acme',
       'xargs -I name claude plugin install name@acme < plugins.txt',
