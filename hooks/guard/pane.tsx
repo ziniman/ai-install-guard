@@ -425,7 +425,7 @@ function requestLine(request: GuardRequest): string {
 async function carryOut($: EngineInterface, held: GuardRequest, view: GuardView): Promise<void> {
   await closeOwn($, view)
   if (held.origin === 'tool') {
-    const again = held.subject === 'write' ? 'make the change again' : held.subject === 'command' ? 'run the command again' : 'run the install again'
+    const again = held.subject === 'write' ? 'make the change again' : 'run the install again'
     $.ui.toast(`AI Install Guard: approved ${held.label}. Tell Claude to ${again}; it goes through now`)
     return
   }

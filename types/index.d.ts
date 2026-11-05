@@ -44,8 +44,8 @@ export type GuardRequest = {
   args: string
   /** What it installs, as the pane names it. */
   label: string
-  /** An install (the default), a file Claude writes into a place Claude Code loads from, a shell command that changes one, a mod kept from loading, a skill held on its first use, a plugin found on at the start of a session (`args` its id, for Turn off), or an MCP server or settings file found in your configuration then (`args` its key: `mcp <scope> <name>`, `settings <path>` or `file <path>`). */
-  subject?: 'install' | 'write' | 'command' | 'load' | 'skill' | 'installed' | 'configured'
+  /** An install (the default), an MCP server Claude writes into a configuration, a mod kept from loading, a skill held on its first use, a plugin found on at the start of a session (`args` its id, for Turn off), or an MCP server found in your configuration then (`args` its key: `mcp <scope> <name>` or `file <path>`). */
+  subject?: 'install' | 'write' | 'load' | 'skill' | 'installed' | 'configured'
   /** The pane's line for what Claude asked for, when `args` is not one to show (a write's path, not its content). */
   display?: string
 }
@@ -97,47 +97,12 @@ export type GuardView = {
   decidedAt?: number
 }
 
-/**
- * A change a command made where Claude Code loads from that takes effect at
- * once (a settings file that widens what Claude may do, an agent or output
- * style with a red flag), waiting for the person: until they decide, Claude
- * may only read files and use Write or Edit. A rejected one waits until the
- * file no longer holds what was rejected.
- */
-export type GuardLock = {
-  label: string
-  /** The decision it waits for. */
-  treeHash: string
-  /** The file the command changed, and the sha256 of what it held then. */
-  path: string
-  hash: string
-  /** A settings file: its hooks are held back too, since one may be new. */
-  settings: boolean
-  /**
-   * An MCP server's tools, by the start of their names: only those are
-   * refused, until the person keeps the server; a rejected one's stay refused
-   * for the session.
-   */
-  tools?: string
-}
-
-/**
- * What commands Claude ran changed where Claude Code loads from that waits
- * for the person, for /guard held: kept as the checks at the start of a
- * session keep what they find (a configuration item, a plugin found on).
- */
-export type GuardChanged = { configs: object[]; plugins: object[] }
-
 declare module 'claude-code' {
   interface PluginState {
     'ai-install-guard': {
       view: GuardView | null
       /** Installs allowed once in this session, each used up when it goes through. */
       passes: GuardPass[]
-      /** Changes a command made that wait for the person before Claude may do more than read and write files. */
-      locks: GuardLock[]
-      /** What commands Claude ran changed that waits for the person. */
-      changed: GuardChanged
     }
   }
 }
