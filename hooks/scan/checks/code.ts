@@ -842,7 +842,7 @@ function assignedAt(file: CodeFile, brackets: Brackets, index: number): boolean 
  * by loading a package that sends requests.
  */
 function ownFunction(file: CodeFile, brackets: Brackets, name: string): boolean {
-  if (new RegExp(`\\b(?:globalThis|window|self|global)\\s*(?:\\.\\s*${name}|\\[\\s*["'\`]${name}["'\`]\\s*\\])\\s*=(?![=>])`).test(file.text)) return true
+  if (setAsProperty(file, name)) return true
   const spelled = findAll(file.text, new RegExp(`(?<![\\w$.])${name}(?![\\w$])`), 200, index => !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(index)))
   if (spelled.length >= 200) return true
   return spelled.some(use => {
@@ -852,6 +852,17 @@ function ownFunction(file: CodeFile, brackets: Brackets, name: string): boolean 
     const line = file.text.slice(lineStart, lineEnd < 0 ? file.text.length : lineEnd)
     return !LOADS_HTTP.test(line) || (/^\s*(?:import|from)\b/.test(line) && /\bas\b/.test(line) && !/^\s*import\s+[\w${}\s,*]+\s+from\s+["']/.test(line))
   })
+}
+
+/**
+ * Whether code may put something else under the property `name` of an
+ * object: set as one (`g.fetch = …`, through any alias of the global object
+ * as well), named as a string (`setattr(m, "urlopen", …)`,
+ * `Object.defineProperty(g, "fetch", …)`), or given as an object's key.
+ */
+function setAsProperty(file: CodeFile, name: string): boolean {
+  const pattern = new RegExp(`\\.\\s*${name}\\s*(?:[-+*/%&|^]|\\?\\?|&&|\\|\\|)?=(?![=>])|["'\`]${name}["'\`]|(?<![\\w$.])${name}\\s*:(?!:)`)
+  return findAll(file.text, pattern, 1, index => !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(index))).length > 0
 }
 
 /** The request a key at `index` is an argument of: where it is sent, or undefined. */
@@ -864,7 +875,8 @@ function requestAround(file: CodeFile, brackets: Brackets, index: number): numbe
     // The name the call is reached by: a module's (`requests`, `urllib`), or the function's own on the global object.
     const parts = sends[0].trim().split('.')
     const name = (/^(?:globalThis|window|self)$/.test(parts[0] ?? '') ? parts[parts.length - 1] : parts[0]) ?? ''
-    return ownFunction(file, brackets, name) ? undefined : open
+    // A module's function may be replaced on the module too (`requests.post = …`).
+    return ownFunction(file, brackets, name) || setAsProperty(file, parts[parts.length - 1] ?? '') ? undefined : open
   }
   // A request built for one address is sent where the call it is passed to sends it: it must be that call's address.
   const builds = BUILDS_REQUEST.exec(lead)
