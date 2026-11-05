@@ -418,11 +418,13 @@ export function buildContext(tree: ScannedTree): ScanContext {
       for (const path of rooted === undefined ? folders.map(folder => joinPath(folder, word)) : [joinPath('', rooted)]) if (path !== undefined) out.add(path)
     }
     const marked = rootMarked(body)
-    for (const raw of marked.split(WORD_BREAK)) add(raw, [dirname(prompt), ...(readFrom.get(prompt) ?? [])])
+    // Each word once: a long prompt repeats the same few.
+    const folders = [dirname(prompt), ...(readFrom.get(prompt) ?? [])]
+    for (const raw of new Set(marked.split(WORD_BREAK))) add(raw, folders)
     // After `cd` to the plugin's root, or a folder in it, the rest of the line is read from there.
     for (const found of marked.matchAll(/\bcd\s+\u0000(\/[^\s;&|()<>]*)?([^\n]*)/g)) {
       const folder = joinPath('', (found[1] ?? '').replace(/^\/+/, '').replace(/\/+$/, ''))
-      if (folder !== undefined) for (const raw of (found[2] ?? '').split(WORD_BREAK)) add(raw, [folder])
+      if (folder !== undefined) for (const raw of new Set((found[2] ?? '').split(WORD_BREAK))) add(raw, [folder])
     }
     reachedBy.set(prompt, out)
     return out
