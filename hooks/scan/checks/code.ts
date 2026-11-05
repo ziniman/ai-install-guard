@@ -701,11 +701,12 @@ function collectsAt(host: string, rest: string): boolean {
   return found !== null && found.index < host.length && (found.index === 0 || target[found.index - 1] === '.')
 }
 
-/** A call whose first argument is the address a request goes to. */
-const REQUEST_CALL = /(?:\bfetch|\baxios(?:\.(?:get|post|put|patch|delete|request))?|\burlopen|\bRequest|\b(?:requests|httpx)\.(?:get|post|put|patch|delete|request))\s*$/
-
-/** A value put in a name as it is passed on: `{ body: copy = key }`, `(copy := key)`, `copy += key`. */
-const ASSIGNED = /(?:[^=!<>:]=|[-+*/%&|^]=|\*\*=|<<=|>>>?=|\?\?=|&&=|\|\|=|:=)\s*$/
+/** A call that sends a request, its first argument the address: the platform's own, never a method of something else. */
+const SENDS_REQUEST = /(?:(?<![\w$.])(?:(?:globalThis|window|self)\.)?fetch|(?<![\w$.])axios(?:\.(?:get|post|put|patch|delete|request))?|(?<![\w$.])(?:urllib\.request\.)?urlopen|(?<![\w$.])(?:requests|httpx)\.(?:get|post|put|patch|delete|request))\s*$/
+/** A call that only builds a request, sent when it is passed to one that sends. */
+const BUILDS_REQUEST = /(?<![\w$.])(?:new\s+)?(?:(?:globalThis|window|self)\.|urllib\.request\.)?Request\s*$/
+/** A line that loads a request function from a package that sends requests. */
+const LOADS_HTTP = /^\s*(?:(?:const|let|var)\s+[\w${}\s,:]+=\s*(?:await\s+import|require)\(\s*["'](?:node-fetch|undici|cross-fetch|isomorphic-fetch|axios|node:https?|https?)["']\s*\)|import\s+[\w${}\s,*]+\s+from\s+["'](?:node-fetch|undici|cross-fetch|isomorphic-fetch|axios)["']|import\s+[\w.,\s]+|from\s+urllib(?:\.request)?\s+import\s+[\w,\s()]+)\s*;?\s*$/
 
 /** Code that sets an environment variable by a name made as it runs, or the whole environment at once. */
 const SETS_ENV_SOMEHOW = /\bprocess\.env\s*(?:\[(?!\s*["'`]\w+["'`]\s*\])[^\]\n]*\]\s*)?(?:\|\||&&|\?\?)?=(?![=>])|\b(?:Object\.(?:assign|defineProperty|defineProperties)|Reflect\.(?:set|defineProperty))\(\s*process\.env\b|\bos\.environ\s*(?:\[(?!\s*["']\w+["']\s*\])[^\]\n]*\]\s*)?=(?!=)|\bos\.environ\.(?:update|setdefault|__setitem__)\s*\(|\b(?:os\.)?putenv\s*\(/
@@ -793,11 +794,83 @@ function setsAgain(file: CodeFile, brackets: Brackets, index: number, end: numbe
   return parent >= 0 && text[parent] === '(' && isParameters(parent)
 }
 
-/** The `(` of the call `index` is an argument of, through any object or array around it. */
+/** Whether the `{` at `open` starts a block or a function's body, not an object. */
+function isBlock(file: CodeFile, open: number): boolean {
+  return open < 0 || /(?:\)|=>|\b(?:else|try|finally|do))\s*$/.test(file.text.slice(Math.max(0, open - 20), open))
+}
+
+/**
+ * The `(` of the call `index` is an argument of, through any object or array
+ * around it; none inside a block or a function's body, where what is done
+ * with a value is not passing it to the call around.
+ */
 function callAround(file: CodeFile, brackets: Brackets, index: number): number | undefined {
   let open = brackets.inner[index] ?? -1
-  while (open >= 0 && file.text[open] !== '(') open = brackets.inner[open] ?? -1
+  while (open >= 0 && file.text[open] !== '(') {
+    if (file.text[open] === '{' && isBlock(file, open)) return undefined
+    open = brackets.inner[open] ?? -1
+  }
   return open >= 0 ? open : undefined
+}
+
+/**
+ * Whether the value at `index` is put in a name as it is passed on, anywhere
+ * in the list entry or the statement it is part of (`{ body: copy = "" +
+ * key }`); Python's `name=` in a call only passes it.
+ */
+function assignedAt(file: CodeFile, brackets: Brackets, index: number): boolean {
+  const { text } = file
+  const open = brackets.inner[index] ?? -1
+  const block = open < 0 || (text[open] === '{' && isBlock(file, open))
+  for (let i = index - 1; i > open; i -= 1) {
+    if (brackets.inner[i] !== open || file.kindAt(i) !== 'code') continue
+    const char = text[i]
+    if (char === ';' || (char === ',' && !block) || (char === '\n' && block)) return false
+    if (char !== '=' || text[i + 1] === '=' || text[i + 1] === '>' || '=!<>'.includes(text[i - 1] ?? '')) continue
+    if (file.language === 'python' && text[open] === '(' && !/[-+*/%&|^:@]/.test(text[i - 1] ?? '')) continue
+    return true
+  }
+  return false
+}
+
+/**
+ * Whether `name`, a request function, may be one of the file's own: made,
+ * set or taken as a parameter there, or set on the global object, other than
+ * by loading a package that sends requests.
+ */
+function ownFunction(file: CodeFile, brackets: Brackets, name: string): boolean {
+  if (new RegExp(`\\b(?:globalThis|window|self|global)\\s*(?:\\.\\s*${name}|\\[\\s*["'\`]${name}["'\`]\\s*\\])\\s*=(?![=>])`).test(file.text)) return true
+  const spelled = findAll(file.text, new RegExp(`(?<![\\w$.])${name}(?![\\w$])`), 200, index => !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(index)))
+  if (spelled.length >= 200) return true
+  return spelled.some(use => {
+    if (!setsAgain(file, brackets, use.index, use.index + use.text.length)) return false
+    const lineStart = file.text.lastIndexOf('\n', use.index - 1) + 1
+    const lineEnd = file.text.indexOf('\n', use.index)
+    const line = file.text.slice(lineStart, lineEnd < 0 ? file.text.length : lineEnd)
+    return !LOADS_HTTP.test(line) || (/^\s*(?:import|from)\b/.test(line) && /\bas\b/.test(line) && !/^\s*import\s+[\w${}\s,*]+\s+from\s+["']/.test(line))
+  })
+}
+
+/** The request a key at `index` is an argument of: where it is sent, or undefined. */
+function requestAround(file: CodeFile, brackets: Brackets, index: number): number | undefined {
+  const open = callAround(file, brackets, index)
+  if (open === undefined) return undefined
+  const lead = file.text.slice(Math.max(0, open - 40), open)
+  const sends = SENDS_REQUEST.exec(lead)
+  if (sends !== null) {
+    // The name the call is reached by: a module's (`requests`, `urllib`), or the function's own on the global object.
+    const parts = sends[0].trim().split('.')
+    const name = (/^(?:globalThis|window|self)$/.test(parts[0] ?? '') ? parts[parts.length - 1] : parts[0]) ?? ''
+    return ownFunction(file, brackets, name) ? undefined : open
+  }
+  // A request built for one address is sent where the call it is passed to sends it: it must be that call's address.
+  const builds = BUILDS_REQUEST.exec(lead)
+  if (builds === null || ownFunction(file, brackets, 'Request') || ownFunction(file, brackets, 'urllib')) return undefined
+  const outer = callAround(file, brackets, open)
+  if (outer === undefined || !SENDS_REQUEST.test(file.text.slice(Math.max(0, outer - 40), outer))) return undefined
+  const [from, to] = firstArgument(file, brackets, outer)
+  const built = open - builds[0].length
+  return file.text.slice(from, built).trim() === '' && file.text.slice(closerOf(file, brackets, open) + 1, to).trim() === '' && requestAround(file, brackets, built) === outer ? open : undefined
 }
 
 /** Whether only grouping parentheses, no call, stand between `index` and the level of `outer`. */
@@ -834,7 +907,8 @@ function firstArgument(file: CodeFile, brackets: Brackets, open: number): [numbe
 
 /** The host of `address` when it is a web address on the service the key `name` belongs to. */
 function ownHost(address: string, name: string): string | undefined {
-  if (!/^https?:\/\//i.test(address)) return undefined
+  // An escape the code decodes (`\u0040`, `\x2e`) is read by the parser as a slash: the address is not what it says.
+  if (!/^https?:\/\//i.test(address) || address.includes('\\')) return undefined
   try {
     const host = new URL(address).hostname.toLowerCase()
     return belongsTo(name, host) ? host : undefined
@@ -976,13 +1050,11 @@ function keyRequests(ctx: ScanContext, file: CodeFile, keys: readonly Match[]): 
   const brackets = bracketsOf(file)
   const hosts = new Map<string, Set<string>>()
   const followed = (start: number, end: number, name: string): boolean => {
-    const before = file.text.slice(Math.max(0, start - 20), start)
-    if (KEY_TEST_BEFORE.test(before) || KEY_TEST_AFTER.test(file.text.slice(end, end + 20))) return true
-    // Kept in another name as it is passed on, it can go anywhere that name goes; Python's `name=` in a call only passes it.
-    const kwarg = file.language === 'python' && /(?<![-+*/%&|^:<>!=])=\s*$/.test(before) && file.text[brackets.inner[start] ?? -1] === '('
-    if (ASSIGNED.test(before) && !kwarg) return false
-    const open = callAround(file, brackets, start)
-    if (open === undefined || !REQUEST_CALL.test(file.text.slice(Math.max(0, open - 40), open))) return false
+    if (KEY_TEST_BEFORE.test(file.text.slice(Math.max(0, start - 20), start)) || KEY_TEST_AFTER.test(file.text.slice(end, end + 20))) return true
+    // Kept in another name as it is passed on, it can go anywhere that name goes.
+    if (assignedAt(file, brackets, start)) return false
+    const open = requestAround(file, brackets, start)
+    if (open === undefined) return false
     const host = ownAddress(ctx, file, brackets, firstArgument(file, brackets, open), name, 0)
     if (host !== undefined) hosts.set(name, (hosts.get(name) ?? new Set<string>()).add(host))
     return host !== undefined

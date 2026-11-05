@@ -223,9 +223,9 @@ export async function changesSince(host: Host, watch: Watch, before: Snapshot, c
   for (const folder of watch.marketFolders) {
     const was = before.marketFolders.get(folder) ?? ''
     const now = await copiesOf(host, folder)
-    if (now === was) continue
-    // A folder that could not be listed, before or after, may have gained a copy.
+    // A folder that could not be listed, before or after, may have gained a copy, or had one changed.
     if (now.startsWith(UNREADABLE) || was.startsWith(UNREADABLE)) made.push({ kind: 'marketplace', root: folder, change: 'unreadable' })
+    else if (now === was) continue
     else for (const name of copiesIn(now)) if (!copiesIn(was).includes(name)) made.push({ kind: 'marketplace', root: `${folder}/${name}`, change: 'added' })
   }
   return made
