@@ -119,6 +119,21 @@ const PROMPT_DIRS = ['skills', 'commands', 'agents', 'output-styles']
 /** Plain-text files a prompt may tell the model to read, besides Markdown. */
 const PROMPT_TEXT = /\.(?:txt|text|rst|prompt)$/i
 
+/** What a prompt's words are split at, when reading the paths it names. */
+const WORD_BREAK = /[\s;&|()<>=,[\]{}]+/
+
+/**
+ * A prompt's text with the plugin's root as one mark, quotes around it
+ * included (`"${CLAUDE_PLUGIN_ROOT}"/run.sh`), so neither its braces nor its
+ * quotes split the word it starts; other quotes as blanks.
+ */
+function rootMarked(body: string): string {
+  return body
+    .replace(/["']?(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b)["']?/g, '\u0000')
+    .replace(/["'`]/g, ' ')
+    .replace(/\/{2,}/g, '/')
+}
+
 const TEST_SEGMENTS = new Set(['test', 'tests', '__tests__', 'fixtures', '__fixtures__', 'testdata', 'spec', 'specs', 'e2e', 'test-support', 'testing', 'test-utils', 'test-helpers', '__mocks__', 'mocks'])
 
 const DOC_NAMES = /^(readme|changelog|changes|history|license|licence|copying|notice|contributing|code_of_conduct|security|authors)(\..*)?$/i
@@ -395,15 +410,19 @@ export function buildContext(tree: ScannedTree): ScanContext {
     const known = reachedBy.get(prompt)
     if (known !== undefined) return known
     const out = new Set<string>()
-    const folders = [dirname(prompt), ...(readFrom.get(prompt) ?? [])]
-    // The plugin's root as one mark, so the braces of `${CLAUDE_PLUGIN_ROOT}` do not split the word it starts.
-    const words = indexOf(body).normalized.replace(/\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b/g, '\u0000')
-    for (const raw of words.split(/[\s;&|()<>=,[\]{}]+/)) {
+    const add = (raw: string, folders: readonly string[]): void => {
       const word = raw.replace(/[#?].*$/, '').replace(/[.,:;!?*]+$/, '')
       // A path from the system's root, a home folder or a variable is not one inside the plugin.
-      if (word === '' || /^[/~$]/.test(word)) continue
+      if (word === '' || /^[/~$]/.test(word)) return
       const rooted = word.startsWith('\u0000/') ? word.slice(2) : undefined
       for (const path of rooted === undefined ? folders.map(folder => joinPath(folder, word)) : [joinPath('', rooted)]) if (path !== undefined) out.add(path)
+    }
+    const marked = rootMarked(body)
+    for (const raw of marked.split(WORD_BREAK)) add(raw, [dirname(prompt), ...(readFrom.get(prompt) ?? [])])
+    // After `cd` to the plugin's root, or a folder in it, the rest of the line is read from there.
+    for (const found of marked.matchAll(/\bcd\s+\u0000(\/[^\s;&|()<>]*)?([^\n]*)/g)) {
+      const folder = joinPath('', (found[1] ?? '').replace(/^\/+/, '').replace(/\/+$/, ''))
+      if (folder !== undefined) for (const raw of (found[2] ?? '').split(WORD_BREAK)) add(raw, [folder])
     }
     reachedBy.set(prompt, out)
     return out
@@ -413,9 +432,8 @@ export function buildContext(tree: ScannedTree): ScanContext {
     if (reached(from, body).has(path)) return true
     // A file named with a character the words are split at (`guide,alt.md`): its whole way, written out.
     if (!/[\s;&|()<>=,[\]{}]/.test(path)) return false
-    const { normalized } = indexOf(body)
     const ways = [`\u0000/${path}`, ...[dirname(from), ...(readFrom.get(from) ?? [])].map(folder => `${'../'.repeat(folder === '' ? 0 : folder.split('/').length)}${path}`)]
-    const marked = normalized.replace(/\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b/g, '\u0000')
+    const marked = rootMarked(body)
     return ways.some(way => marked.includes(way))
   }
   // Markdown a prompt tells the model to read is a prompt too, however it is

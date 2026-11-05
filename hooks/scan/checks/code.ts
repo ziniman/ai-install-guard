@@ -704,6 +704,19 @@ function collectsAt(host: string, rest: string): boolean {
 /** A call whose first argument is the address a request goes to. */
 const REQUEST_CALL = /(?:\bfetch|\baxios(?:\.(?:get|post|put|patch|delete|request))?|\burlopen|\bRequest|\b(?:requests|httpx)\.(?:get|post|put|patch|delete|request))\s*$/
 
+/** A value put in a name as it is passed on: `{ body: copy = key }`, `(copy := key)`, `copy += key`. */
+const ASSIGNED = /(?:[^=!<>:]=|[-+*/%&|^]=|\*\*=|<<=|>>>?=|\?\?=|&&=|\|\|=|:=)\s*$/
+
+/** Code that sets an environment variable by a name made as it runs, or the whole environment at once. */
+const SETS_ENV_SOMEHOW = /\bprocess\.env\s*(?:\[(?!\s*["'`]\w+["'`]\s*\])[^\]\n]*\]\s*)?(?:\|\||&&|\?\?)?=(?![=>])|\b(?:Object\.(?:assign|defineProperty|defineProperties)|Reflect\.(?:set|defineProperty))\(\s*process\.env\b|\bos\.environ\s*(?:\[(?!\s*["']\w+["']\s*\])[^\]\n]*\]\s*)?=(?!=)|\bos\.environ\.(?:update|setdefault|__setitem__)\s*\(|\b(?:os\.)?putenv\s*\(/
+
+/** Words before a name that make it a new one: a declaration, a parameter, a loop's or an import's. */
+const DECLARES = /(?:\b(?:const|let|var|function\*?|def|class|for|as|import|catch|global|nonlocal|del)\s+|\blambda\b[^:\n]*|\b(?:const|let|var)\b[^;=\n]*,\s*|(?:\+\+|--)\s*)$/
+/** What after a name sets it again: an assignment of any kind, an arrow's parameter, or `++`. */
+const SETS_AGAIN = /^\s*(?:(?:[-+*/%&|^]|\*\*|<<|>>>?|\?\?|&&|\|\||\/\/|@)?=(?![=>])|=>|:=|\+\+|--)/
+/** Words before `(` that make it a statement's condition or an operator's operand, not a call or a function's parameters. */
+const NOT_A_FUNCTION = /\b(?:if|while|switch|with|return|typeof|await|yield|new|in|of|else|do|case|void|delete|throw|and|or|not|elif)\s*$/
+
 /** A use of a key that only asks whether it is set: `!key`, `if key:`, `key === undefined`. */
 const KEY_TEST_BEFORE = /(?:!|\bif\s*\(|\bif\s+|\bnot\s+|\btypeof\s+)\s*$/
 const KEY_TEST_AFTER = /^\s*(?:[!=]==?|is\s+(?:not\s+)?None\b)/
@@ -743,6 +756,41 @@ function bracketsOf(file: CodeFile): Brackets {
     else if (closes(i)) stack.pop()
   }
   return { inner, opens, closes }
+}
+
+/** Where the bracket opened at `open` closes, or the end of the text. */
+function closerOf(file: CodeFile, brackets: Brackets, open: number): number {
+  for (let i = open + 1; i < file.text.length; i += 1) if (brackets.inner[i] === open && brackets.closes(i)) return i
+  return file.text.length
+}
+
+/**
+ * Whether the name at `index` is set again there, or a new name of the same
+ * spelling is made (a parameter, a loop's name, a destructured one), so a
+ * use of it may not be the one value it was set to.
+ */
+function setsAgain(file: CodeFile, brackets: Brackets, index: number, end: number): boolean {
+  const { text } = file
+  const lineStart = text.lastIndexOf('\n', index - 1) + 1
+  if (DECLARES.test(text.slice(Math.max(lineStart, index - 80), index)) || SETS_AGAIN.test(text.slice(end, end + 40))) return true
+  // The first of several names a statement sets at once (`url, x = …`), never an argument (`f(url, data=x)`).
+  if (/^\s*,[^=\n;()[\]{}]*=(?![=>])/.test(text.slice(end, end + 80)) && atStatement(file, brackets, index)) return true
+  const isParameters = (open: number): boolean => {
+    const lead = text.slice(Math.max(0, open - 60), open)
+    const after = text.slice(closerOf(file, brackets, open) + 1, closerOf(file, brackets, open) + 12)
+    if (/\b(?:function\s*\*?\s*[\w$]*|def\s+\w+|catch|for|lambda)\s*$/.test(lead) || /^\s*=>/.test(after)) return true
+    // A method's parameters: a name before them and a body after.
+    return /[\w$]\s*$/.test(lead) && !NOT_A_FUNCTION.test(lead) && /^\s*\{/.test(after)
+  }
+  const open = brackets.inner[index] ?? -1
+  if (open < 0) return false
+  if (text[open] === '(') return isParameters(open)
+  // Destructured: declared, set, looped over, or a parameter.
+  const lead = text.slice(Math.max(0, open - 20), open)
+  const after = text.slice(closerOf(file, brackets, open) + 1, closerOf(file, brackets, open) + 12)
+  if (/\b(?:const|let|var)\s*$/.test(lead) || /^\s*(?:=(?![=>])|(?:of|in)\b)/.test(after)) return true
+  const parent = brackets.inner[open] ?? -1
+  return parent >= 0 && text[parent] === '(' && isParameters(parent)
 }
 
 /** The `(` of the call `index` is an argument of, through any object or array around it. */
@@ -875,6 +923,9 @@ function ownBase(ctx: ScanContext, file: CodeFile, brackets: Brackets, base: str
   const sets = findAll(file.text, new RegExp(`(?<![\\w$.])${base.replace(/\$/g, '\\$')}\\s*=(?![=>])`), 3, index => file.kindAt(index) === 'code')
   const set = sets[0]
   if (sets.length !== 1 || set === undefined || !atStatement(file, brackets, set.index)) return undefined
+  // Set once, and never again under the same name: no parameter, loop or `+=` makes it another address.
+  const spelled = findAll(file.text, new RegExp(`(?<![\\w$.])${base.replace(/\$/g, '\\$')}(?![\\w$])`), 200, index => !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(index)))
+  if (spelled.length >= 200 || spelled.some(use => use.index !== set.index && setsAgain(file, brackets, use.index, use.index + use.text.length))) return undefined
   const from = set.index + set.text.length
   const lineEnd = file.text.indexOf('\n', from)
   const value = file.text.slice(from, lineEnd < 0 ? file.text.length : lineEnd).replace(/;\s*$/, '')
@@ -890,14 +941,18 @@ function ownBase(ctx: ScanContext, file: CodeFile, brackets: Brackets, base: str
   return defaults[0]
 }
 
-/** Whether a file the plugin runs or reads to Claude sets the environment variable `variable`, outside `from`..`to` of `path`. */
+/**
+ * Whether a file the plugin runs or reads to Claude sets the environment
+ * variable `variable`, outside `from`..`to` of `path`, or may set it: by a
+ * name made as it runs, or the whole environment at once.
+ */
 function setByPlugin(ctx: ScanContext, variable: string, path: string, from: number, to: number): boolean {
   const sets = new RegExp(`(?<![\\w$])${variable}(?![\\w$])["'\\]]*\\s*[:=](?!=)|\\b(?:setdefault|putenv|setenv)\\W{1,4}${variable}\\b`)
   for (const file of ctx.files) {
     if (!file.isText || !isLive(ctx.roleOf(file.path))) continue
     const text = ctx.text(file.path)
     if (text === undefined) continue
-    const found = findAll(text, sets, 50).filter(match => file.path !== path || match.index < from || match.index >= to)
+    const found = [...findAll(text, sets, 50).filter(match => file.path !== path || match.index < from || match.index >= to), ...findAll(text, SETS_ENV_SOMEHOW, 50)]
     if (found.length === 0) continue
     if (!isCodeFile(file.path, text)) return true
     // A line of code only commented out sets nothing.
@@ -921,7 +976,11 @@ function keyRequests(ctx: ScanContext, file: CodeFile, keys: readonly Match[]): 
   const brackets = bracketsOf(file)
   const hosts = new Map<string, Set<string>>()
   const followed = (start: number, end: number, name: string): boolean => {
-    if (KEY_TEST_BEFORE.test(file.text.slice(Math.max(0, start - 20), start)) || KEY_TEST_AFTER.test(file.text.slice(end, end + 20))) return true
+    const before = file.text.slice(Math.max(0, start - 20), start)
+    if (KEY_TEST_BEFORE.test(before) || KEY_TEST_AFTER.test(file.text.slice(end, end + 20))) return true
+    // Kept in another name as it is passed on, it can go anywhere that name goes; Python's `name=` in a call only passes it.
+    const kwarg = file.language === 'python' && /(?<![-+*/%&|^:<>!=])=\s*$/.test(before) && file.text[brackets.inner[start] ?? -1] === '('
+    if (ASSIGNED.test(before) && !kwarg) return false
     const open = callAround(file, brackets, start)
     if (open === undefined || !REQUEST_CALL.test(file.text.slice(Math.max(0, open - 40), open))) return false
     const host = ownAddress(ctx, file, brackets, firstArgument(file, brackets, open), name, 0)
