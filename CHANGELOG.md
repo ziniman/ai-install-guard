@@ -12,15 +12,21 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 **Claude writing an MCP server** - Only the configuration Claude Code starts servers from counts: this folder's `.mcp.json` and your `~/.claude.json`. A `.mcp.json` in another folder or in a test's fixtures is written with nothing read.
 
+---
+
 ## v0.8.18 &nbsp;·&nbsp; 2026-11-04
 
 **Shell commands** - A program the guard does not know counts by the paths it is given, so one that only reads a path in Claude's folder (`npm run benchmark -- ~/.claude/plugins/marketplaces/x`, a linter given a skill) was held as a change there. Such a path, one file or folder deep, now runs and is judged by what it changed, as an edit in place is; one naming a whole area (`~/.claude/plugins`) is still held before it runs, and a change to a marketplace's copy, or a copy added to the folder of them, is named after the command runs
 
 **`/guard scan`** - A plugin that is also its own development repository could scan as Do not install from its tests. Its skills name the project Claude works in by bare name ("read STRATEGY.md at the repo root"), and the scanner took the plugin's own files by those names for the ones meant, then followed what they name to its docs, plans and tests, which then counted in full. Claude reads a skill's paths from the skill's own folder, so a plugin's file outside its skills, commands, agents and output styles now counts as named only through a way to it, from the plugin's root (`${CLAUDE_PLUGIN_ROOT}/docs/guide.md`, quoted or not, or the rest of a line after `cd` to it) or climbing to it (`../../docs/guide.md`), and a file loose in the skills folder, or in a folder with no SKILL.md, is no part of a skill. A key read in a file that also reaches other addresses counted as sent anywhere, so a skill script that serves its pages on your machine and calls OpenAI with your `OPENAI_API_KEY` was a red flag. The key is now followed to where it goes: when each use only checks it is set or is part of a request to the key's own service, at an address written out or at the base address the service's own variable sets (`OPENAI_BASE_URL`, with the service's address as its default, set by nothing in the plugin, and never made another address under the same name), it is the key's use and noted
 
+---
+
 ## v0.8.17 &nbsp;·&nbsp; 2026-11-04
 
 **Shell commands** - Code the guard cannot read that names a place Claude Code loads from (an edit script, a Python or Node one-liner) was held before it ran, though most such code only reads or mentions a `.claude` path. It now runs, and the places it names are compared before and after: settings files, MCP configurations, agents and output styles, the list of installed plugins and a plugin's folder it names. An edit in place (`sed -i`, `perl -i`) to an agent, a settings file or a plugin's files is judged the same way, once made. Nothing changed goes on with nothing said; a change with no red flags goes on with a note; anything else waits in the pane, and Claude is told. A settings change that widens what Claude may do, or an agent or output style with a red flag, also leaves Claude only reading files and using Write or Edit, and holds back your settings hooks, until you decide; a change you reject keeps that until its file no longer holds it. An MCP server that waits has its tools refused until you keep it. Downloads, archives, clones and copies are still judged before they run. Replaying the saved sessions, holds go from 99 to 51, and from 31 to 11 outside this repo's own development, where what is left is installs and settings changes that widen.
+
+---
 
 ## v0.8.16 &nbsp;·&nbsp; 2026-11-04
 
@@ -78,9 +84,13 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 **Decisions** - Once the list of decisions is full, the oldest approval is forgotten before any rejection, since a forgotten approval only asks again
 
+---
+
 ## v0.8.8 &nbsp;·&nbsp; 2026-10-31
 
 **Claude's shell commands** - A command with code the guard does not read, such as a `sed` edit or an inline Python script, is no longer held because its text names Claude Code and MCP servers or plugins in a sentence. Only the `claude` command as the shell spells it, and `plugin i` in lowercase, count as a sign of an install there, so editing docs or source that talk about Claude Code goes through
+
+---
 
 ## v0.8.7 &nbsp;·&nbsp; 2026-10-31
 
