@@ -27,6 +27,37 @@ describe('what a command changed where Claude Code loads from', () => {
     // One plugin's own folder, by marketplace, name and version, or the folder a shorter path's file is in; a skill
     // is checked before it is used, so it is not watched.
     expect(watch.plugins).toEqual([`${HOME}/.claude/plugins/cache/m/p/1.0`, `${HOME}/.claude/plugins/cache/x`])
+    // Local review: a marketplace's copy is watched, to name a change to it.
+    const market = await watchFor(host, ['~/.claude/plugins/marketplaces/official/plugins/x'], PROJECT, HOME, undefined)
+    expect(market.marketplaces).toEqual([`${HOME}/.claude/plugins/marketplaces/official`])
+    const files: FixtureFiles = { '.claude/plugins/marketplaces/official/catalog.json': b64('{}') }
+    const was = await snapshot(memoryHost(HOME, files), market)
+    expect(await changesSince(memoryHost(HOME, { ...files, '.claude/plugins/marketplaces/official/catalog.json': b64('{"plugins":[]}') }), market, was, undefined)).toEqual([
+      { kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces/official`, change: 'changed' },
+    ])
+    // A marketplace copy's own git store is left out, as a fetch changes it; an installed plugin's is not.
+    const git = (config: string): FixtureFiles => ({ ...files, '.claude/plugins/marketplaces/official/.git/config': b64(config), '.claude/plugins/cache/m/p/1.0/.git/config': b64(config) })
+    const both = await watchFor(memoryHost(HOME, git('[core]\n')), ['~/.claude/plugins/marketplaces/official/x', '~/.claude/plugins/cache/m/p/1.0'], PROJECT, HOME, undefined)
+    const gitWas = await snapshot(memoryHost(HOME, git('[core]\n')), both)
+    expect(await changesSince(memoryHost(HOME, git('[core]\n\thooksPath = h\n')), both, gitWas, undefined)).toEqual([{ kind: 'plugin', root: `${HOME}/.claude/plugins/cache/m/p/1.0`, id: '' }])
+    // PR review: the marketplaces folder named whole, or by a wildcard, watches each copy in it.
+    const markets = memoryHost(HOME, { ...files, '.claude/plugins/marketplaces/other/catalog.json': b64('{}') })
+    for (const named of ['~/.claude/plugins/marketplaces', '~/.claude/plugins/marketplaces/*/catalog.json']) {
+      expect((await watchFor(markets, [named], PROJECT, HOME, undefined)).marketplaces).toEqual([`${HOME}/.claude/plugins/marketplaces/official`, `${HOME}/.claude/plugins/marketplaces/other`])
+    }
+    // PR review: a copy the command adds to that folder is named, and so is a folder that cannot be listed.
+    const whole = await watchFor(markets, ['~/.claude/plugins/marketplaces'], PROJECT, HOME, undefined)
+    const held = await snapshot(markets, whole)
+    const added = memoryHost(HOME, { ...files, '.claude/plugins/marketplaces/other/catalog.json': b64('{}'), '.claude/plugins/marketplaces/new/catalog.json': b64('{}') })
+    expect(await changesSince(added, whole, held, undefined)).toEqual([{ kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces/new`, change: 'added' }])
+    const blind = Object.assign(Object.create(markets) as typeof markets, { list: () => Promise.reject(new Error('EACCES')) })
+    expect(await changesSince(blind, whole, held, undefined)).toContainEqual({ kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces`, change: 'unreadable' })
+    // PR review: a look at the folder that fails is not a folder that is not there.
+    const unstated = (base: typeof markets) => Object.assign(Object.create(base) as typeof base, { stat: () => Promise.reject(new Error('EACCES')) })
+    expect(await changesSince(unstated(added), whole, await snapshot(unstated(markets), whole), undefined)).toEqual([{ kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces/new`, change: 'added' }])
+    // PR review: unreadable before as well as after, it is still named.
+    const unlisted = await watchFor(blind, ['~/.claude/plugins/marketplaces'], PROJECT, HOME, undefined)
+    expect(await changesSince(blind, unlisted, await snapshot(blind, unlisted), undefined)).toEqual([{ kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces`, change: 'unreadable' }])
     // Local review: a wildcard in the first name may reach any part of the folder.
     const any = await watchFor(host, ['~/.claude/settings*.json'], PROJECT, HOME, undefined)
     expect(any.files).toEqual([`${HOME}/.claude/settings.json`, `${HOME}/.claude/settings.local.json`])
@@ -62,7 +93,7 @@ describe('what a command changed where Claude Code loads from', () => {
       '.claude/plugins/cache/m/p/1.0/README.md': b64('# p, changed\n'),
     })
     const made = await changesSince(after, watch, was, undefined)
-    expect(made.map(item => (item.kind === 'plugin' ? `plugin ${item.id} ${item.root}` : `${item.reading.kind} ${item.path}`))).toEqual([
+    expect(made.map(item => (item.kind === 'plugin' ? `plugin ${item.id} ${item.root}` : item.kind === 'marketplace' ? `marketplace ${item.root}` : `${item.reading.kind} ${item.path}`))).toEqual([
       `settings ${HOME}/.claude/settings.json`,
       `mcp ${HOME}/.claude.json`,
       `prompt ${HOME}/.claude/agents/evil.md`,

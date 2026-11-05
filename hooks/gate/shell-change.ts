@@ -364,15 +364,17 @@ export async function readShellChange(host: Host, command: string, cwd: string |
   }
   await settle()
   const total = found.length + unreadable.length
-  // Edits in place to files already there (`sed -i`, `perl -i`) bring nothing in: what they make is judged
-  // once it is made, exactly, where the guard could not replay them before.
-  const editing = unreadable.length === 0 && found.length > 0 && found.every(item => item.write.kind === 'unknown' && item.write.edit === true && !item.covers)
+  // Edits in place to files already there (`sed -i`, `perl -i`), and a path one file or folder deep that a program
+  // the guard does not know is only given (`npm run check -- ~/.claude/plugins/x`), most often to read, bring
+  // nothing in: what they make is judged once it is made, exactly, where the guard could not tell before.
+  const inPlace = (write: ShellWrite): boolean => write.kind === 'unknown' && write.edit === true
+  const editing = unreadable.length === 0 && found.length > 0 && found.every(item => item.write.kind === 'unknown' && (item.write.edit === true || item.write.given === true) && !item.covers)
   const edited = found.map(item => item.landed)
   // Beside a change there the guard can see, which must be judged before it is made, the code cannot run first.
   if (hidden !== undefined) return total === 0 ? watched(hidden.reason) : editing ? watched(hidden.reason, edited) : unseen(hidden)
   if (total === 0) return skills !== undefined ? noteFiles(skills.files) : PASS
-  // Skills and commands alone are checked before they are used; an edit elsewhere is looked at once made.
-  if (editing && !found.every(item => checkedAtUse(item.place)) && skills === undefined) {
+  // Edits to skills and commands alone go on with a note, as they are checked before they are used; anything else is looked at once made.
+  if (editing && !found.every(item => checkedAtUse(item.place) && inPlace(item.write)) && skills === undefined) {
     const [first] = found
     return watched(first?.write.kind === 'unknown' ? `${first.write.what} would land there` : 'it edits a file there', edited)
   }

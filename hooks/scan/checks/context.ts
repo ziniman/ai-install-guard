@@ -119,6 +119,39 @@ const PROMPT_DIRS = ['skills', 'commands', 'agents', 'output-styles']
 /** Plain-text files a prompt may tell the model to read, besides Markdown. */
 const PROMPT_TEXT = /\.(?:txt|text|rst|prompt)$/i
 
+/** What a prompt's words are split at, when reading the paths it names. */
+const WORD_BREAK = /[\s;&|()<>=,[\]{}]+/
+
+/**
+ * A prompt's text with the plugin's root as one mark, quotes around it
+ * included (`"${CLAUDE_PLUGIN_ROOT}"/run.sh`), so neither its braces nor its
+ * quotes split the word it starts; other quotes as blanks.
+ */
+function rootMarked(body: string): string {
+  return body
+    .replace(/["']?(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b)["']?/g, '\u0000')
+    .replace(/["'`]/g, ' ')
+    .replace(/\/{2,}/g, '/')
+}
+
+/** A character words are split at, kept in a word as one from the private use area, and given back. */
+const keptWhole = (text: string): string => text.replace(/[\s;&|()<>=,[\]{}]/g, char => String.fromCharCode(0xe000 + char.charCodeAt(0)))
+const givenBack = (word: string): string => word.replace(/[\ue000-\ue07f]/g, char => String.fromCharCode(char.charCodeAt(0) - 0xe000))
+
+/**
+ * A prompt's text as a shell reads its words: a character escaped with a
+ * backslash (`evil\ script.sh`) or inside quotes (`"evil script.sh"`) kept
+ * in its word, and the plugin's root as one mark.
+ */
+function shellWords(body: string): string {
+  return body
+    .replace(/(["'])(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b)\1|\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b/g, '\u0000')
+    .replace(/\\([\s;&|()<>=,[\]{}])/g, (_, char: string) => keptWhole(char))
+    .replace(/(["'])([^"'\n]*)\1/g, (_, quote: string, inner: string) => keptWhole(inner))
+    .replace(/["'`]/g, ' ')
+    .replace(/\/{2,}/g, '/')
+}
+
 const TEST_SEGMENTS = new Set(['test', 'tests', '__tests__', 'fixtures', '__fixtures__', 'testdata', 'spec', 'specs', 'e2e', 'test-support', 'testing', 'test-utils', 'test-helpers', '__mocks__', 'mocks'])
 
 const DOC_NAMES = /^(readme|changelog|changes|history|license|licence|copying|notice|contributing|code_of_conduct|security|authors)(\..*)?$/i
@@ -239,8 +272,16 @@ export function buildContext(tree: ScannedTree): ScanContext {
   for (const { link, target } of dirAliases) {
     if (promptRoots.some(root => root !== '' && (link === root || link.startsWith(`${root}/`)))) roots.push(target)
   }
+  // Claude Code loads a skill from its own folder: a file loose in the skills folder, or in a folder with no
+  // SKILL.md (notes for the plugin's own authors), is no part of one.
+  const skillFolders = new Set(tree.inventory.entries.flatMap(entry => ((entry.kind === 'file' || entry.kind === 'link') && /^skills\/.+\/skill\.md$/i.test(entry.path) ? [entry.path.slice(0, entry.path.lastIndexOf('/'))] : [])))
+  const inSkill = (path: string): boolean => {
+    const parts = path.split('/')
+    for (let depth = 2; depth < parts.length; depth += 1) if (skillFolders.has(parts.slice(0, depth).join('/'))) return true
+    return false
+  }
   const underRoot = (path: string): boolean =>
-    roots.some(root => (root === '' ? !DOC_NAMES.test(basename(path)) || path.includes('/') : path === root || path.startsWith(`${root}/`)))
+    roots.some(root => (root === '' ? !DOC_NAMES.test(basename(path)) || path.includes('/') : (path === root || path.startsWith(`${root}/`)) && (root !== 'skills' || inSkill(path))))
   const prompts = files.map(file => file.path).filter(path => isMarkdown(path) && underRoot(path))
   // A markdown link under a prompt root (skills/x/SKILL.md -> ../../docs/x.md)
   // makes the file it lands on a prompt too.
@@ -333,10 +374,10 @@ export function buildContext(tree: ScannedTree): ScanContext {
     }
     return words.has(basename(path)) && nameCount.get(basename(path)) === 1
   }
-  const referenced = (haystack: string, role: FileRole, skipMarkdown: boolean): void => {
+  const referenced = (haystack: string, role: FileRole, skipMarkdown: boolean, names: (haystack: string, path: string) => boolean = namedIn): void => {
     for (const path of [...paths, ...linkPaths]) {
       if (skipMarkdown && isMarkdown(path)) continue
-      const named = namedIn(haystack, path)
+      const named = names(haystack, path)
       if (!named) continue
       assign(path, role)
       const real = aliases.get(path)
@@ -369,6 +410,61 @@ export function buildContext(tree: ScannedTree): ScanContext {
     referenced(command, 'server', false)
     for (const path of [...paths, ...linkPaths]) if (namedIn(command, path)) noteInterpreter(command, path)
   }
+  // Claude reads the paths a skill names from the skill's own folder, never from the plugin's root, so a file
+  // of a plugin outside its skills, commands, agents and output styles, named as a path from the plugin's root
+  // or by its bare name (README.md, `docs/guide.md`, `tests/x.ts`), is the project's Claude works in, as a skill
+  // means it ("read STRATEGY.md at the repo root"). The plugin's own is named as a way to it: from its root
+  // (`${CLAUDE_PLUGIN_ROOT}/docs/guide.md`) or climbing to it (`../../docs/guide.md`). A standalone skill's root
+  // is its own folder, where every path counts.
+  // Where each prompt is read from: its own folder, and that of every link Claude Code loads it through (a skill's
+  // SKILL.md that is one); a link anywhere else is not how Claude reaches it.
+  const readFrom = new Map<string, Set<string>>()
+  for (const [link, real] of aliases) if (underRoot(link)) readFrom.set(real, new Set([...(readFrom.get(real) ?? []), dirname(link)]))
+  // Each path a prompt's words lead to, resolved as Claude resolves them: from the plugin's root after
+  // `${CLAUDE_PLUGIN_ROOT}/`, and otherwise from the folder the prompt is read in, so a climb that leaves the
+  // plugin leads nowhere.
+  const reachedBy = new Map<string, Set<string>>()
+  const reached = (prompt: string, body: string): Set<string> => {
+    const known = reachedBy.get(prompt)
+    if (known !== undefined) return known
+    const out = new Set<string>()
+    const add = (raw: string, folders: readonly string[]): void => {
+      // A link's anchor or query (`guide.md#setup`) is no part of the file, though a file's own name may hold one.
+      for (const word of new Set([raw, raw.replace(/[#?].*$/, '')].map(each => each.replace(/[.,:;!?*]+$/, '')))) {
+        // A path from the system's root, a home folder or a variable is not one inside the plugin.
+        if (word === '' || /^[/~$]/.test(word)) continue
+        const rooted = word.startsWith('\u0000/') ? word.slice(2) : undefined
+        for (const path of rooted === undefined ? folders.map(folder => joinPath(folder, word)) : [joinPath('', rooted)]) if (path !== undefined) out.add(path)
+      }
+    }
+    const marked = rootMarked(body)
+    // Each word once: a long prompt repeats the same few. Read both as text and as a shell reads it, so a quote in
+    // prose (it's) does not join a path to the words around it, and an escaped or quoted name is still found whole.
+    const folders = [dirname(prompt), ...(readFrom.get(prompt) ?? [])]
+    const words = new Set(marked.split(WORD_BREAK))
+    if (/["'\\]/.test(body)) for (const word of new Set(shellWords(body).split(WORD_BREAK))) words.add(givenBack(word))
+    for (const raw of words) add(raw, folders)
+    // After `cd` to the plugin's root, or a folder in it, the rest of the line is read from there.
+    for (const found of marked.matchAll(/\bcd\s+\u0000(\/[^\s;&|()<>]*)?([^\n]*)/g)) {
+      const folder = joinPath('', (found[1] ?? '').replace(/^\/+/, '').replace(/\/+$/, ''))
+      if (folder !== undefined) for (const raw of new Set((found[2] ?? '').split(WORD_BREAK))) add(raw, [folder])
+    }
+    reachedBy.set(prompt, out)
+    return out
+  }
+  const promptNames = (from: string) => (body: string, path: string): boolean => {
+    if (kind === 'skill' || underRoot(path)) return namedIn(body, path)
+    if (reached(from, body).has(path)) return true
+    // A file named with a character the words are split at (`guide,alt.md`): its whole way, written out.
+    if (!/[\s;&|()<>=,[\]{}]/.test(path)) return false
+    const ways = [`\u0000/${path}`, ...[dirname(from), ...(readFrom.get(from) ?? [])].map(folder => `${'../'.repeat(folder === '' ? 0 : folder.split('/').length)}${path}`)]
+    const marked = rootMarked(body)
+    // The whole way, as a word of its own: `../../../docs/x,y.md` climbs past the plugin, and holds the shorter way.
+    return ways.some(way => {
+      for (let at = marked.indexOf(way); at !== -1; at = marked.indexOf(way, at + 1)) if (!/[\w./\\-]/.test(marked[at - 1] ?? ' ')) return true
+      return false
+    })
+  }
   // Markdown a prompt tells the model to read is a prompt too, however it is
   // named (a skill's own README): followed until nothing new is named.
   const promptSet = new Set(prompts)
@@ -376,7 +472,7 @@ export function buildContext(tree: ScannedTree): ScanContext {
     const body = text(prompts[index] as string) ?? ''
     for (const path of [...paths, ...linkPaths]) {
       // Markdown or plain text: a skill may keep its instructions in references/notes.txt.
-      if (!(isMarkdown(path) || PROMPT_TEXT.test(path)) || !namedIn(body, path)) continue
+      if (!(isMarkdown(path) || PROMPT_TEXT.test(path)) || !promptNames(prompts[index] as string)(body, path)) continue
       const real = aliases.get(path) ?? path
       if (paths.has(real) && !promptSet.has(real)) {
         promptSet.add(real)
@@ -387,7 +483,7 @@ export function buildContext(tree: ScannedTree): ScanContext {
   for (const path of prompts) assign(path, 'prompt')
   for (const prompt of prompts) {
     const body = text(prompt) ?? ''
-    referenced(body, 'prompt-script', true)
+    referenced(body, 'prompt-script', true, promptNames(prompt))
     // A script named relative to the skill's own folder.
     for (const path of paths) {
       if (!isMarkdown(path) && path.startsWith(`${dirname(prompt)}/`) && body.includes(path.slice(dirname(prompt).length + 1))) {
