@@ -117,9 +117,11 @@ npm auth uses [trusted publishing](https://docs.npmjs.com/trusted-publishers) (O
 
 ## Changelog
 
-Update `CHANGELOG.md` with every change to behaviour, checks, commands or plugin metadata. Skip typo fixes, formatting and version-bump-only commits. One bold entry per changed area:
+Update `CHANGELOG.md` with every change to behaviour, checks, commands or plugin metadata. Skip typo fixes, formatting and version-bump-only commits. One bold entry per changed area, and a `---` line between versions:
 
 ```markdown
+---
+
 ## vX.Y.Z &nbsp;·&nbsp; YYYY-MM-DD
 
 **`/guard scan`** - One line on what changed and why it matters

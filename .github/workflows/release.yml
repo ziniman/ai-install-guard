@@ -93,7 +93,9 @@ jobs:
           RELEASE_SHA="${{ steps.check.outputs.sha }}"
           PR_TITLE=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/pulls" --jq '.[0].title // empty')
           TITLE="$TAG${PR_TITLE:+ - $PR_TITLE}"
-          awk -v head="## $TAG " 'index($0, head) == 1 { f = 1; next } f && /^---/ { exit } f { print }' CHANGELOG.md > notes.md
+          # The notes end at the next separator or the next heading, so an entry
+          # with no `---` after it does not carry the older ones with it.
+          awk -v head="## $TAG " 'index($0, head) == 1 { f = 1; next } f && (/^---/ || /^## /) { exit } f { print }' CHANGELOG.md > notes.md
           # An existing tag keeps the commit it already names; a new one marks the release commit.
           TARGET=()
           if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
