@@ -40,6 +40,10 @@ export type Watch = {
   plugins: string[]
   /** The lists of plugins Claude Code installed, compared by each plugin's entry. */
   registry: string[]
+  /** The copies of marketplaces it keeps, compared by what they hold as listed. */
+  marketplaces: string[]
+  /** Folders of marketplace copies named whole, compared by the copies they hold. */
+  marketFolders: string[]
 }
 
 /** What each place held before the command ran. */
@@ -48,10 +52,20 @@ export type Snapshot = {
   prompts: Map<string, Map<string, string>>
   plugins: Map<string, string>
   registry: Map<string, string | undefined>
+  marketplaces: Map<string, string>
+  marketFolders: Map<string, string>
 }
 
 /** A change the command made, read as the gate judges it. */
-export type Made = { kind: 'reading'; path: string; reading: Exclude<WriteReading, { kind: 'pass' }> } | { kind: 'plugin'; root: string; id: string }
+export type Made =
+  | { kind: 'reading'; path: string; reading: Exclude<WriteReading, { kind: 'pass' }> }
+  | { kind: 'plugin'; root: string; id: string }
+  /**
+   * A marketplace's copy, changed, added, too large to tell, or (its folder)
+   * unreadable: what it lists is scanned as it is installed, so the change is
+   * only named.
+   */
+  | { kind: 'marketplace'; root: string; change: 'changed' | 'added' | 'large' | 'unreadable' }
 
 /**
  * The places a command's code names, read from `named` (as `namedPlaces`
@@ -63,15 +77,16 @@ export type Made = { kind: 'reading'; path: string; reading: Exclude<WriteReadin
  * path that leads through a link counts where it lands as well.
  */
 export async function watchFor(host: Host, named: readonly string[], cwd: string | undefined, home: string | undefined, configDir: string | undefined): Promise<Watch> {
-  const watch: Watch = { files: [], prompts: [], plugins: [], registry: [] }
+  const watch: Watch = { files: [], prompts: [], plugins: [], registry: [], marketplaces: [], marketFolders: [] }
   const add = (list: string[], path: string): void => {
     if (!list.includes(path)) list.push(path)
   }
   const yours = normalizePath(configDir ?? (home === undefined ? '' : `${home}/.claude`))
   // Paths named in the folder plugins are installed in, each found to its plugin's own folder below.
   const cached: { cache: string; rest: string[] }[] = []
-  // Folders whose plugins are watched, each one Claude Code installed.
+  // Folders whose plugins are watched, each one Claude Code installed; and folders of marketplace copies watched each.
   const every = new Set<string>()
+  const markets = new Set<string>()
   const whole = (root: string): void => {
     add(watch.files, `${root}/settings.json`)
     add(watch.files, `${root}/settings.local.json`)
@@ -92,6 +107,11 @@ export async function watchFor(host: Host, named: readonly string[], cwd: string
       const where = second?.toLowerCase()
       if (where === undefined || (where === 'cache' && (rest.length === 0 || rest.some(item => /[*?[{]/.test(item))))) every.add(root)
       else if (where === 'cache') cached.push({ cache: `${root}/plugins/${second}`, rest })
+      else if (where === 'marketplaces') {
+        // Every copy in the folder when it is named whole or by a wildcard, else the one named.
+        if (rest[0] === undefined || /[*?[{]/.test(rest[0])) markets.add(`${root}/plugins/${second}`)
+        else add(watch.marketplaces, `${root}/plugins/${second}/${rest[0]}`)
+      }
     }
   }
   const classify = (path: string): void => {
@@ -134,6 +154,10 @@ export async function watchFor(host: Host, named: readonly string[], cwd: string
     if (folder.length > 0) add(watch.plugins, `${cache}/${folder.join('/')}`)
   }
   for (const root of every) for (const plugin of installedIn(await textOf(host, `${root}/plugins/installed_plugins.json`)).keys()) add(watch.plugins, plugin)
+  for (const folder of markets) {
+    add(watch.marketFolders, folder)
+    for (const name of copiesIn(await copiesOf(host, folder))) add(watch.marketplaces, `${folder}/${name}`)
+  }
   return watch
 }
 
@@ -144,10 +168,14 @@ export async function snapshot(host: Host, watch: Watch): Promise<Snapshot> {
   const prompts = new Map<string, Map<string, string>>()
   for (const folder of watch.prompts) prompts.set(folder, await filesIn(host, folder))
   const plugins = new Map<string, string>()
-  for (const root of watch.plugins) plugins.set(root, await listed(host, root))
+  for (const root of watch.plugins) plugins.set(root, await listed(host, root, false))
   const registry = new Map<string, string | undefined>()
   for (const path of watch.registry) registry.set(path, await textOf(host, path))
-  return { files, prompts, plugins, registry }
+  const marketplaces = new Map<string, string>()
+  for (const root of watch.marketplaces) marketplaces.set(root, await listed(host, root, true))
+  const marketFolders = new Map<string, string>()
+  for (const folder of watch.marketFolders) marketFolders.set(folder, await copiesOf(host, folder))
+  return { files, prompts, plugins, registry, marketplaces, marketFolders }
 }
 
 /** What the command changed in the watched places, as the gate reads each change. */
@@ -182,10 +210,23 @@ export async function changesSince(host: Host, watch: Watch, before: Snapshot, c
     for (const [root, id] of changedEntries(before.registry.get(path), now)) made.push({ kind: 'plugin', root, id })
   }
   for (const root of watch.plugins) {
-    const now = await listed(host, root)
+    const now = await listed(host, root, false)
     // Too large to list whole, a plugin is judged by its files instead.
     if (now === before.plugins.get(root) && !now.startsWith(PARTIAL)) continue
     if (!made.some(item => item.kind === 'plugin' && item.root === root)) made.push({ kind: 'plugin', root, id: ids.get(root) ?? '' })
+  }
+  for (const root of watch.marketplaces) {
+    const now = await listed(host, root, true)
+    // Too large to list whole, it cannot be compared: said so, rather than taken as unchanged.
+    if (now !== before.marketplaces.get(root) || now.startsWith(PARTIAL)) made.push({ kind: 'marketplace', root, change: now.startsWith(PARTIAL) ? 'large' : 'changed' })
+  }
+  for (const folder of watch.marketFolders) {
+    const was = before.marketFolders.get(folder) ?? ''
+    const now = await copiesOf(host, folder)
+    // A folder that could not be listed, before or after, may have gained a copy, or had one changed.
+    if (now.startsWith(UNREADABLE) || was.startsWith(UNREADABLE)) made.push({ kind: 'marketplace', root: folder, change: 'unreadable' })
+    else if (now === was) continue
+    else for (const name of copiesIn(now)) if (!copiesIn(was).includes(name)) made.push({ kind: 'marketplace', root: `${folder}/${name}`, change: 'added' })
   }
   return made
 }
@@ -207,6 +248,17 @@ export async function judgeMade($: EngineInterface, made: readonly Made[], looku
     if (await noteChecked($, treeHash).catch(() => false)) judged.notes.push(text)
   }
   for (const one of made) {
+    if (one.kind === 'marketplace') {
+      const name = safeLine(one.root.slice(one.root.lastIndexOf('/') + 1))
+      const what = {
+        changed: `the command changed the files of the marketplace ${name}`,
+        added: `the command added the marketplace ${name}`,
+        large: `the marketplace ${name} is too large for the guard to tell whether the command changed it`,
+        unreadable: `the guard could not read the folder of marketplaces ${name} to tell whether the command added one`,
+      }[one.change]
+      judged.notes.push(`AI Install Guard: ${what}; a plugin from it is scanned as it is installed or updated`)
+      continue
+    }
     if (one.kind === 'plugin') {
       // The guard's own folder is not one it judges, as at the start of a session.
       if (normalizePath(one.root).replace(/\/+$/, '') === normalizePath($.plugin.root).replace(/\/+$/, '')) continue
@@ -395,6 +447,27 @@ async function filesIn(host: Host, folder: string): Promise<Map<string, string>>
   return out
 }
 
+/** The marketplace copies a folder holds, one name a line; empty when it is not there; UNREADABLE when it cannot be listed. */
+async function copiesOf(host: Host, folder: string): Promise<string> {
+  // Missing only when nothing is there; a look that fails any other way may hide a copy.
+  const there = await host.stat(folder).then(
+    () => true,
+    (error: unknown) => !/\b(?:ENOENT|ENOTDIR)\b/.test(error instanceof Error ? error.message : String(error)),
+  )
+  if (!there) return ''
+  const entries = await host.list(folder).catch(() => undefined)
+  if (entries === undefined) return UNREADABLE
+  return entries
+    .filter(entry => entry.kind === 'dir' && !entry.isLink)
+    .map(entry => entry.name)
+    .sort()
+    .join('\n')
+}
+
+function copiesIn(copies: string): string[] {
+  return copies === '' || copies.startsWith(UNREADABLE) ? [] : copies.split('\n')
+}
+
 /** The most entries a plugin folder is listed to; past it, the plugin is judged by its files. */
 const MAX_LISTED = 5000
 
@@ -403,10 +476,11 @@ const PARTIAL = 'partial '
 
 /**
  * A plugin folder as it lists, entry by entry (kind, size, when it changed),
- * with Claude Code's in-use marks at its root left out: cheap to take before
- * and after, where reading every file would not be.
+ * with Claude Code's in-use marks at its root left out, and for a
+ * marketplace's copy (`market`) its own git store, which a fetch changes:
+ * cheap to take before and after, where reading every file would not be.
  */
-async function listed(host: Host, root: string): Promise<string> {
+async function listed(host: Host, root: string, market: boolean): Promise<string> {
   const lines: string[] = []
   let partial = false
   const walk = async (dir: string, rel: string): Promise<void> => {
@@ -420,7 +494,8 @@ async function listed(host: Host, root: string): Promise<string> {
         partial = true
         return
       }
-      if (rel === '' && entry.name === '.in_use') continue
+      // Claude Code's in-use marks, and a marketplace copy's own git store, which a fetch changes.
+      if (rel === '' && (entry.name === '.in_use' || (market && entry.name === '.git'))) continue
       const path = rel === '' ? entry.name : `${rel}/${entry.name}`
       lines.push(`${entry.kind} ${entry.size} ${entry.mtimeMs ?? ''} ${entry.isLink ? 'link ' : ''}${path}`)
       if (entry.kind === 'dir' && !entry.isLink) await walk(`${dir}/${entry.name}`, path)

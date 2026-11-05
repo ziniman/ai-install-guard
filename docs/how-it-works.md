@@ -48,7 +48,7 @@ Text that writes about an attack is not read as one. A skill that warns about co
 | Threat | What gets flagged |
 |--------|-------------------|
 | Code execution | Shell hooks, MCP servers that download code or launch unpinned `npx` / `uvx` packages or container images, mods that run processes |
-| Data theft | Reads of `~/.ssh`, `~/.aws`, `.env`, keychains or secret env vars, combined with network calls; API keys an MCP server sends to a host that is not their own service |
+| Data theft | Reads of `~/.ssh`, `~/.aws`, `.env`, keychains or secret env vars, combined with network calls that can send them anywhere but the key's own service (a key followed to the one request that carries it, to its service's address or the base address you set for that service, is its use); API keys an MCP server sends to a host that is not their own service |
 | Prompt injection | Hidden instructions in skills, commands, agents and tool descriptions, including invisible Unicode |
 | Permission escalation | Mods that auto-approve tools, writes to Claude settings or permissions, skills granting broad `Bash` |
 | Persistence | Writes to shell rc files, crontab, launchd, systemd, git hooks, and where Claude Code loads plugins, skills and memory (`CLAUDE.md`) |
