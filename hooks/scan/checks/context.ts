@@ -134,6 +134,24 @@ function rootMarked(body: string): string {
     .replace(/\/{2,}/g, '/')
 }
 
+/** A character words are split at, kept in a word as one from the private use area, and given back. */
+const keptWhole = (text: string): string => text.replace(/[\s;&|()<>=,[\]{}]/g, char => String.fromCharCode(0xe000 + char.charCodeAt(0)))
+const givenBack = (word: string): string => word.replace(/[\ue000-\ue07f]/g, char => String.fromCharCode(char.charCodeAt(0) - 0xe000))
+
+/**
+ * A prompt's text as a shell reads its words: a character escaped with a
+ * backslash (`evil\ script.sh`) or inside quotes (`"evil script.sh"`) kept
+ * in its word, and the plugin's root as one mark.
+ */
+function shellWords(body: string): string {
+  return body
+    .replace(/(["'])(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b)\1|\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b/g, '\u0000')
+    .replace(/\\([\s;&|()<>=,[\]{}])/g, (_, char: string) => keptWhole(char))
+    .replace(/(["'])([^"'\n]*)\1/g, (_, quote: string, inner: string) => keptWhole(inner))
+    .replace(/["'`]/g, ' ')
+    .replace(/\/{2,}/g, '/')
+}
+
 const TEST_SEGMENTS = new Set(['test', 'tests', '__tests__', 'fixtures', '__fixtures__', 'testdata', 'spec', 'specs', 'e2e', 'test-support', 'testing', 'test-utils', 'test-helpers', '__mocks__', 'mocks'])
 
 const DOC_NAMES = /^(readme|changelog|changes|history|license|licence|copying|notice|contributing|code_of_conduct|security|authors)(\..*)?$/i
@@ -420,9 +438,12 @@ export function buildContext(tree: ScannedTree): ScanContext {
       }
     }
     const marked = rootMarked(body)
-    // Each word once: a long prompt repeats the same few.
+    // Each word once: a long prompt repeats the same few. Read both as text and as a shell reads it, so a quote in
+    // prose (it's) does not join a path to the words around it, and an escaped or quoted name is still found whole.
     const folders = [dirname(prompt), ...(readFrom.get(prompt) ?? [])]
-    for (const raw of new Set(marked.split(WORD_BREAK))) add(raw, folders)
+    const words = new Set(marked.split(WORD_BREAK))
+    if (/["'\\]/.test(body)) for (const word of new Set(shellWords(body).split(WORD_BREAK))) words.add(givenBack(word))
+    for (const raw of words) add(raw, folders)
     // After `cd` to the plugin's root, or a folder in it, the rest of the line is read from there.
     for (const found of marked.matchAll(/\bcd\s+\u0000(\/[^\s;&|()<>]*)?([^\n]*)/g)) {
       const folder = joinPath('', (found[1] ?? '').replace(/^\/+/, '').replace(/\/+$/, ''))

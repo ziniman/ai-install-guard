@@ -1287,6 +1287,10 @@ describe('PR review round eight', () => {
     for (const said of ['Run `"${CLAUDE_PLUGIN_ROOT}"/tests/run.sh`.', 'Run `cd "${CLAUDE_PLUGIN_ROOT}" && bash tests/run.sh`.', 'Run `cd ${CLAUDE_PLUGIN_ROOT}/tests && bash run.sh`.']) {
       expect(status(await scanFiles({ ...skill(said), 'tests/run.sh': pipeline }), 'code.execution')).toBe('fail')
     }
+    // PR review: a name with a space, escaped or quoted, is the one file the shell runs.
+    for (const said of ['Run `bash ../../tests/evil\\ script.sh`.', 'Run `bash "../../tests/evil script.sh"`.', 'Run `bash "${CLAUDE_PLUGIN_ROOT}/tests/evil script.sh"`.']) {
+      expect(status(await scanFiles({ ...skill(said), 'tests/evil script.sh': pipeline }), 'code.execution')).toBe('fail')
+    }
     // A bare path on another line is still the project's.
     expect(status(await scanFiles({ ...skill('Run `cd "${CLAUDE_PLUGIN_ROOT}"` to look around.\n\nThen run `bash tests/run.sh` in your project.'), 'tests/run.sh': pipeline }), 'code.execution')).not.toBe('fail')
   })
