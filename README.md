@@ -6,7 +6,7 @@
 
 **A Claude Code mod that steps in when you or Claude install a plugin, skill, marketplace or MCP server. It fetches the exact version, reads every file without running any of it, and holds the install until you approve. Install it once: nothing to run, nothing to remember.**
 
-[![AI Install Guard: No red flags at dcdc9a30fa10](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_dcdc9a30fa10-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:dcdc9a30fa10740076889c8f3146834276f26ae3a0f3b0b7b2ea3fa8360d5cce, read without this badge")
+[![AI Install Guard: No red flags at e54bf7728213](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_e54bf7728213-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:e54bf77282134e6294403c32be44b485a8c4d900bbd0aa5dfa84e78f51fedd8f, read without this badge")
 
 [![npm version](https://img.shields.io/npm/v/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
 [![npm downloads](https://img.shields.io/npm/dm/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
