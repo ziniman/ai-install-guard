@@ -1,14 +1,11 @@
 // The check of your configuration at the start of a session: each MCP server
-// in your .claude.json and in this folder's .mcp.json, and what each settings
-// file runs on its own (its hooks, status line, helper commands and the
-// environment variables that change what runs), compared with what you
-// approved. Claude Code reads these files as they are, so a change no gate
-// saw (a git pull, another program's installer, an edit made in a terminal)
-// starts its servers and runs its hooks before the guard can look. Like the
-// plugins check, this one runs beside the session: a server with no red flags
-// is named once, and anything else waits in the pane with Keep and Reject.
-// The tools of a server you rejected are refused from then on; a settings
-// file can only be named, as no one hook can be held back.
+// in your .claude.json and in this folder's .mcp.json, compared with what you
+// approved. Claude Code reads these files as they are, so a server no gate
+// saw added (a git pull, another program's installer, an edit made in a
+// terminal) starts before the guard can look. Like the plugins check, this
+// one runs beside the session: a server with no red flags is named once, and
+// anything else waits in the pane with Keep and Reject. The tools of a server
+// you rejected are refused from then on.
 
 import type { EngineInterface } from 'claude-code'
 
@@ -20,16 +17,15 @@ import { row } from '../scan/checks/types'
 import type { Host } from '../scan/host'
 import { safeLine } from '../scan/safe-text'
 import type { ScanReport } from '../scan/scan'
-import { laidHash, MCP_ROOT, mcpCandidate, settingsReport, settingsTree } from './gate'
+import { laidHash, MCP_ROOT, mcpCandidate } from './gate'
 import { day } from './load'
 import { mcpServerProblem } from './requests'
 import { expandHome } from './resolve'
-import { runsOf, settingsChange, stable } from './settings'
-import { landsAt, MAX_CONFIG_BYTES, normalizePath, parseObject, serversIn, slashed, type McpEntry } from './writes'
+import { landsAt, MAX_CONFIG_BYTES, normalizePath, serversIn, slashed, stable, type McpEntry } from './writes'
 
-/** An MCP server or a settings file in your configuration that you have not approved. */
+/** An MCP server in your configuration that you have not approved, or a configuration file the guard could not read. */
 export type FoundConfig = {
-  /** `mcp <scope> <name>`, `settings <path>` or `file <path>`: what it is, and how to remove it. */
+  /** `mcp <scope> <name>` or `file <path>`: what it is, and how to remove it. */
   key: string
   label: string
   /** The tree hash the pane keeps its decision under; absent when it could not be read. */
@@ -44,8 +40,6 @@ export type FoundConfig = {
   how?: ScanHow
   /** What the check found, shown in the pane as it is rather than made again. */
   report?: ScanReport
-  /** The pane's line for where it was found, when not at the start of a session: a change a command Claude ran made. */
-  display?: string
 }
 
 /** A configured MCP server as its tools are named: what the tool hook refuses by. */
@@ -66,36 +60,23 @@ const BASELINE = 'config-baseline'
 type Baseline = { at: number; waiting: { treeHash: string; why: string }[] }
 const MAX_WAITING = 200
 
-/**
- * What each settings file ran when you last approved it, newest first, so a
- * change is shown as what it adds and takes away.
- */
-const KEPT = 'settings-kept'
-type Kept = { path: string; runs: string }[]
-const MAX_KEPT = 50
-const MAX_KEPT_CHARS = 64 * 1024
-
 /** A server name a command can be given as one word. */
 const SERVER_NAME = /^[A-Za-z0-9][\w.-]{0,63}$/
 
 /**
- * One MCP server or settings file, read and hashed but not yet judged.
- * `treeHash` is what the pane keeps a decision under; `hashes` holds it
- * first, then each other form an approval of the same thing was kept under.
+ * One MCP server, read and hashed but not yet judged. `treeHash` is what the
+ * pane keeps a decision under; `hashes` holds it first, then each other form
+ * an approval of the same server was kept under.
  */
-type Unit =
-  | { kind: 'mcp'; key: string; label: string; treeHash: string; hashes: string[]; how: Extract<ScanHow, { files: unknown }>; tools: string }
-  /** `treeHash` pins what the file runs; `hashes` adds the whole file, as the write gate pins it. */
-  | { kind: 'settings'; key: string; label: string; treeHash: string; hashes: string[]; path: string; runs: Record<string, unknown>; runsText: string }
+type Unit = { key: string; label: string; treeHash: string; hashes: string[]; how: Extract<ScanHow, { files: unknown }>; tools: string }
 
 /**
- * Compares every MCP server and settings file in your configuration with
- * what you approved. Each is named once: a server with no red flags, each
- * rejection, and, at the first check on this machine, everything already
- * there, since you chose those before the guard looked. After that, a new or
- * changed one with a red flag, or a settings file that runs something new or
- * no longer runs something you approved, waits each session until you
- * decide. A file that cannot be read waits as Could not verify.
+ * Compares every MCP server in your configuration with what you approved.
+ * Each is named once: a server with no red flags, each rejection, and, at the
+ * first check on this machine, everything already there, since you chose
+ * those before the guard looked. After that, a new or changed one with a red
+ * flag waits each session until you decide. A file that cannot be read waits
+ * as Could not verify.
  */
 export async function checkConfigured($: EngineInterface, place: ConfigPlace, lookups: boolean): Promise<ConfigCheck> {
   const host = modHost($)
@@ -103,46 +84,35 @@ export async function checkConfigured($: EngineInterface, place: ConfigPlace, lo
   const decisions = await loadDecisions($)
   const known = await loadBaseline($)
   const baseline = known === undefined
-  const kept = await loadKept($)
   const waiting: Baseline['waiting'] = []
   const found: FoundConfig[] = [...unreadable]
   const checked: string[] = []
   for (const unit of units) {
-    // A file that runs nothing, and ran nothing you approved, has nothing to judge.
-    if (unit.kind === 'settings' && Object.keys(unit.runs).length === 0 && !kept.some(item => item.path === unit.path)) continue
     // Decisions are kept newest first: the newest for any form of it stands.
     const decided = decisions.find(item => unit.hashes.includes(item.treeHash))
-    if (decided?.decision === 'approved') {
-      if (unit.kind === 'settings') await keep($, kept, unit)
-      continue
-    }
-    const how: ScanHow = unit.kind === 'mcp' ? unit.how : { files: {}, root: unit.path, kind: 'settings' }
-    const base = { key: unit.key, label: unit.label, treeHash: unit.treeHash, how }
-    const report = unit.kind === 'settings' ? await settingsFound(unit, kept) : undefined
-    const shown = report === undefined ? {} : { report }
+    if (decided?.decision === 'approved') continue
+    const base = { key: unit.key, label: unit.label, treeHash: unit.treeHash, how: unit.how }
     // Kept every session, so /guard held lists it; named once, by when it was rejected.
     if (decided?.decision === 'rejected') {
       const fresh = await noteChecked($, `rejected ${decided.treeHash} ${decided.decidedAt}`)
-      found.push({ ...base, ...shown, why: `you rejected it on ${day(decided.decidedAt)}`, rejected: true, ...(fresh ? {} : { quiet: true as const }) })
+      found.push({ ...base, why: `you rejected it on ${day(decided.decidedAt)}`, rejected: true, ...(fresh ? {} : { quiet: true as const }) })
       continue
     }
     const before = known?.waiting.find(item => item.treeHash === unit.treeHash)
     if (before !== undefined) {
-      found.push({ ...base, ...shown, why: before.why, quiet: true })
+      found.push({ ...base, why: before.why, quiet: true })
       continue
     }
-    if (unit.kind === 'mcp' && (await wasChecked($, unit.treeHash))) continue
-    const judged = report ?? (await scanOnly(host, unit.label, how, { lookups }).catch((error: unknown) => (error instanceof Error ? error.message : String(error))))
+    if (await wasChecked($, unit.treeHash)) continue
+    const judged = await scanOnly(host, unit.label, unit.how, { lookups }).catch((error: unknown) => (error instanceof Error ? error.message : String(error)))
     // Its hash is known all the same, so a rejection of it is kept, and its tools refused.
     if (typeof judged === 'string') {
       found.push({ ...base, why: `the scan failed (${safeLine(judged)})` })
       continue
     }
     if (judged.verdict.kind === 'safe') {
-      // A server is named once; a settings file that only runs less is taken as what it now runs.
-      if (unit.kind === 'mcp') {
-        if (await noteChecked($, unit.treeHash)) checked.push(unit.label)
-      } else await keep($, kept, unit)
+      // Named once.
+      if (await noteChecked($, unit.treeHash)) checked.push(unit.label)
       continue
     }
     const why = judged.verdict.recommendation
@@ -171,7 +141,7 @@ export async function configuredNow($: EngineInterface, place: ConfigPlace): Pro
  */
 export async function configuredServers($: EngineInterface, place: ConfigPlace): Promise<{ servers: ServerTools[]; blind: boolean }> {
   const { units, unreadable } = await readUnits(modHost($), place)
-  const servers = units.flatMap(unit => (unit.kind === 'mcp' ? [{ key: unit.key, label: unit.label, tools: unit.tools, hashes: unit.hashes }] : []))
+  const servers = units.map(unit => ({ key: unit.key, label: unit.label, tools: unit.tools, hashes: unit.hashes }))
   return { servers, blind: unreadable.some(item => /(?:^|\/)\.(?:claude|mcp)\.json$/.test(item.key)) }
 }
 
@@ -200,10 +170,9 @@ export function toolsOf(name: string): string {
 
 /**
  * Reads the configuration: your MCP servers and this folder's in your
- * .claude.json, this folder's .mcp.json, and your own and this folder's
- * settings files. An administrator's managed settings are theirs. A file
- * that does not parse holds nothing Claude Code could use; one that is there
- * but cannot be read is named as such.
+ * .claude.json, and this folder's .mcp.json. An administrator's managed
+ * servers are theirs. A file that does not parse holds nothing Claude Code
+ * could use; one that is there but cannot be read is named as such.
  */
 async function readUnits(host: Host, place: ConfigPlace): Promise<{ units: Unit[]; unreadable: FoundConfig[] }> {
   const home = await expandHome(host, '~')
@@ -239,23 +208,7 @@ async function readUnits(host: Host, place: ConfigPlace): Promise<{ units: Unit[
     const problem = mcpServerProblem(entry.name, entry.server)
     const how = problem === undefined ? laid : { ...laid, notes: [...(laid.notes ?? []), problemRow(problem)] }
     const hashes = await serverHashes(entry, folders)
-    units.push({ kind: 'mcp', key: `mcp ${scope} ${entry.name}`, label, treeHash: hashes[0] as string, hashes, how, tools: toolsOf(entry.name) })
-  }
-  const files = new Set<string>()
-  // Your own folder's settings, then this folder's shared and personal ones.
-  const yours = place.configDir ?? `${home}/.claude`
-  const folder = `${place.cwd}/.claude`
-  for (const raw of [`${yours}/settings.json`, `${folder}/settings.json`, `${folder}/settings.local.json`]) {
-    const { path, text } = await read(raw)
-    // Started in the home folder, the folder's settings are your own: read once.
-    if (files.has(path)) continue
-    files.add(path)
-    // A file gone, or one that does not parse, runs nothing: what it ran before is then taken away.
-    const parsed = parseObject(text ?? '')
-    const runs = parsed === undefined ? {} : runsOf(parsed)
-    const runsText = stable(runs)
-    const [pinned, whole] = await Promise.all([settingsTree(path, runsText), settingsTree(path, text ?? '')])
-    units.push({ kind: 'settings', key: `settings ${path}`, label: `settings file ${safeLine(path)}`, treeHash: pinned.hash, hashes: [pinned.hash, whole.hash], path, runs, runsText })
+    units.push({ key: `mcp ${scope} ${entry.name}`, label, treeHash: hashes[0] as string, hashes, how, tools: toolsOf(entry.name) })
   }
   return { units, unreadable }
 }
@@ -317,34 +270,6 @@ export function problemRow(problem: string) {
   )
 }
 
-/**
- * A settings file's report: what it runs now that it did not when you last
- * approved it, and what it no longer runs, or all it runs when you never did.
- */
-async function settingsFound(unit: Extract<Unit, { kind: 'settings' }>, kept: Kept): Promise<ScanReport> {
-  const earlier = kept.find(item => item.path === unit.path)?.runs
-  const before = earlier === undefined ? undefined : parseObject(earlier)
-  const evidence = settingsChange(before ?? {}, unit.runs, safeLine(unit.path))
-  const title = before === undefined ? 'What this file runs on its own' : 'What changed in what it runs since you approved it'
-  return settingsReport(unit.label, unit.path, unit.runsText, evidence, title)
-}
-
-/** Remembers what a settings file runs as approved, so its next change is shown against it. */
-async function keep($: EngineInterface, kept: Kept, unit: Extract<Unit, { kind: 'settings' }>): Promise<void> {
-  const at = kept.findIndex(item => item.path === unit.path)
-  if (at !== -1 && kept[at]?.runs === unit.runsText) return
-  if (at !== -1) kept.splice(at, 1)
-  // One too large to keep is shown whole next time.
-  if (unit.runsText.length <= MAX_KEPT_CHARS) kept.unshift({ path: unit.path, runs: unit.runsText })
-  kept.splice(MAX_KEPT)
-  await $.store.set(KEPT, kept)
-}
-
-async function loadKept($: EngineInterface): Promise<Kept> {
-  const stored = await $.store.get(KEPT)
-  return Array.isArray(stored) ? (stored as unknown[]).filter((item): item is Kept[number] => isRecord(item) && typeof item.path === 'string' && typeof item.runs === 'string') : []
-}
-
 async function loadBaseline($: EngineInterface): Promise<Baseline | undefined> {
   const stored = await $.store.get(BASELINE)
   if (stored == null) return undefined
@@ -391,7 +316,7 @@ export function toReviewConfig(found: readonly FoundConfig[]): FoundConfig | und
  * you; says whether the pane shows it.
  */
 export async function reviewConfig($: EngineInterface, item: FoundConfig, lookups: boolean): Promise<boolean> {
-  const request: GuardRequest = { origin: 'command', args: item.key, label: item.label, subject: 'configured', display: item.display ?? `In your configuration, not approved: ${item.label}` }
+  const request: GuardRequest = { origin: 'command', args: item.key, label: item.label, subject: 'configured', display: `In your configuration, not approved: ${item.label}` }
   const options = { action: 'approve' as const, request, lookups, report: item.report, ifFree: true }
   if (item.how === undefined || item.treeHash === undefined) return !(await showUnverified($, item.label, item.why, options)).superseded
   return !(await showScan($, item.label, item.how, options)).superseded
@@ -446,17 +371,13 @@ function removal(key: string, refuses: boolean): string {
     if (!SERVER_NAME.test(name)) return `${refused}remove it in /mcp`
     return `${refused}claude mcp remove ${name} -s ${scope}${scope === 'local' ? ', run in this folder,' : ''} removes it`
   }
-  const path = safeLine(key.slice(key.indexOf(' ') + 1))
-  if (kind === 'file') return `the guard could not read ${path}, so nothing in it was judged`
-  if (kind === 'prompt') return `the guard does not change your files itself: delete ${path}, or restore what it held, to take it away`
-  return `the guard cannot hold back one hook on its own: remove what you do not want from ${path}`
+  return `the guard could not read ${safeLine(key.slice(key.indexOf(' ') + 1))}, so nothing in it was judged`
 }
 
-/** `2 MCP servers and 1 settings file`, by what each one is. */
+/** `2 MCP servers and 1 configuration file`, by what each one is. */
 function nouns(items: readonly { key: string }[]): string {
   const kinds = [
     ['mcp', 'MCP server'],
-    ['settings', 'settings file'],
     ['file', 'configuration file'],
   ] as const
   return kinds

@@ -5,7 +5,7 @@ The [README](../README.md) covers what the guard does, how to install it, the sh
 | Page | What is in it |
 |------|---------------|
 | [How it works](how-it-works.md) | Why it exists, the four steps from fetch to install, what each verdict means, and the threats it checks for |
-| [Where it steps in](gates.md) | Every place the guard holds something: `/plugin`, Claude's own `claude plugin` and `claude mcp add` commands, Claude's writes, settings changes and shell commands |
+| [Where it steps in](gates.md) | Every place the guard holds something: `/plugin`, Claude's own `claude plugin` and `claude mcp add` commands, MCP servers Claude writes, mods as they load, skills on their first use, and the check at the start of a session |
 | [Commands and the pane](commands.md) | Every `/guard` command, how a remote scan is fetched, and the pane's buttons |
 | [Use it in Claude chat](claude-chat.md) | The same scanner as an Agent Skill for Claude chat, and as a command-line script |
 | [Review badge](badge.md) | Showing that your own plugin was scanned, and why the guard never trusts a badge |

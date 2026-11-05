@@ -2,8 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, test, type Engine } from 'claude-code/testing'
 
 import { configToast, rejectedNote } from './gate/configured'
-import { mcpCandidate, settingsTree } from './gate/gate'
-import { runsOf, stable } from './gate/settings'
+import { mcpCandidate } from './gate/gate'
 import { PANE_ID } from './guard/view'
 import { takeInventory } from './scan/inventory'
 import { virtualHost } from './scan/virtual-host'
@@ -11,8 +10,6 @@ import { HOME, paneProps, serveFixture, serveUi, typed, type FixtureFiles } from
 
 const PROJECT = `${HOME}/proj`
 const USER_CONFIG = `${HOME}/.claude.json`
-const USER_SETTINGS = `${HOME}/.claude/settings.json`
-const PROJECT_SETTINGS = `${PROJECT}/.claude/settings.json`
 
 /** Starts a program the scan reads no further: nothing to flag. */
 const PLAIN = { command: 'node', args: ['/opt/notes/server.js'] }
@@ -27,11 +24,6 @@ const b64 = (value: unknown) => ({ base64: btoa(typeof value === 'string' ? valu
 async function serverHash(name: string, scope: string, server: Record<string, unknown>): Promise<string> {
   const how = mcpCandidate([{ name, scope, server }])
   return (await takeInventory(virtualHost(how.root, how.files), how.root)).inventory.treeHash
-}
-
-/** The tree hash a settings file's decisions are kept under: what it runs, or the whole file as the write gate pins it. */
-async function settingsHash(path: string, settings: Record<string, unknown>, whole = false): Promise<string> {
-  return (await settingsTree(path, whole ? JSON.stringify(settings, null, 2) : stable(runsOf(settings)))).hash
 }
 
 function decision(target: string, treeHash: string, decision: 'approved' | 'rejected') {
@@ -144,53 +136,14 @@ describe('gate F: your configuration at the start of a session', () => {
     expect(await held($)).toContain('MCP server notes (project scope): you rejected it on 2026-10-20; the guard refuses its tools; claude mcp remove notes -s project removes it')
   })
 
-  test('a settings file that runs a command waits, and Keep approves what it runs, whatever else changes in it', async ($, on) => {
-    world(on, { 'proj/.claude/settings.json': b64({ theme: 'dark', ...HOOKED }) })
-    const stored = store(on)
+  test('settings files are your own configuration: what their hooks run is not read or asked about', async ($, on) => {
+    world(on, { '.claude/settings.json': b64(HOOKED), 'proj/.claude/settings.json': b64({ env: { NODE_OPTIONS: '--require /tmp/x.js' } }) })
+    store(on, { 'config-baseline': undefined })
     const ui = serveUi(on)
 
-    await start($)
-    expect(ui.toasts).toContain(`AI Install Guard found 1 settings file in your configuration that you have not approved: settings file ${PROJECT_SETTINGS}. The pane shows the first: keep it, or reject it. /guard held lists them all.`)
-    const pane = await mountPane($)
-    expect(await pane.find({ type: 'Text', text: 'What this file runs on its own' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: /runs echo checked on PreToolUse/ })).toBeDefined()
-    await pane.press({ key: 'install' })
-    expect(ui.toasts).toContain(`AI Install Guard: kept settings file ${PROJECT_SETTINGS}`)
-    // Pinned to what it runs, so a theme changed later asks nothing.
-    expect(stored.get('decisions')).toMatchObject([{ decision: 'approved', treeHash: await settingsHash(PROJECT_SETTINGS, HOOKED), root: PROJECT_SETTINGS }])
-  })
-
-  test('a settings file changed since you approved it shows only what changed', async ($, on) => {
-    const before = HOOKED
-    const after = { hooks: { ...HOOKED.hooks, Stop: [{ hooks: [{ type: 'command', command: 'say done' }] }] } }
-    world(on, { '.claude/settings.json': b64(after) })
-    store(on, { decisions: [decision('settings', await settingsHash(USER_SETTINGS, before), 'approved')], 'settings-kept': [{ path: USER_SETTINGS, runs: stable(runsOf(before)) }] })
-    serveUi(on)
-
-    await start($)
-    const pane = await mountPane($)
-    expect(await pane.find({ type: 'Text', text: 'What changed in what it runs since you approved it' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: /runs say done on Stop/ })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: /echo checked/ })).toBeUndefined()
-  })
-
-  test('a settings file Claude changed and you approved at the write gate is not asked about again', async ($, on) => {
-    world(on, { '.claude/settings.json': b64(HOOKED) })
-    const stored = store(on, { decisions: [decision('settings', await settingsHash(USER_SETTINGS, HOOKED, true), 'approved')] })
-    const ui = serveUi(on)
-
-    await start($)
+    expect(await start($)).toBe('AI Install Guard: no mod was kept from loading in this session, and no plugin or configuration waits for a decision.')
     expect(ui.toasts).toEqual([])
-    expect(stored.get('settings-kept')).toEqual([{ path: USER_SETTINGS, runs: stable(runsOf(HOOKED)) }])
-  })
-
-  test('settings that run nothing, and a folder whose settings are your own, are read once and judged by what runs', async ($, on) => {
-    world(on, { '.claude/settings.json': b64({ theme: 'dark', hooks: {} }) })
-    store(on)
-    const ui = serveUi(on)
-
-    await start($, HOME)
-    expect(ui.toasts).toEqual([])
+    expect(ui.opened).toEqual([])
   })
 
   test('a configuration file the guard cannot read is named as Could not verify', async ($, on) => {
@@ -205,7 +158,7 @@ describe('gate F: your configuration at the start of a session', () => {
   })
 
   test('the first check on a machine names everything in one note and opens no pane; /guard held opens them later', async ($, on) => {
-    world(on, { '.claude.json': b64({ mcpServers: { notes: PLAIN, search: LOOSE } }), '.claude/settings.json': b64(HOOKED) })
+    world(on, { '.claude.json': b64({ mcpServers: { notes: PLAIN, search: LOOSE, docs: { command: 'npx', args: ['-y', '@acme/docs'] } } }) })
     const stored = store(on, { 'config-baseline': undefined })
     const ui = serveUi(on)
 
@@ -213,9 +166,9 @@ describe('gate F: your configuration at the start of a session', () => {
     expect(stored.get('config-baseline')).toMatchObject({ waiting: [{ why: 'Worth a look' }, { why: 'Worth a look' }] })
     // The note says /guard held opens them: the check opened none itself.
     expect(ui.toasts[0]).toBe(
-      `AI Install Guard looked at the 2 MCP servers and 1 settings file in your configuration that it had not checked: 1 with no red flags, and 2 worth your look when you like: MCP server search (user scope), settings file ${USER_SETTINGS}. /guard held opens them one at a time. From now on, it checks one that is new or changed as a session starts.`,
+      'AI Install Guard looked at the 3 MCP servers in your configuration that it had not checked: 1 with no red flags, and 2 worth your look when you like: MCP server search (user scope), MCP server docs (user scope). /guard held opens them one at a time. From now on, it checks one that is new or changed as a session starts.',
     )
-    expect(answer).toContain('found these in your configuration that you have not approved:\n  MCP server search (user scope): Worth a look\n  settings file')
+    expect(answer).toContain('found these in your configuration that you have not approved:\n  MCP server search (user scope): Worth a look\n  MCP server docs (user scope)')
     expect(answer).toContain("The MCP server search (user scope) is in the guard's pane")
     expect(ui.opened).toContain(PANE_ID)
   })
@@ -288,18 +241,6 @@ describe('gate F: your configuration at the start of a session', () => {
     expect(kept).toEqual(expect.arrayContaining([await serverHash('notes', `project ${PROJECT}`, LOOSE), await serverHash('search', `project ${PROJECT}`, config.mcpServers.search)]))
   })
 
-  test('a settings file whose last approved hook is taken away, or that sets a variable that changes what runs, waits', async ($, on) => {
-    world(on, { '.claude/settings.json': b64({ theme: 'dark' }), 'proj/.claude/settings.json': b64({ env: { NODE_OPTIONS: '--require /tmp/x.js', EDITOR: 'vim' } }) })
-    store(on, { 'settings-kept': [{ path: USER_SETTINGS, runs: stable(runsOf(HOOKED)) }] })
-    serveUi(on)
-
-    const answer = await start($)
-    expect(answer).toContain(`settings file ${USER_SETTINGS}: Worth a look`)
-    expect(answer).toContain(`settings file ${PROJECT_SETTINGS}: Do not install`)
-    const pane = await mountPane($)
-    expect(await pane.find({ type: 'Text', text: /no longer runs echo checked on PreToolUse/ })).toBeDefined()
-  })
-
   test('a file the guard may not look at is named, not taken as missing, and one readable again is no longer listed', async ($, on) => {
     let broken = true
     world(on, { '.claude.json': b64({ mcpServers: { notes: PLAIN } }) }, { statFails: path => broken && path === USER_CONFIG })
@@ -333,7 +274,7 @@ describe('what Reject says, and what the guard keeps', () => {
 
   test('over the limit, the oldest approval goes before any rejection', async ($, on) => {
     const at = (n: number, kind: 'approved' | 'rejected') => ({ ...decision(`d${n}`, `sha256:${n}`, kind), decidedAt: n })
-    world(on, { 'proj/.claude/settings.json': b64(HOOKED) })
+    world(on, { '.claude.json': b64({ mcpServers: { search: LOOSE } }) })
     const stored = store(on, { decisions: [...Array.from({ length: 499 }, (_, n) => at(1000 - n, 'approved')), at(1, 'rejected')] })
     serveUi(on)
 
@@ -341,7 +282,7 @@ describe('what Reject says, and what the guard keeps', () => {
     await (await mountPane($)).press({ key: 'install' })
     const kept = stored.get('decisions') as { treeHash: string }[]
     expect(kept.length).toBe(500)
-    expect(kept[0]?.treeHash).toBe(await settingsHash(PROJECT_SETTINGS, HOOKED))
+    expect(kept[0]?.treeHash).toBe(await serverHash('search', 'user', LOOSE))
     expect(kept.at(-1)?.treeHash).toBe('sha256:1')
     expect(kept.some(item => item.treeHash === `sha256:${1000 - 498}`)).toBe(false)
   })

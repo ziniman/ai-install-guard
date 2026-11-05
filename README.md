@@ -4,9 +4,9 @@
 
 # AI Install Guard
 
-**A Claude Code mod that runs in the background. Install it once, and every `/plugin install`, marketplace and MCP server, yours or Claude's, and every skill or settings change Claude makes, is checked before it lands: nothing to run, nothing to remember.**
+**A Claude Code mod that steps in when you or Claude install a plugin, skill, marketplace or MCP server. It fetches the exact version, reads every file without running any of it, and holds the install until you approve. Install it once: nothing to run, nothing to remember.**
 
-[![AI Install Guard: No red flags at dcdc9a30fa10](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_dcdc9a30fa10-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:dcdc9a30fa10740076889c8f3146834276f26ae3a0f3b0b7b2ea3fa8360d5cce, read without this badge")
+[![AI Install Guard: No red flags at ee80f80d7edd](https://img.shields.io/badge/AI_Install_Guard-no_red_flags_%C2%B7_ee80f80d7edd-2ea44f)](https://github.com/ziniman/ai-install-guard#review-badge "Scanned content sha256:ee80f80d7edd32ffcf6e9ddc7bc77fa8b0709da10f5a02601619f089aec36885, read without this badge")
 
 [![npm version](https://img.shields.io/npm/v/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
 [![npm downloads](https://img.shields.io/npm/dm/ai-install-guard?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/ai-install-guard)
@@ -34,11 +34,11 @@ Everything you add to Claude Code runs with your permissions: a plugin's hooks r
 AI Install Guard lives inside Claude Code instead. When something new is about to be added, it fetches the exact version, reads every file without running any of it, and holds it until you press **Install** or **Reject**.
 
 - **Automatic.** No command to run first: from the moment it is installed, it is in the way of every install.
-- **It catches Claude too.** What Claude adds on its own is checked like what you type, and waits for you unless it is something Claude wrote itself with no red flags.
+- **It catches Claude too.** A plugin, marketplace or MCP server Claude installs on its own is checked like one you install, and waits for you.
 - **Pinned.** A verdict belongs to one commit and content hash, and only that version installs.
 - **Local and open.** No account or server, and every check is in this repository.
 
-It holds `/plugin install` and `/plugin marketplace add`, and, when Claude does them: plugin installs, MCP servers it adds, skills, commands and agents it writes with a red flag, settings changes that widen what it may run, and the same changes made with a shell command. A mod that loads with files you never approved (picked from the `/plugin` menu, updated on its own, changed in place) is kept off until you approve it, a skill that came with no install (from a repository you cloned, copied in by hand) is checked as it is first used, and a plugin that is on but new or changed since the guard last looked (updated on its own, installed from a terminal) is checked as a session starts, as are the MCP servers and hooks in your configuration (brought by a `git pull`, written by another program's installer). A plugin picked from the menu is not scanned before it installs, so type `/plugin install <name>@<marketplace>` instead. [Where it steps in](docs/gates.md) has every case.
+It holds `/plugin install` and `/plugin marketplace add`, and, when Claude does them: `claude plugin install`, `claude plugin marketplace add`, `claude mcp add`, and an MCP server it writes into your configuration. What arrives another way is checked before it first runs: a mod that loads with files you never approved (picked from the `/plugin` menu, updated on its own, changed in place) is kept off until you approve it, and a skill that came with no install (from a repository you cloned, copied in by hand) is checked as it is first used. A plugin that is on but new or changed since the guard last looked (updated on its own, installed from a terminal) is checked as a session starts, as are the MCP servers in your configuration (brought by a `git pull`, written by another program's installer). A plugin picked from the menu is not scanned before it installs, so type `/plugin install <name>@<marketplace>` instead. [Where it steps in](docs/gates.md) has every case.
 
 ## Using it
 
@@ -74,10 +74,10 @@ A security tool should be held to its own rules. Everything this mod uses, as `c
 | Capability | Why |
 |------------|-----|
 | `process.run` | Runs `git` to fetch the exact commit being scanned into its own temporary folder, the `claude` command to validate a candidate, to find where a plugin comes from and to list the plugins that are on, `readlink` to see where a link points, and `printenv` to find your home folder. It never runs anything from a candidate. |
-| `fs.read`, `fs.list`, `fs.stat` | Reads the files it scans, where a file Claude is about to write would really land, and, as a session starts, your configuration files. It writes no files itself. |
+| `fs.read`, `fs.list`, `fs.stat` | Reads the files it scans, an MCP configuration Claude is about to write, and, as a session starts, the MCP servers in your configuration. It writes no files itself. |
 | `command.run` | Intercepts `/plugin` to hold an install, and runs your own `/plugin` command again once you approve it, or `/plugin disable` when you turn off a plugin it found on. Sees every other slash command too, to check a skill or command by that name before it runs, and answers only one it holds. |
-| `tool.call` | Reads each shell command and file write Claude is about to make, and refuses only those that add something where Claude Code loads from, until you approve. Checks each skill Claude is about to run the same way, and refuses the tools of an MCP server you rejected. |
-| `classic.CwdChanged` | Notes the folder Claude's shell commands run in, so a relative path is read where it lands. |
+| `tool.call` | Reads each shell command Claude is about to run for an install, and each file it writes for an MCP server added to your configuration, and refuses those until you approve. Checks each skill Claude is about to run the same way, and refuses the tools of an MCP server you rejected. Every other command and file goes on untouched. |
+| `classic.CwdChanged` | Notes the folder Claude's shell commands run in, so a skill in that folder's `.claude` is checked too. |
 | `plugin.register` | Checks each mod Claude Code is about to load, and keeps out one whose files are not a version you approved. |
 | `skill.prompt` | Checks a skill that came with no install (yours, a repository's) again as its instructions load, for one found where the slash command and the Skill tool did not look, and holds one with a red flag until you approve it. |
 | `http.fetch` | Reads a GitHub repository's public details (age, stars, whether the commit is signed) and, only if you turn them on, the [outside lookups](docs/permissions.md#outside-lookups). |

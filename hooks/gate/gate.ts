@@ -1,24 +1,19 @@
-// The install gate: an install asked for by `/plugin` or by a shell command
-// Claude runs is let through only when the person already approved that exact
-// version. Anything else is scanned and held in the pane, where Install
-// carries it out.
+// The install gate: an install asked for by `/plugin`, by a shell command
+// Claude runs, or by Claude writing an MCP server into a configuration, is
+// let through only when the person already approved that exact version.
+// Anything else is scanned and held in the pane, where Install carries it out.
 
 import type { EngineInterface } from 'claude-code'
 
 import type { GuardRequest } from '../../types'
-import { decisionFor, noteChecked, pinnedDecision } from '../guard/decisions'
+import { pinnedDecision } from '../guard/decisions'
 import { takePass } from '../guard/passes'
-import { scanOnly, showScan, showUnverified, type PaneState, type ScanHow, type ShowOptions, type Shown } from '../guard/run'
-import type { Host } from '../scan/host'
-import { landsAt, readWrite, type WriteReading } from './writes'
-import type { ShellChange } from './shell-change'
+import { showScan, showUnverified, type PaneState, type ScanHow, type ShowOptions, type Shown } from '../guard/run'
+import type { WriteReading } from './writes'
 import type { RemoteSpec } from '../scan/remote'
-import { sha256Hex, treeHash } from '../scan/hash'
-import { takeInventory, type InventoryEntry } from '../scan/inventory'
+import { takeInventory } from '../scan/inventory'
 import { virtualHost } from '../scan/virtual-host'
-import type { ScanReport } from '../scan/scan'
-import { decide } from '../scan/verdict'
-import { row, type CheckResult, type Evidence } from '../scan/checks/types'
+import { row, type CheckResult } from '../scan/checks/types'
 import { sourceRoot } from '../guard/view'
 import { modHost } from '../mod-host'
 import { resolvePin } from '../scan/remote'
@@ -87,116 +82,20 @@ async function judgeRemote($: EngineInterface, name: string, wanted: RemoteSpec,
 }
 
 /**
- * What the guard does with a file Claude is about to write where Claude Code
- * loads from. An MCP server written into a configuration is held, as one
- * added by command is. A skill, command or agent Claude writes itself is
- * scanned first with no pane and goes through, with a note, when the scan
- * finds nothing; otherwise it is held. A change to an installed plugin is
- * held as Could not verify.
+ * What the guard does with an MCP server Claude is about to write into a
+ * configuration: held, as one added by command is, until the person approves
+ * that exact configuration.
  */
-export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReading, { kind: 'pass' }>, request: GuardRequest, lookups: boolean, copied = false): Promise<Judgement> {
+export async function judgeWrite($: EngineInterface, reading: Exclude<WriteReading, { kind: 'pass' }>, request: GuardRequest, lookups: boolean): Promise<Judgement> {
   if (await takePass($, { origin: request.origin, args: request.args })) return { kind: 'allow', note: `AI Install Guard: writing ${request.label}, as you allowed` }
   const options = { action: 'install' as const, request, lookups }
   if (reading.kind === 'unreadable') {
     const shown = await showUnverified($, reading.label, reading.reason, options)
     return shown.superseded ? superseded(request) : hold(request, UNVERIFIED, '', shown, { why: reading.reason, toClaude: true })
   }
-  if (reading.kind === 'mcp') {
-    // Several servers written at once are decided together, and the decision holds for each, as the check at a session's start judges them one at a time.
-    const parts = reading.servers.length < 2 ? undefined : await Promise.all(reading.servers.map(server => laidHash(mcpCandidate([server]))))
-    return afterScan(request, reading.label, await showScan($, reading.label, mcpCandidate(reading.servers), { ...options, ...(parts === undefined ? {} : { parts }) }))
-  }
-  // A settings change that widens what Claude may do always waits, judged by what it widens.
-  if (reading.kind === 'settings') {
-    const how: ScanHow = { files: {}, root: reading.path, kind: 'settings change' }
-    const report = await settingsReport(reading.label, reading.path, reading.content, reading.evidence, 'What the change lets Claude do')
-    return afterScan(request, reading.label, await showScan($, reading.label, how, { ...options, report }))
-  }
-  // Text Claude writes itself goes on when it has no red flags; text copied from elsewhere is always shown.
-  return scanThenHold($, reading.label, await promptCandidate(modHost($), reading), request, options, !copied)
-}
-
-/**
- * Scans `how` first with no pane: what was approved before goes on, and so
- * does what has no red flags when `quiet`; anything else is held in the pane.
- */
-async function scanThenHold($: EngineInterface, label: string, how: ScanHow, request: GuardRequest, options: ShowOptions, quiet: boolean): Promise<Judgement> {
-  const first = await scanOnly(modHost($), label, how, { lookups: options.lookups }).catch(() => undefined)
-  if (quiet && first?.verdict.kind === 'safe') {
-    // Named now, so its first use does not name it again.
-    if (first.inventory !== undefined) await noteChecked($, first.inventory.treeHash).catch(() => false)
-    return { kind: 'allow', note: `AI Install Guard: checked ${label}: No red flags` }
-  }
-  if (first?.inventory !== undefined) {
-    const earlier = await decisionFor($, { treeHash: first.inventory.treeHash }, first.verdict.kind).catch(() => undefined)
-    if (earlier?.decision === 'approved') return { kind: 'allow', note: `AI Install Guard: you approved ${label} on ${day(earlier.decidedAt)}; writing it` }
-  }
-  return afterScan(request, label, await showScan($, label, how, { ...options, ...(first === undefined ? {} : { report: first }) }))
-}
-
-/**
- * What the guard does with a shell command that changes where Claude Code
- * loads from. Text it writes is judged as Claude's Write of it would be; a
- * file it copies, as text copied in, is always shown, but into a skill or
- * command; a folder copied in, or a repository cloned, is scanned and held;
- * a change to skills or commands it cannot read goes on with a note, since
- * the skill gate checks them before they are used; anything else is Could
- * not verify, which Install anyway lets through once, as that exact command.
- */
-export async function judgeShell($: EngineInterface, change: Exclude<ShellChange, { kind: 'pass' | 'watch' }>, command: string, lookups: boolean): Promise<Judgement> {
-  if (change.kind === 'note') return { kind: 'allow', note: change.note }
-  const request = (label: string): GuardRequest => ({ origin: 'tool', args: command, label, subject: 'command' })
-  if (change.kind === 'write') {
-    const reading = await readWrite(modHost($), change.input, change.configDir)
-    if (reading.kind === 'pass') return { kind: 'allow' }
-    return judgeWrite($, reading, request(reading.label), lookups, change.copied)
-  }
-  if (change.kind === 'unreadable') return judgeWrite($, change, request(change.label), lookups)
-  if (await takePass($, { origin: 'tool', args: command })) return { kind: 'allow', note: `AI Install Guard: writing ${change.label}, as you allowed` }
-  const options: ShowOptions = { action: 'install', request: request(change.label), lookups }
-  if (change.kind === 'folder') return scanThenHold($, change.label, { folder: change.path }, request(change.label), options, false)
-  return judgeRemote($, change.label, change.spec, request(change.label), options)
-}
-
-/**
- * A settings change as a report: one row of what it widens and narrows,
- * the verdict that row gives, and a tree of the one file the change makes,
- * its path included, so an approval covers that exact file.
- */
-/**
- * A settings file's report, built from what a change to it widens or
- * narrows, pinned to `content` at `path`: the whole file Claude writes, or,
- * at the start of a session, only the parts of it that run something.
- */
-export async function settingsReport(label: string, path: string, content: string, evidence: Evidence[], title: string): Promise<ScanReport> {
-  const { entries, bytes, hash } = await settingsTree(path, content)
-  const results = [
-    row(
-      {
-        id: 'settings.change',
-        group: 'structure',
-        title,
-        advice: 'Settings decide what Claude runs without asking, what runs on its own, and where its traffic goes. Approve a change only if you asked for it.',
-      },
-      evidence,
-    ),
-  ]
-  // Kept under the file's own path, so /guard forget <path> finds this file's decisions and no other's.
-  return { target: label, inventory: { root: path, entries, totalBytes: bytes, treeHash: hash, skipped: [] }, results, verdict: decide(results) }
-}
-
-/** The one-file tree a settings file's decisions are pinned to: its path and `content` together. */
-export async function settingsTree(path: string, content: string): Promise<{ entries: InventoryEntry[]; bytes: number; hash: string }> {
-  const bytes = new TextEncoder().encode(content).length
-  const entries: InventoryEntry[] = [{ kind: 'file', path: 'settings.json', size: bytes, sha256: await sha256Hex(`${path}\u0000${content}`), isText: true }]
-  return { entries, bytes, hash: await treeHash(entries) }
-}
-
-/** Where a prompt Claude writes is scanned: a skill as its real folder once the write lands, a command or agent as the one file. */
-export async function promptCandidate(host: Host, reading: Extract<WriteReading, { kind: 'prompt' }>): Promise<ScanHow> {
-  // The scan reads the folder where it really is, links followed (on macOS /tmp is /private/tmp).
-  if (reading.folder !== undefined) return { overlay: { root: await landsAt(host, reading.folder), rel: reading.rel, content: reading.content }, kind: 'skill' }
-  return { files: { [reading.rel]: reading.content }, root: `/ai-install-guard/${reading.what}/${reading.rel.slice(reading.rel.lastIndexOf('/') + 1)}`, kind: reading.what }
+  // Several servers written at once are decided together, and the decision holds for each, as the check at a session's start judges them one at a time.
+  const parts = reading.servers.length < 2 ? undefined : await Promise.all(reading.servers.map(server => laidHash(mcpCandidate([server]))))
+  return afterScan(request, reading.label, await showScan($, reading.label, mcpCandidate(reading.servers), { ...options, ...(parts === undefined ? {} : { parts }) }))
 }
 
 /** What the plugins menu cannot promise yet. */
@@ -267,8 +166,6 @@ function afterScan(request: GuardRequest, name: string, shown: Shown): Judgement
 
 /** The words an answer uses for what was held: an install, or a write. */
 function wordsFor(request: GuardRequest): { thing: string; done: string; doing: string; again: string } {
-  // A pass lets exactly the command through, so a change a command makes is made again by running it again.
-  if (request.subject === 'command') return { thing: 'change', done: 'Nothing was written', doing: 'running it', again: 'run the same command again' }
   return request.subject === 'write'
     ? { thing: 'change', done: 'Nothing was written', doing: 'writing it', again: 'make the same change again' }
     : { thing: 'install', done: 'Nothing was installed', doing: 'installing it', again: 'run the same command again' }
@@ -284,7 +181,7 @@ function rejected(request: GuardRequest, name: string, where: string, decidedAt:
   const when = decidedAt === undefined ? '' : ` on ${day(decidedAt)}`
   if (request.origin === 'tool') {
     const words = wordsFor(request)
-    return { kind: 'hold', text: `AI Install Guard: the person rejected this exact version of ${name}${where}${when}. ${words.done}. Do not ${request.subject === 'write' || request.subject === 'command' ? 'write it' : 'install it'} or try another way.` }
+    return { kind: 'hold', text: `AI Install Guard: the person rejected this exact version of ${name}${where}${when}. ${words.done}. Do not ${request.subject === 'write' ? 'write it' : 'install it'} or try another way.` }
   }
   return { kind: 'hold', text: `AI Install Guard: you rejected ${name}${where}${when}. Nothing was installed. /guard forget ${name} judges it again.` }
 }
@@ -314,7 +211,7 @@ function hold(
       : pane.waiting
         ? `Tell the person to run /guard report, which opens the guard's pane with the verdict and the Install and Reject buttons, and ${words.again} only after they say they approved it.`
         : 'This session cannot show the guard\'s pane, so the person cannot approve it here.'
-    return { kind: 'hold', text: `AI Install Guard held this ${words.thing} for the person to review: ${unverified ? `it ${what}${more.toClaude === true ? why : ''}` : what}. ${words.done}. Do not retry it or ${request.subject === 'write' || request.subject === 'command' ? 'write it' : 'install it'} another way. ${next}` }
+    return { kind: 'hold', text: `AI Install Guard held this ${words.thing} for the person to review: ${unverified ? `it ${what}${more.toClaude === true ? why : ''}` : what}. ${words.done}. Do not retry it or ${request.subject === 'write' ? 'write it' : 'install it'} another way. ${next}` }
   }
   const said = unverified ? `AI Install Guard ${what}${why}.` : `AI Install Guard: ${what}.`
   if (!pane.placed && pane.waiting) return { kind: 'hold', text: `${said} Nothing is installed yet: run /guard report to open the guard's pane, then press ${button} there to install it, or Reject.` }

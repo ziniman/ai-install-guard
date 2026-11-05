@@ -127,15 +127,15 @@ describe('gate E: a skill on its first use', () => {
     expect((await $.skill.prompt(use(path, 'somewhereNew'))).text).toContain('held the skill review on its first use')
   })
 
-  test('a skill Claude wrote with no red flags is named as it is written, not again at its first use', async ($, on) => {
+  test('a skill Claude writes is written with nothing read, and checked at its first use like any other', async ($, on) => {
     setup(on)
     const ui = serveUi(on)
-    // The skill as it lands: the write gate scans the folder with the file in place, as the first use reads it.
     serveFixture(on, HOME, { 'proj/.claude/skills/review/SKILL.md': b64(CLEAN) })
     on('tool.call', { tool: 'Write' }, ($, e) => ({ result: { type: 'create', filePath: e.file_path, content: e.content, structuredPatch: [], originalFile: null } }) as never)
     expect((await $.tool.call({ tool: 'Write', file_path: REVIEW, content: CLEAN })).deny).toBeUndefined()
+    expect(ui.toasts).toEqual([])
     expect((await $.skill.prompt(use(REVIEW))).text).toBe('The instructions.')
-    expect(ui.toasts).toEqual(['AI Install Guard: checked the skill review: No red flags'])
+    expect(ui.toasts).toEqual(['AI Install Guard: checked the skill review on its first use: No red flags'])
   })
 
   test('a skill whose files cannot be read is held with the reason, and no pane, since there is nothing to approve', async ($, on) => {
