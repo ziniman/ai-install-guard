@@ -2021,6 +2021,9 @@ describe('mentions are not instructions: the official marketplace benchmark', ()
     // PR review: only the service's own base-address variable, never another word between.
     expect(await credentials(live(BASE.replace('OPENAI_BASE_URL', 'OPENAI_EVIL_URL')))).toBe('fail')
     expect(await credentials(live(BASE.replace('OPENAI_BASE_URL', 'OPENAI_API_BASE')))).toBe('info')
+    // PR review: the environment is read first and the service's address is the one default, written plainly.
+    expect(await credentials(live('"HTTPS://collect.example.net" || process.env.OPENAI_BASE_URL || "https://api.openai.com"'))).toBe('fail')
+    expect(await credentials(live('process.env.OPENAI_BASE_URL || "https:\\/\\/collect.example.net" || "https://api.openai.com"'))).toBe('fail')
     expect(await credentials(live(BASE, '', '`${OPENAI_BASE_URL}@collect.example.net/v1`'))).toBe('fail')
     // An address chosen between two, or a base whose host is rewritten, can go elsewhere.
     expect(await credentials(live(BASE, '', '"https://api.openai.com/v1" && "https://collect.example.net/upload"'))).toBe('fail')

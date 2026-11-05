@@ -731,10 +731,21 @@ const ENV_TAIL = /^["'`]\s*\]|^["']\s*(?:,\s*(?:None|["'][^"'\n]*["']))?\s*\)/
 
 /** A base address read from the environment: the variable's name is the first group that matched. */
 const ENV_READ = /\bprocess\.env\.([A-Za-z_]\w*)|\bprocess\.env\[\s*["'`]([A-Za-z_]\w*)["'`]\s*\]|\bos\.environ\.get\(\s*["']([A-Za-z_]\w*)["']|\bos\.environ\[\s*["']([A-Za-z_]\w*)["']\s*\]|\bos\.getenv\(\s*["']([A-Za-z_]\w*)["']/g
-/** What may stand around those reads and a default written out, once strings and patterns are blanked. */
-const ENV_DEFAULT_CODE = /\bprocess\.env\.\w+|\bprocess\.env\[|\bos\.environ\.get\(|\bos\.environ\[|\bos\.getenv\(|\|\||\?\?|\bor\b/g
+/** A string written out with no escape in it, so it holds what it says. */
+const PLAIN_STRING = String.raw`(?:"[^"\\\n]*"|'[^'\\\n]*')`
+/** A read of one environment variable by a name written out. */
+const ONE_READ = String.raw`(?:process\.env\.[A-Za-z_]\w*|process\.env\[\s*${PLAIN_STRING}\s*\]|os\.environ\[\s*${PLAIN_STRING}\s*\]|os\.(?:environ\.get|getenv)\(\s*${PLAIN_STRING}\s*\))`
 /** Taking a trailing slash or blanks off a base address, which cannot change its host. */
-const TRIMS_ADDRESS = /\.replace\(\s*\/\\\/\+?\$\/\s*,\s*(?:""|'')\s*\)|\.(?:rstrip|removesuffix)\(\s*(["'])\/\1\s*\)|\.(?:trim|trimEnd|strip)\(\s*\)/g
+const TRIMS = String.raw`(?:\.replace\(\s*\/\\\/\+?\$\/\s*,\s*(?:""|'')\s*\)|\.(?:rstrip|removesuffix)\(\s*(?:"\/"|'\/')\s*\)|\.(?:trim|trimEnd|strip)\(\s*\))`
+/**
+ * A base address read from the environment first, with one address written
+ * out as its default, last, and nothing else: `(process.env.X ||
+ * "https://…").replace(/\/+$/, "")`, `os.environ.get("X", "https://…")`.
+ * The default is the group that matched.
+ */
+const ENV_DEFAULT = new RegExp(
+  String.raw`^\s*\(?\s*(?:(?:${ONE_READ}\s*(?:\|\||\?\?|\bor\b)\s*)+(${PLAIN_STRING})|os\.(?:environ\.get|getenv)\(\s*${PLAIN_STRING}\s*,\s*(${PLAIN_STRING})\s*\))\s*\)?\s*${TRIMS}*\s*$`,
+)
 
 type Brackets = {
   /** The innermost bracket open at each index, -1 at the top level. */
@@ -1048,14 +1059,15 @@ function ownBase(ctx: ScanContext, file: CodeFile, brackets: Brackets, base: str
   const value = file.text.slice(from, statementEnd(file, brackets, from, brackets.inner[set.index] ?? -1))
   const address = ownAddress(ctx, file, brackets, [from, from + value.length], name, depth + 1)
   if (address !== undefined) return address
-  const code = Array.from(value, (char, i) => (file.kindAt(from + i) === 'code' ? char : ' '))
-  for (const found of value.matchAll(TRIMS_ADDRESS)) code.fill(' ', found.index ?? 0, (found.index ?? 0) + found[0].length)
-  if (!/^[\s()[\],]*$/.test(code.join('').replace(ENV_DEFAULT_CODE, ''))) return undefined
-  const variables = Array.from(value.matchAll(ENV_READ), found => found.slice(1).find(part => part !== undefined) ?? '')
-  const defaults = Array.from(value.matchAll(/https?:\/\/[^\s'"`]+/g), found => ownHost(found[0], name))
-  if (variables.length === 0 || defaults.length === 0 || defaults.some(host => host === undefined)) return undefined
+  // Read from the environment first, with the service's address as the one default after it: never a string before.
+  const plain = Array.from(value, (char, i) => (['comment', 'trailing-comment'].includes(file.kindAt(from + i)) ? ' ' : char)).join('')
+  const shaped = ENV_DEFAULT.exec(plain)
+  const written = shaped?.[1] ?? shaped?.[2]
+  const host = written === undefined ? undefined : ownHost(written.slice(1, -1), name)
+  const variables = Array.from(plain.matchAll(ENV_READ), found => found.slice(1).find(part => part !== undefined) ?? '')
+  if (host === undefined || variables.length === 0) return undefined
   if (variables.some(variable => !isBaseOf(variable, name) || setByPlugin(ctx, variable, file.path, set.index, from + value.length))) return undefined
-  return defaults[0]
+  return host
 }
 
 /** What a service's own base-address variable ends in, after the words it shares with the key. */
