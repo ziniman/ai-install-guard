@@ -581,9 +581,9 @@ function credentialsCheck(ctx: ScanContext): CheckResult {
     const keys = active(file, SECRET_ENV, 20).filter(match => !file.inProse(match.index))
     const dumps = keys.some(match => /process\.env|os\.environ|printenv|\benv\b/.test(match.text))
     const hosts = liveHosts(file)
-    const namesOwn = sends && !dumps && !buildsAddress(file) && hosts.length > 0 && keys.every(match => hosts.every(host => belongsTo(secretName(match), host)))
+    const namesOwn = keys.length > 0 && sends && !dumps && !buildsAddress(file) && hosts.length > 0 && keys.every(match => hosts.every(host => belongsTo(secretName(match), host)))
     // In a file that also reaches other addresses, the key followed to the requests that carry it.
-    const followed = sends && !dumps && !namesOwn ? keyRequests(ctx, file, keys) : undefined
+    const followed = keys.length > 0 && sends && !dumps && !namesOwn ? keyRequests(ctx, file, keys) : undefined
     const ownService = namesOwn || followed !== undefined
     const hostsFor = (match: Match): string[] => (followed === undefined ? hosts : [...(followed.get(secretName(match)) ?? [])])
     const usedWith = (match: Match): string => {
@@ -721,6 +721,8 @@ const NOT_A_FUNCTION = /\b(?:if|while|switch|with|return|typeof|await|yield|new|
 /** A use of a key that only asks whether it is set: `!key`, `if key:`, `key === undefined`. */
 const KEY_TEST_BEFORE = /(?:!|\bif\s*\(|\bif\s+|\bnot\s+|\btypeof\s+)\s*$/
 const KEY_TEST_AFTER = /^\s*(?:[!=]==?|is\s+(?:not\s+)?None\b)/
+/** What may follow a key a test is asked of: the end of the test, never more done with the key (`!key.split('')…`). */
+const KEY_TEST_END = /^(?:\.length\b|\.(?:trim|strip)\(\s*\))?\s*(?:$|[)\]};,:\n]|&&|\|\||\?(?![.?])|[!=]==?|\b(?:is|and|or|else)\b)/
 
 /** How a key is read from the environment, before and after its name. */
 const ENV_LEAD = /(?:process\.env\.|process\.env\[\s*["'`]|os\.environ\[\s*["']|os\.environ\.get\(\s*["']|os\.getenv\(\s*["'])$/
@@ -1050,7 +1052,8 @@ function keyRequests(ctx: ScanContext, file: CodeFile, keys: readonly Match[]): 
   const brackets = bracketsOf(file)
   const hosts = new Map<string, Set<string>>()
   const followed = (start: number, end: number, name: string): boolean => {
-    if (KEY_TEST_BEFORE.test(file.text.slice(Math.max(0, start - 20), start)) || KEY_TEST_AFTER.test(file.text.slice(end, end + 20))) return true
+    const after = file.text.slice(end, end + 40)
+    if ((KEY_TEST_BEFORE.test(file.text.slice(Math.max(0, start - 20), start)) && KEY_TEST_END.test(after)) || KEY_TEST_AFTER.test(after)) return true
     // Kept in another name as it is passed on, it can go anywhere that name goes.
     if (assignedAt(file, brackets, start)) return false
     const open = requestAround(file, brackets, start)

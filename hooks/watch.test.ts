@@ -35,6 +35,11 @@ describe('what a command changed where Claude Code loads from', () => {
     expect(await changesSince(memoryHost(HOME, { ...files, '.claude/plugins/marketplaces/official/catalog.json': b64('{"plugins":[]}') }), market, was, undefined)).toEqual([
       { kind: 'marketplace', root: `${HOME}/.claude/plugins/marketplaces/official`, change: 'changed' },
     ])
+    // A marketplace copy's own git store is left out, as a fetch changes it; an installed plugin's is not.
+    const git = (config: string): FixtureFiles => ({ ...files, '.claude/plugins/marketplaces/official/.git/config': b64(config), '.claude/plugins/cache/m/p/1.0/.git/config': b64(config) })
+    const both = await watchFor(memoryHost(HOME, git('[core]\n')), ['~/.claude/plugins/marketplaces/official/x', '~/.claude/plugins/cache/m/p/1.0'], PROJECT, HOME, undefined)
+    const gitWas = await snapshot(memoryHost(HOME, git('[core]\n')), both)
+    expect(await changesSince(memoryHost(HOME, git('[core]\n\thooksPath = h\n')), both, gitWas, undefined)).toEqual([{ kind: 'plugin', root: `${HOME}/.claude/plugins/cache/m/p/1.0`, id: '' }])
     // PR review: the marketplaces folder named whole, or by a wildcard, watches each copy in it.
     const markets = memoryHost(HOME, { ...files, '.claude/plugins/marketplaces/other/catalog.json': b64('{}') })
     for (const named of ['~/.claude/plugins/marketplaces', '~/.claude/plugins/marketplaces/*/catalog.json']) {

@@ -168,11 +168,11 @@ export async function snapshot(host: Host, watch: Watch): Promise<Snapshot> {
   const prompts = new Map<string, Map<string, string>>()
   for (const folder of watch.prompts) prompts.set(folder, await filesIn(host, folder))
   const plugins = new Map<string, string>()
-  for (const root of watch.plugins) plugins.set(root, await listed(host, root))
+  for (const root of watch.plugins) plugins.set(root, await listed(host, root, false))
   const registry = new Map<string, string | undefined>()
   for (const path of watch.registry) registry.set(path, await textOf(host, path))
   const marketplaces = new Map<string, string>()
-  for (const root of watch.marketplaces) marketplaces.set(root, await listed(host, root))
+  for (const root of watch.marketplaces) marketplaces.set(root, await listed(host, root, true))
   const marketFolders = new Map<string, string>()
   for (const folder of watch.marketFolders) marketFolders.set(folder, await copiesOf(host, folder))
   return { files, prompts, plugins, registry, marketplaces, marketFolders }
@@ -210,13 +210,13 @@ export async function changesSince(host: Host, watch: Watch, before: Snapshot, c
     for (const [root, id] of changedEntries(before.registry.get(path), now)) made.push({ kind: 'plugin', root, id })
   }
   for (const root of watch.plugins) {
-    const now = await listed(host, root)
+    const now = await listed(host, root, false)
     // Too large to list whole, a plugin is judged by its files instead.
     if (now === before.plugins.get(root) && !now.startsWith(PARTIAL)) continue
     if (!made.some(item => item.kind === 'plugin' && item.root === root)) made.push({ kind: 'plugin', root, id: ids.get(root) ?? '' })
   }
   for (const root of watch.marketplaces) {
-    const now = await listed(host, root)
+    const now = await listed(host, root, true)
     // Too large to list whole, it cannot be compared: said so, rather than taken as unchanged.
     if (now !== before.marketplaces.get(root) || now.startsWith(PARTIAL)) made.push({ kind: 'marketplace', root, change: now.startsWith(PARTIAL) ? 'large' : 'changed' })
   }
@@ -471,10 +471,11 @@ const PARTIAL = 'partial '
 
 /**
  * A plugin folder as it lists, entry by entry (kind, size, when it changed),
- * with Claude Code's in-use marks at its root left out: cheap to take before
- * and after, where reading every file would not be.
+ * with Claude Code's in-use marks at its root left out, and for a
+ * marketplace's copy (`market`) its own git store, which a fetch changes:
+ * cheap to take before and after, where reading every file would not be.
  */
-async function listed(host: Host, root: string): Promise<string> {
+async function listed(host: Host, root: string, market: boolean): Promise<string> {
   const lines: string[] = []
   let partial = false
   const walk = async (dir: string, rel: string): Promise<void> => {
@@ -489,7 +490,7 @@ async function listed(host: Host, root: string): Promise<string> {
         return
       }
       // Claude Code's in-use marks, and a marketplace copy's own git store, which a fetch changes.
-      if (rel === '' && (entry.name === '.in_use' || entry.name === '.git')) continue
+      if (rel === '' && (entry.name === '.in_use' || (market && entry.name === '.git'))) continue
       const path = rel === '' ? entry.name : `${rel}/${entry.name}`
       lines.push(`${entry.kind} ${entry.size} ${entry.mtimeMs ?? ''} ${entry.isLink ? 'link ' : ''}${path}`)
       if (entry.kind === 'dir' && !entry.isLink) await walk(`${dir}/${entry.name}`, path)
