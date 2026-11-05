@@ -11,7 +11,6 @@ import { formatReport } from '../scan/report'
 import { safeLine } from '../scan/safe-text'
 import type { CheckResult } from '../scan/checks/types'
 import { scanFolder, scanRemote, type ScanReport } from '../scan/scan'
-import { overlayHost } from '../scan/overlay-host'
 import { virtualHost } from '../scan/virtual-host'
 import type { Host } from '../scan/host'
 import { decisionFor, saveLastView, saveReport } from './decisions'
@@ -30,18 +29,15 @@ export type ScanHow =
   /** A folder on this machine; with `kind`, a part Claude Code loads on its own (a skill's folder), named so, with no plugin to validate. */
   | { folder: string; kind?: string }
   | { files: Record<string, string>; root: string; notes?: CheckResult[]; kind: string }
-  /** A real folder with the file at `rel` as a write is about to make it. */
-  | { overlay: { root: string; rel: string; content: string }; kind: string }
 
 /**
- * Scans what `how` names, with no pane: the gate's first look at a write,
- * which goes through without a pane when the scan finds nothing.
+ * Scans what `how` names, with no pane: a gate's first look, as at a skill's
+ * first use or a plugin found on, which needs no pane when the scan finds nothing.
  */
 export async function scanOnly(host: Host, target: string, how: ScanHow, options: { lookups: boolean; onStage?: (stage: string) => Promise<void> }): Promise<ScanReport> {
   if ('remote' in how) return scanRemote(host, target, how.remote, options)
-  // Nothing to validate in a folder the guard built or overlaid; notes say what the scan could not read.
+  // Nothing to validate in a folder the guard built; notes say what the scan could not read.
   if ('files' in how) return scanFolder(virtualHost(how.root, how.files, host.fetch), target, how.root, { ...options, validate: false, extraResults: async () => how.notes ?? [] })
-  if ('overlay' in how) return scanFolder(overlayHost(host, how.overlay.root, how.overlay.rel, new TextEncoder().encode(how.overlay.content)), target, how.overlay.root, { ...options, validate: false })
   return scanFolder(host, target, how.folder, how.kind === undefined ? options : { ...options, validate: false })
 }
 
@@ -113,7 +109,7 @@ export async function showScan($: EngineInterface, target: string, how: ScanHow 
     // A tree you already decided on shows that decision, not the buttons
     // again, unless it now judges worse than when you approved it.
     const earlier = report.inventory === undefined ? undefined : await decisionFor($, { treeHash: report.inventory.treeHash, sha: report.source?.sha }, report.verdict.kind).catch(() => undefined)
-    // What a gate builds, overlays or names by its kind is what is being added, named as such, and no project to badge.
+    // What a gate builds or names by its kind is what is being added, named as such, and no project to badge.
     const kind = 'remote' in resolved ? undefined : resolved.kind
     const built = kind === undefined ? {} : { kind }
     const shownReport = 'kind' in built ? { ...report, badgeHash: undefined } : report

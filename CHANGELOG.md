@@ -4,6 +4,14 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.9.0 &nbsp;·&nbsp; 2026-11-05
+
+**Scope** - The guard steps in only where something new comes into Claude Code from outside: `/plugin install` and `/plugin marketplace add`, Claude's own `claude plugin install`, `claude plugin marketplace add` and `claude mcp add`, an MCP server Claude writes into your configuration, a mod as it loads, a skill on its first use, and the check at the start of a session. It no longer checks Claude's own work: skills, commands, agents and output styles Claude writes or edits, settings it changes, and shell commands that write into a `.claude` folder all go on untouched, and nothing locks Claude's tools after such a change. Reading that work from a command's text could never be exact, so it kept holding ordinary editing, and Claude Code's own permission prompts already ask before each edit and command. A skill Claude writes is still checked at its first use, like any skill that came with no install.
+
+**Session start** - The check of your configuration reads only its MCP servers. The hooks in your settings files are your own configuration, and are no longer listed or held.
+
+**Claude writing an MCP server** - Only the configuration Claude Code starts servers from counts: this folder's `.mcp.json` and your `~/.claude.json`. A `.mcp.json` in another folder or in a test's fixtures is written with nothing read.
+
 ## v0.8.18 &nbsp;·&nbsp; 2026-11-04
 
 **Shell commands** - A program the guard does not know counts by the paths it is given, so one that only reads a path in Claude's folder (`npm run benchmark -- ~/.claude/plugins/marketplaces/x`, a linter given a skill) was held as a change there. Such a path, one file or folder deep, now runs and is judged by what it changed, as an edit in place is; one naming a whole area (`~/.claude/plugins`) is still held before it runs, and a change to a marketplace's copy, or a copy added to the folder of them, is named after the command runs

@@ -9,8 +9,6 @@ export type HostEntry = {
   kind: HostEntryKind
   size: number
   isLink: boolean
-  /** When it last changed, where the host says. */
-  mtimeMs?: number
 }
 
 export type HostStat = {
@@ -19,8 +17,6 @@ export type HostStat = {
   isLink: boolean
   /** Where the path lands with every link followed; absent when it leads nowhere. */
   realPath?: string
-  /** When it last changed, where the host says. */
-  mtimeMs?: number
 }
 
 export type RunResult = {

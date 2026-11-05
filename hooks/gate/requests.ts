@@ -144,13 +144,13 @@ const CLAUDE_SUBCOMMAND = new RegExp(`${CLAUDE_WORD.source}[^\\w/\\\\]{1,16}(?:p
 export const CLAUDE = new Set(['claude', 'claude-code'].flatMap(name => [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`, `${name}.ps1`]))
 
 /** Programs that run their `-c` argument as a script. */
-export const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'])
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'])
 
 /**
  * Programs that run code in another language: given inline, from their
  * input or from a file, it is code the guard does not read.
  */
-export const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'osascript', 'pwsh', 'powershell', 'lua', 'tclsh', 'rscript', 'julia', 'swift', 'groovy', 'jshell'])
+const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'osascript', 'pwsh', 'powershell', 'lua', 'tclsh', 'rscript', 'julia', 'swift', 'groovy', 'jshell'])
 
 /**
  * Interpreters of JavaScript, where a backquote opens a template. In Ruby,
@@ -263,13 +263,8 @@ function codeOnly(code: string, language: 'python' | 'js'): string {
   return out
 }
 
-/** Whether Python or JavaScript code may start a program, read as the install gate reads it. */
-export function codeStartsProgram(code: string, language: 'python' | 'js'): boolean {
-  return startsProgram({ text: code, code: true, language })
-}
-
 /** The tokenizer's name for an interpreter's language, when it reads it. */
-export function tokenized(language: string): 'python' | 'js' | undefined {
+function tokenized(language: string): 'python' | 'js' | undefined {
   return /^python[23]?$/.test(language) ? 'python' : JAVASCRIPT.has(language) ? 'js' : undefined
 }
 
@@ -298,7 +293,7 @@ const MAY_RUN_TEXT = /child_process|\b(?:exec|execSync|execFile|execFileSync|spa
  * `command` is one only as `command -v` or `-V`, which says what a name would
  * run; `programAt` goes past any other `command` to the program it runs.
  */
-export const QUIET = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'less', 'more', 'jq', 'sort', 'uniq', 'wc', 'tr', 'cut', 'ls', 'pwd', 'true', 'false', 'sleep', 'test', '[', 'date', 'which', 'type', 'command', 'column', 'nl', 'fold'])
+const QUIET = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'less', 'more', 'jq', 'sort', 'uniq', 'wc', 'tr', 'cut', 'ls', 'pwd', 'true', 'false', 'sleep', 'test', '[', 'date', 'which', 'type', 'command', 'column', 'nl', 'fold'])
 
 /** A quiet program that writes a file all the same: `sort -o`, `uniq in out`. */
 function writesAnyway(program: string, args: readonly string[]): boolean {
@@ -357,7 +352,7 @@ const GIT_VALUES = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace
  * and names included, is text. `hooks` is set when a configuration points it
  * at hooks the guard cannot read.
  */
-export function gitScripts(args: readonly string[]): { scripts: string[]; hooks: boolean } {
+function gitScripts(args: readonly string[]): { scripts: string[]; hooks: boolean } {
   const scripts: string[] = []
   let hooks = false
   let index = 0
@@ -415,7 +410,7 @@ type Collected = {
  * substitution, a pathname pattern (`claud[e]`, `cl*`) or a brace list
  * (`cl{aude,}`). `[` on its own is the test command.
  */
-export function isDynamic(word: string): boolean {
+function isDynamic(word: string): boolean {
   return word !== '[' && (/[$`*?[]/.test(word) || BRACES.test(word))
 }
 
@@ -464,7 +459,7 @@ const COMPOUND_CLOSES = new Set(['fi', 'done', 'esac', '}'])
  * wrapper runs as shell text (`env -S`); `fromInput` is set when its words
  * come in part from input (`xargs`).
  */
-export function programAt(words: readonly string[]): { index: number; scripts: string[]; fromInput: boolean } {
+function programAt(words: readonly string[]): { index: number; scripts: string[]; fromInput: boolean } {
   const scripts: string[] = []
   let fromInput = false
   let index = 0
@@ -688,7 +683,7 @@ function collectInstalls(command: string, found: Reading[], depth: number, asScr
 }
 
 /** The last part of a program's path, lower-cased: `/usr/bin/Claude` is `claude`. */
-export function programName(word: string | undefined): string {
+function programName(word: string | undefined): string {
   return (word ?? '').split(/[\\/]/).pop()?.toLowerCase() ?? ''
 }
 
@@ -983,7 +978,7 @@ function readOptions(words: readonly string[], valued: ReadonlySet<string>, flag
  * feeds it; the bodies of its command substitutions, which run before it
  * does; and whether it writes to a file through a redirection.
  */
-export type ShellCommand = {
+type ShellCommand = {
   words: string[]
   input?: string
   scripts?: string[]
