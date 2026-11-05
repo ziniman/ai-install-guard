@@ -271,6 +271,8 @@ describe('what a shell command changes where Claude Code loads from', () => {
     expect(await change('python3 -m json.tool -- --indent ~/.claude/settings.json')).toMatchObject({ kind: 'watch', reason: expect.stringContaining('json.tool') })
     // What the guard held while its benchmark read a marketplace: a program it does not know, given one path to read.
     expect(await change('npm run benchmark -- ~/.claude/plugins/marketplaces/official')).toMatchObject({ kind: 'watch', named: [`${HOME}/.claude/plugins/marketplaces/official`] })
+    const held = 'grep -n "OFFICIAL_MARKETPLACE_SHA\\|OFFICIAL_MAX" .github/workflows/ci.yml | head -4; M=~/.claude/plugins/marketplaces/official; git -C $M rev-parse --short HEAD; npm run benchmark -- $M 2>&1 | tail -6'
+    expect(await change(held)).toMatchObject({ kind: 'watch', named: [`${HOME}/.claude/plugins/marketplaces/official`] })
     expect(await change('markdownlint ~/.claude/skills/old/SKILL.md')).toMatchObject({ kind: 'watch' })
     // Given a whole area, it may write anything there, as a download or an archive may.
     expect(await change('npm run benchmark -- ~/.claude/plugins')).toMatchObject({ kind: 'unreadable', reason: expect.stringContaining('as a whole') })

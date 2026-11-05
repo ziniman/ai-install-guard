@@ -21,7 +21,7 @@ import {
   WRITE_SHELL,
 } from './patterns'
 import { basename, extension, findAll, findFirst, spanKinds, type Match, type SpanKind } from './text'
-import { belongsTo } from './mcp'
+import { belongsTo, sameService } from './mcp'
 import { describePrograms, programNames, programsIn, type ProgramUse } from './programs'
 import { row, worse, type CheckResult, type Evidence, type Status } from './types'
 
@@ -581,15 +581,26 @@ function credentialsCheck(ctx: ScanContext): CheckResult {
     const keys = active(file, SECRET_ENV, 20).filter(match => !file.inProse(match.index))
     const dumps = keys.some(match => /process\.env|os\.environ|printenv|\benv\b/.test(match.text))
     const hosts = liveHosts(file)
-    const ownService = sends && !dumps && !buildsAddress(file) && hosts.length > 0 && keys.every(match => hosts.every(host => belongsTo(secretName(match), host)))
+    const namesOwn = sends && !dumps && !buildsAddress(file) && hosts.length > 0 && keys.every(match => hosts.every(host => belongsTo(secretName(match), host)))
+    // In a file that also reaches other addresses, the key followed to the requests that carry it.
+    const followed = sends && !dumps && !namesOwn ? keyRequests(ctx, file, keys) : undefined
+    const ownService = namesOwn || followed !== undefined
+    const hostsFor = (match: Match): string[] => (followed === undefined ? hosts : [...(followed.get(secretName(match)) ?? [])])
+    const usedWith = (match: Match): string => {
+      const own = hostsFor(match)
+      return own.length > 0 ? `uses ${secretName(match)} with ${own.slice(0, 3).join(', ')}, the service it belongs to` : `only checks whether ${secretName(match)} is set`
+    }
     const keyStatus: Status = !sends ? 'info' : ownService ? 'info' : 'fail'
-    const names = evidenceFor(file, SECRET_ENV, keyStatus, match => (ownService ? `uses ${secretName(match)} with ${hosts.slice(0, 3).join(', ')}, the service it belongs to` : `${lead}reads ${secretName(match)}`), 3)
+    const names = evidenceFor(file, SECRET_ENV, keyStatus, match => (ownService ? usedWith(match) : `${lead}reads ${secretName(match)}`), 3)
     evidence.push(...paths, ...names)
     if (!isLive(file.role)) continue
     for (const match of active(file, CREDENTIAL_PATH, 20)) if (!file.inProse(match.index) && !named.has(match.line)) places.add(match.text.trim().replace(/\/$/, ''))
     // A dump of the whole environment (JSON.stringify(process.env), printenv) is every secret at once.
     for (const match of keys) secrets.add(/process\.env|os\.environ|printenv|\benv\b/.test(match.text) ? 'all your environment variables' : secretName(match))
-    for (const match of keys) access.add(ownService ? `use your ${secretName(match)} with ${hosts.slice(0, 2).join(', ')}` : `read your ${dumps ? 'environment variables' : secretName(match)}`)
+    for (const match of keys) {
+      if (!ownService) access.add(`read your ${dumps ? 'environment variables' : secretName(match)}`)
+      else if (hostsFor(match).length > 0) access.add(`use your ${secretName(match)} with ${hostsFor(match).slice(0, 2).join(', ')}`)
+    }
     if (paths.length + names.length > 0) {
       files.add(file.path)
       if (sends && !ownService) sending.add(file.path)
@@ -688,6 +699,257 @@ function collectsAt(host: string, rest: string): boolean {
   const target = `${host}${rest}`
   const found = COLLECTION_HOST.exec(target)
   return found !== null && found.index < host.length && (found.index === 0 || target[found.index - 1] === '.')
+}
+
+/** A call whose first argument is the address a request goes to. */
+const REQUEST_CALL = /(?:\bfetch|\baxios(?:\.(?:get|post|put|patch|delete|request))?|\burlopen|\bRequest|\b(?:requests|httpx)\.(?:get|post|put|patch|delete|request))\s*$/
+
+/** A use of a key that only asks whether it is set: `!key`, `if key:`, `key === undefined`. */
+const KEY_TEST_BEFORE = /(?:!|\bif\s*\(|\bif\s+|\bnot\s+|\btypeof\s+)\s*$/
+const KEY_TEST_AFTER = /^\s*(?:[!=]==?|is\s+(?:not\s+)?None\b)/
+
+/** How a key is read from the environment, before and after its name. */
+const ENV_LEAD = /(?:process\.env\.|process\.env\[\s*["'`]|os\.environ\[\s*["']|os\.environ\.get\(\s*["']|os\.getenv\(\s*["'])$/
+const ENV_TAIL = /^["'`]\s*\]|^["']\s*(?:,\s*(?:None|["'][^"'\n]*["']))?\s*\)/
+
+/** A base address read from the environment: the variable's name is the first group that matched. */
+const ENV_READ = /\bprocess\.env\.([A-Za-z_]\w*)|\bprocess\.env\[\s*["'`]([A-Za-z_]\w*)["'`]\s*\]|\bos\.environ\.get\(\s*["']([A-Za-z_]\w*)["']|\bos\.environ\[\s*["']([A-Za-z_]\w*)["']\s*\]|\bos\.getenv\(\s*["']([A-Za-z_]\w*)["']/g
+/** What may stand around those reads and a default written out, once strings and patterns are blanked. */
+const ENV_DEFAULT_CODE = /\bprocess\.env\.\w+|\bprocess\.env\[|\bos\.environ\.get\(|\bos\.environ\[|\bos\.getenv\(|\|\||\?\?|\bor\b/g
+/** Taking a trailing slash or blanks off a base address, which cannot change its host. */
+const TRIMS_ADDRESS = /\.replace\(\s*\/\\\/\+?\$\/\s*,\s*(?:""|'')\s*\)|\.(?:rstrip|removesuffix)\(\s*(["'])\/\1\s*\)|\.(?:trim|trimEnd|strip)\(\s*\)/g
+
+type Brackets = {
+  /** The innermost bracket open at each index, -1 at the top level. */
+  inner: Int32Array
+  opens: (index: number) => boolean
+  closes: (index: number) => boolean
+}
+
+/** The brackets of a file's code; a template's `${` opens one. */
+function bracketsOf(file: CodeFile): Brackets {
+  const { text } = file
+  const opens = (i: number): boolean => {
+    const kind = file.kindAt(i)
+    if (kind === 'code') return text[i] === '(' || text[i] === '[' || text[i] === '{'
+    return kind === 'string' && file.language === 'js' && text[i] === '{' && text[i - 1] === '$' && i + 1 < text.length && file.kindAt(i + 1) !== 'string'
+  }
+  const closes = (i: number): boolean => file.kindAt(i) === 'code' && (text[i] === ')' || text[i] === ']' || text[i] === '}')
+  const inner = new Int32Array(text.length + 1).fill(-1)
+  const stack: number[] = []
+  for (let i = 0; i < text.length; i += 1) {
+    inner[i] = stack.length > 0 ? (stack[stack.length - 1] as number) : -1
+    if (opens(i)) stack.push(i)
+    else if (closes(i)) stack.pop()
+  }
+  return { inner, opens, closes }
+}
+
+/** The `(` of the call `index` is an argument of, through any object or array around it. */
+function callAround(file: CodeFile, brackets: Brackets, index: number): number | undefined {
+  let open = brackets.inner[index] ?? -1
+  while (open >= 0 && file.text[open] !== '(') open = brackets.inner[open] ?? -1
+  return open >= 0 ? open : undefined
+}
+
+/** Whether only grouping parentheses, no call, stand between `index` and the level of `outer`. */
+function onlyGroups(file: CodeFile, brackets: Brackets, index: number, outer: number): boolean {
+  const level = brackets.inner[outer] ?? -1
+  let open = brackets.inner[index] ?? -1
+  while (open !== level) {
+    if (open < 0 || file.text[open] !== '(' || /[\w$)\]]\s*$/.test(file.text.slice(Math.max(0, open - 30), open))) return false
+    open = brackets.inner[open] ?? -1
+  }
+  return true
+}
+
+/** Whether `index` starts a statement, at the top level or in a block: never an argument (`f(data=key)`) or an entry. */
+function atStatement(file: CodeFile, brackets: Brackets, index: number): boolean {
+  const open = brackets.inner[index] ?? -1
+  if (open >= 0 && file.text[open] !== '{') return false
+  const lineStart = file.text.lastIndexOf('\n', index - 1) + 1
+  return /(?:^|;)\s*(?:(?:export\s+)?(?:const|let|var)\s+)?$/.test(file.text.slice(lineStart, index))
+}
+
+function firstArgument(file: CodeFile, brackets: Brackets, open: number): [number, number] {
+  let depth = 0
+  let i = open + 1
+  for (; i < file.text.length; i += 1) {
+    if (brackets.opens(i)) depth += 1
+    else if (brackets.closes(i)) {
+      if (depth === 0) break
+      depth -= 1
+    } else if (depth === 0 && file.text[i] === ',' && file.kindAt(i) === 'code') break
+  }
+  return [open + 1, i]
+}
+
+/** The host of `address` when it is a web address on the service the key `name` belongs to. */
+function ownHost(address: string, name: string): string | undefined {
+  if (!/^https?:\/\//i.test(address)) return undefined
+  try {
+    const host = new URL(address).hostname.toLowerCase()
+    return belongsTo(name, host) ? host : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The parts of an address joined with `+`, each trimmed; undefined when
+ * anything else stands between them (`&&`, `||`, a condition), which could
+ * choose another address altogether.
+ */
+function addressParts(file: CodeFile, brackets: Brackets, from: number, to: number): [number, number][] | undefined {
+  const parts: [number, number][] = []
+  const part = (a: number, b: number): [number, number] => {
+    while (a < b && /\s/.test(file.text[a] as string)) a += 1
+    while (b > a && /\s/.test(file.text[b - 1] as string)) b -= 1
+    return [a, b]
+  }
+  let depth = 0
+  let partFrom = from
+  for (let i = from; i < to; i += 1) {
+    if (brackets.opens(i)) depth += 1
+    else if (brackets.closes(i)) depth -= 1
+    else if (depth === 0 && file.kindAt(i) === 'code') {
+      if (file.text[i] === '+') {
+        parts.push(part(partFrom, i))
+        partFrom = i + 1
+      } else if (!/[\w$.\s]/.test(file.text[i] as string)) return undefined
+    }
+  }
+  parts.push(part(partFrom, to))
+  return parts.every(([a, b]) => b > a) ? parts : undefined
+}
+
+/** What a part that is one string, and only that, holds between its quotes. */
+function stringBody(file: CodeFile, brackets: Brackets, [from, to]: [number, number]): string | undefined {
+  const quoteAt = from + (/^[fFrR]{0,2}/.exec(file.text.slice(from, to))?.[0].length ?? 0)
+  const quote = file.text[quoteAt]
+  if ((quote !== '"' && quote !== "'" && quote !== '`') || to - quoteAt < 2 || file.text[to - 1] !== quote) return undefined
+  let depth = 0
+  for (let i = quoteAt + 1; i < to - 1; i += 1) {
+    if (brackets.opens(i)) depth += 1
+    else if (brackets.closes(i)) depth -= 1
+    else if (depth === 0 && (file.kindAt(i) === 'code' || file.text[i] === quote)) return undefined
+  }
+  return file.text.slice(quoteAt + 1, to - 1)
+}
+
+/**
+ * The host of the key's own service a request's address goes to: written out,
+ * or a name set once to one, with nothing after the host that could move it.
+ */
+function ownAddress(ctx: ScanContext, file: CodeFile, brackets: Brackets, [from, to]: [number, number], name: string, depth: number): string | undefined {
+  const parts = addressParts(file, brackets, from, to)
+  const first = parts?.[0]
+  if (parts === undefined || first === undefined) return undefined
+  const next = parts[1]
+  // Whatever is added to a base must start a path or a query.
+  const pathNext = next === undefined || /^[fFrR]{0,2}["'`][/?]/.test(file.text.slice(next[0], next[1]))
+  const text = file.text.slice(first[0], first[1])
+  if (/^[A-Za-z_$][\w$]*$/.test(text)) return pathNext ? ownBase(ctx, file, brackets, text, name, depth) : undefined
+  const body = stringBody(file, brackets, first)
+  if (body === undefined) return undefined
+  const lead = /^(?:\$\{|\{)\s*([A-Za-z_$][\w$]*)\s*\}/.exec(body)
+  if (lead !== null) {
+    const after = body.slice(lead[0].length)
+    return (after === '' ? pathNext : /^[/?]/.test(after)) ? ownBase(ctx, file, brackets, lead[1] as string, name, depth) : undefined
+  }
+  const filled = /\$?\{/.exec(body)
+  const written = filled === null ? body : body.slice(0, filled.index)
+  // Anything filled in or added after the host must come after it has ended.
+  if ((filled !== null || next !== undefined) && !/^https?:\/\/[^/?#]+[/?#]/i.test(written)) return undefined
+  return ownHost(written, name)
+}
+
+/**
+ * Where a name set once points: an address on the key's own service, or the
+ * service's own variable for a base address, read from your environment with
+ * the service's address written out as its default, when nothing the plugin
+ * runs or reads to Claude sets that variable.
+ */
+function ownBase(ctx: ScanContext, file: CodeFile, brackets: Brackets, base: string, name: string, depth: number): string | undefined {
+  if (depth > 3) return undefined
+  const sets = findAll(file.text, new RegExp(`(?<![\\w$.])${base.replace(/\$/g, '\\$')}\\s*=(?![=>])`), 3, index => file.kindAt(index) === 'code')
+  const set = sets[0]
+  if (sets.length !== 1 || set === undefined || !atStatement(file, brackets, set.index)) return undefined
+  const from = set.index + set.text.length
+  const lineEnd = file.text.indexOf('\n', from)
+  const value = file.text.slice(from, lineEnd < 0 ? file.text.length : lineEnd).replace(/;\s*$/, '')
+  const address = ownAddress(ctx, file, brackets, [from, from + value.length], name, depth + 1)
+  if (address !== undefined) return address
+  const code = Array.from(value, (char, i) => (file.kindAt(from + i) === 'code' ? char : ' '))
+  for (const found of value.matchAll(TRIMS_ADDRESS)) code.fill(' ', found.index ?? 0, (found.index ?? 0) + found[0].length)
+  if (!/^[\s()[\],]*$/.test(code.join('').replace(ENV_DEFAULT_CODE, ''))) return undefined
+  const variables = Array.from(value.matchAll(ENV_READ), found => found.slice(1).find(part => part !== undefined) ?? '')
+  const defaults = Array.from(value.matchAll(/https?:\/\/[^\s'"`]+/g), found => ownHost(found[0], name))
+  if (variables.length === 0 || defaults.length === 0 || defaults.some(host => host === undefined)) return undefined
+  if (variables.some(variable => !sameService(variable, name) || setByPlugin(ctx, variable, file.path, set.index, from + value.length))) return undefined
+  return defaults[0]
+}
+
+/** Whether a file the plugin runs or reads to Claude sets the environment variable `variable`, outside `from`..`to` of `path`. */
+function setByPlugin(ctx: ScanContext, variable: string, path: string, from: number, to: number): boolean {
+  const sets = new RegExp(`(?<![\\w$])${variable}(?![\\w$])["'\\]]*\\s*[:=](?!=)|\\b(?:setdefault|putenv|setenv)\\W{1,4}${variable}\\b`)
+  for (const file of ctx.files) {
+    if (!file.isText || !isLive(ctx.roleOf(file.path))) continue
+    const text = ctx.text(file.path)
+    if (text === undefined) continue
+    const found = findAll(text, sets, 50).filter(match => file.path !== path || match.index < from || match.index >= to)
+    if (found.length === 0) continue
+    if (!isCodeFile(file.path, text)) return true
+    // A line of code only commented out sets nothing.
+    const kindAt = spanKinds(text, ctx.interpreters.get(file.path) ?? languageOf(file.path, text))
+    if (found.some(match => kindAt(match.index) !== 'comment')) return true
+  }
+  return false
+}
+
+/**
+ * Where a file's keys go, when every place it puts one can be followed: each
+ * read, and each use of a name it is set to (`const key = process.env.X`),
+ * either only tests whether the key is set or is an argument of a request to
+ * the key's own service. The hosts each key goes to (none when it is only
+ * tested), or undefined when anything else is done with it. Such a file can also serve
+ * pages on your machine or call other addresses it builds, without the key
+ * going there.
+ */
+function keyRequests(ctx: ScanContext, file: CodeFile, keys: readonly Match[]): Map<string, Set<string>> | undefined {
+  if ((file.language !== 'js' && file.language !== 'python') || keys.length >= 20) return undefined
+  const brackets = bracketsOf(file)
+  const hosts = new Map<string, Set<string>>()
+  const followed = (start: number, end: number, name: string): boolean => {
+    if (KEY_TEST_BEFORE.test(file.text.slice(Math.max(0, start - 20), start)) || KEY_TEST_AFTER.test(file.text.slice(end, end + 20))) return true
+    const open = callAround(file, brackets, start)
+    if (open === undefined || !REQUEST_CALL.test(file.text.slice(Math.max(0, open - 40), open))) return false
+    const host = ownAddress(ctx, file, brackets, firstArgument(file, brackets, open), name, 0)
+    if (host !== undefined) hosts.set(name, (hosts.get(name) ?? new Set<string>()).add(host))
+    return host !== undefined
+  }
+  for (const key of keys) {
+    const name = secretName(key)
+    const start = key.index - (ENV_LEAD.exec(file.text.slice(Math.max(0, key.index - 40), key.index))?.[0].length ?? 0)
+    const after = key.index + key.text.length
+    const end = after + (ENV_TAIL.exec(file.text.slice(after, after + 80))?.[0].length ?? 0)
+    const lineStart = file.text.lastIndexOf('\n', start - 1) + 1
+    const bound = /(?:^|;)\s*(?:(?:export\s+)?(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=(?![=>])[^=]*$/.exec(file.text.slice(lineStart, start))
+    const carrier = bound?.[1]
+    const at = bound === null ? -1 : lineStart + bound.index + (/^;?\s*(?:(?:export\s+)?(?:const|let|var)\s+)?/.exec(bound[0])?.[0].length ?? 0)
+    if (carrier === undefined || !atStatement(file, brackets, at) || !onlyGroups(file, brackets, start, at)) {
+      if (!followed(start, end, name)) return undefined
+      continue
+    }
+    const uses = findAll(file.text, new RegExp(`(?<![\\w$.])${carrier.replace(/\$/g, '\\$')}(?![\\w$])`), 60, index => !['comment', 'trailing-comment', 'regex'].includes(file.kindAt(index)))
+    if (uses.length >= 60) return undefined
+    for (const use of uses) {
+      const useEnd = use.index + use.text.length
+      if (/^\s*=(?![=>])/.test(file.text.slice(useEnd, useEnd + 4)) && atStatement(file, brackets, use.index)) continue
+      if (!followed(use.index, useEnd, name)) return undefined
+    }
+  }
+  return hosts
 }
 
 /** The hosts live code names in its own strings: not in comments, patterns or prose. */

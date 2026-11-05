@@ -281,6 +281,12 @@ export function belongsTo(name: string, host: string): boolean {
   return false
 }
 
+/** Whether two variables are named for the same service: OPENAI_BASE_URL and OPENAI_API_KEY. */
+export function sameService(a: string, b: string): boolean {
+  const words = new Set(vendorWords(a))
+  return vendorWords(b).some(word => words.has(word))
+}
+
 /** The words of a variable's name that name a service: GITHUB_TOKEN gives github. */
 function vendorWords(name: string): string[] {
   return name
