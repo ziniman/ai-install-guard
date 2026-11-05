@@ -4,7 +4,7 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
-## v0.8.19 &nbsp;·&nbsp; 2026-11-05
+## v0.9.0 &nbsp;·&nbsp; 2026-11-05
 
 **Scope** - The guard steps in only where something new comes into Claude Code from outside: `/plugin install` and `/plugin marketplace add`, Claude's own `claude plugin install`, `claude plugin marketplace add` and `claude mcp add`, an MCP server Claude writes into your configuration, a mod as it loads, a skill on its first use, and the check at the start of a session. It no longer checks Claude's own work: skills, commands, agents and output styles Claude writes or edits, settings it changes, and shell commands that write into a `.claude` folder all go on untouched, and nothing locks Claude's tools after such a change. Reading that work from a command's text could never be exact, so it kept holding ordinary editing, and Claude Code's own permission prompts already ask before each edit and command. A skill Claude writes is still checked at its first use, like any skill that came with no install.
 
