@@ -2,7 +2,6 @@
 // `/plugin` command the person typed, or a shell command Claude is about to
 // run. Nothing here runs anything or touches the disk.
 
-import { spanKinds } from '../scan/checks/text'
 import { safeLine } from '../scan/safe-text'
 
 /** One thing to add to Claude Code: a plugin from a marketplace, a marketplace, or an MCP server. */
@@ -34,7 +33,7 @@ const MARKETPLACE_FLAGS = new Set(['--json'])
 
 /** The arguments of `/plugin` as the person typed them. */
 export function readPluginArgs(args: string): Reading {
-  const words = splitShell(args).commands.flatMap(item => item.words)
+  const words = splitShell(args).flatMap(item => item.words)
   const sub = words[0]?.toLowerCase()
   if (sub === undefined) return BROWSE
   if (sub === 'install' || sub === 'i') return readInstall(words.slice(1), 'install', '/plugin install')
@@ -44,12 +43,17 @@ export function readPluginArgs(args: string): Reading {
 }
 
 /**
- * A shell command Claude is about to run. It is held when it installs a
- * plugin or adds a marketplace through the `claude` command, also behind
- * `env`, `sudo` and the like, inside `sh -c`, `eval` or a here-document. An
- * install is approved as that exact command, so it must be readable whole: a
- * command that also runs something else, or that is only known as it runs,
- * is held as one the guard cannot read, never let through.
+ * A shell command Claude is about to run, read as written. It is held when
+ * one of the commands the shell runs from its text (each simple command, the
+ * script of `sh -c '…'` or `eval`, a here-document fed to a shell, and what
+ * runs inside `$(…)` or backquotes) installs a plugin, adds a marketplace or
+ * adds an MCP server through the `claude` command, also behind `env`, `sudo`
+ * and the like. An install is approved as that exact command, so it must be
+ * readable whole and stand alone: one beside other commands, or partly only
+ * known as it runs, is held as one the guard cannot read. Code in another
+ * language, data a program is fed and a command built as it runs are not
+ * read for installs: hiding what runs is for Claude Code's own permission
+ * prompts, and the guard holds the installs Claude writes out.
  */
 export function readShellCommand(command: string): Reading {
   // This runs before every shell command Claude runs: it must never fail one
@@ -57,239 +61,46 @@ export function readShellCommand(command: string): Reading {
   try {
     return readShell(command)
   } catch {
-    return mayInstall(command) ? { kind: 'unreadable', label: 'a claude plugin command', reason: 'the guard could not read the command' } : PASS
+    return MAY_INSTALL.test(command) ? { kind: 'unreadable', label: 'a claude plugin command', reason: 'the guard could not read the command' } : PASS
   }
 }
+
+/** The claude command with a plugin or mcp subcommand somewhere after it, for a command the guard failed to read. */
+const MAY_INSTALL = /\bclaude(?:-code)?\b[\s\S]*\b(?:plugins?|mcp)\b/i
 
 function readShell(command: string): Reading {
-  const found: Reading[] = []
-  const { unseen, others, texts, shellRuns, backquoteRuns } = collectInstalls(command, found, 0, true)
-  const installs = found.filter(reading => reading.kind !== 'pass')
+  const found: Found = { installs: [], others: 0 }
+  collect(command, found, 0)
+  const installs = found.installs.filter(reading => reading.kind !== 'pass')
   if (installs.length > 1) return { kind: 'unreadable', label: 'several installs', reason: 'the command installs more than one thing; run each install as a command of its own' }
   const [only] = installs
-  if (only !== undefined) {
-    if (only.kind !== 'install') return only
-    // Approving the install approves the whole command, so nothing else may ride along.
-    if (unseen) return { kind: 'unreadable', label: only.label, reason: `part of the command is only known as it runs, so approving it could run more than the install; run ${only.label} as a command of its own` }
-    if (others > 0) return { kind: 'unreadable', label: only.label, reason: `the command runs more than the install; run ${only.label} as a command of its own, so approving it approves only the install` }
-    // The guard cannot see the shell's current folder, so a source named
-    // relative to it could be another folder than the one the guard scans.
-    const source = only.request.kind === 'marketplace' ? only.request.source : only.request.kind === 'plugin' ? only.request.marketplaceSource : undefined
-    if (source !== undefined && !/^(?:https:\/\/|\/|~\/)/i.test(source)) {
-      return {
-        kind: 'unreadable',
-        label: only.label,
-        reason: `"${safeLine(source)}" could be a folder in the shell's current folder or a repository; name it as a full path or as https://github.com/<owner>/<repo>, so the guard scans what is added`,
-      }
+  if (only === undefined) return PASS
+  if (only.kind !== 'install') return only
+  // Approving the install approves the whole command, so nothing else may ride along: what runs before it could
+  // change what it installs from what the guard scanned.
+  if (found.others > 0) return { kind: 'unreadable', label: only.label, reason: `the command runs more than the install; run ${only.label} as a command of its own, so approving it approves only the install` }
+  // The guard cannot see the shell's current folder, so a source named
+  // relative to it could be another folder than the one the guard scans.
+  const source = only.request.kind === 'marketplace' ? only.request.source : only.request.kind === 'plugin' ? only.request.marketplaceSource : undefined
+  if (source !== undefined && !/^(?:https:\/\/|\/|~\/)/i.test(source)) {
+    return {
+      kind: 'unreadable',
+      label: only.label,
+      reason: `"${safeLine(source)}" could be a folder in the shell's current folder or a repository; name it as a full path or as https://github.com/<owner>/<repo>, so the guard scans what is added`,
     }
-    return only
   }
-  // Text only known as it runs (`$CMD arg`, `bash -c "$CMD"`, `eval "$X"`) holds nothing by itself: it could run
-  // anything, which Claude Code's own permission checks are for, and the guard holds installs. It counts only
-  // beside an install's words, which an unseen part may run (a variable it reads, code in another language),
-  // or `claude plugin` or `claude mcp` with what it is asked to do left out. A claude command read whole and
-  // found to install nothing is no such sign. Code, and data fed to a program other than a shell, counts only
-  // when it may start a program, unless a shell runs text the guard did not read: a comment or a string in a
-  // script that starts nothing installs nothing.
-  const rest = texts
-    .filter(item => !item.code || shellRuns || startsProgram(backquoteRuns && item.data === true ? { ...item, backquotes: true } : item))
-    .map(item => item.text)
-    .join('\n')
-  if (unseen && (mayInstall(rest) || CLAUDE_SUBCOMMAND.test(rest))) {
-    return { kind: 'unreadable', label: 'a claude command', reason: 'part of the command is only known as it runs, so the guard cannot tell what it installs; run claude plugin install or claude mcp add as a plain command' }
-  }
-  return PASS
+  return only
 }
-
-/**
- * The words of a plugin install however they are joined: by spaces, quotes or
- * the commas of a list in another language (`['plugin', 'install']`). A path
- * separator never joins them, so `.claude-plugin/marketplace.json` is a path.
- */
-const MAY_INSTALL = /\bplugins?\b[^\w\n/\\]{1,8}(?:install|update|marketplace)\b|\bmcp\b[^\w\n/\\]{1,8}add(?:-json|-from-claude-desktop)?\b/i
-/**
- * `plugin i`, install's short name, as the command takes it, or as a string
- * of its own in code, which may change its case as it runs (`"I".lower()`):
- * `the plugins I use` is English.
- */
-const MAY_INSTALL_SHORT = /\bplugins?\b[^\w\n/\\]{1,8}i\b|\bplugins?\b[^\w\n/\\]{1,8}(["'`])I\1/
-
-function mayInstall(text: string): boolean {
-  return MAY_INSTALL.test(text) || MAY_INSTALL_SHORT.test(text)
-}
-
-/**
- * The `claude` command's names as words of their own, or at the end of a
- * path (`/usr/local/bin/claude`, `./claude`) but not inside one
- * (`~/.claude/`), spelled as the command is: `Claude Code` in a sentence
- * names the product, and `/claude` alone in one is no path, not a command.
- */
-const CLAUDE_WORD = /(?:(?<![\w./-])|(?<=[\w.~-]\/))claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?(?![\w./-])/
-/** A name of the command as a string of its own in code, in any case, which code may change as it runs (`"Claude".lower()`). */
-const CLAUDE_STRING = /(["'`])claude(?:-code)?(?:\.(?:exe|cmd|bat|ps1))?\1/i
-
-function namesClaude(text: string): boolean {
-  return CLAUDE_WORD.test(text) || CLAUDE_STRING.test(text)
-}
-
-/**
- * The `claude` command joined to `plugin` or `mcp`, by spaces, quotes or the
- * commas of a list over lines (`"claude",\n "plugin", sub`), and not followed
- * by a subcommand that installs nothing: what it is asked to do is left out,
- * or is an install.
- */
-const CLAUDE_SUBCOMMAND = new RegExp(`${CLAUDE_WORD.source}[^\\w/\\\\]{1,16}(?:plugins?|mcp)(?![\\w.-])(?![^\\w/\\\\]{1,16}(?:list|validate|test|details|get|remove|uninstall|disable|enable|serve|help|h)\\b)`)
 
 /** Names the `claude` command goes by, Windows' launchers included. */
-export const CLAUDE = new Set(['claude', 'claude-code'].flatMap(name => [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`, `${name}.ps1`]))
+const CLAUDE = new Set(['claude', 'claude-code'].flatMap(name => [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`, `${name}.ps1`]))
 
-/** Programs that run their `-c` argument as a script. */
+/** Programs that run their `-c` argument, or the here-document they are fed, as a script. */
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'])
 
 /**
- * Programs that run code in another language: given inline, from their
- * input or from a file, it is code the guard does not read.
- */
-const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'osascript', 'pwsh', 'powershell', 'lua', 'tclsh', 'rscript', 'julia', 'swift', 'groovy', 'jshell'])
-
-/**
- * Interpreters of JavaScript, where a backquote opens a template. In Ruby,
- * Perl and PHP one runs a shell command.
- */
-const JAVASCRIPT = new Set(['node', 'nodejs', 'deno', 'bun'])
-
-/**
- * Languages in which a backquote runs nothing: Python, where one can only be
- * text in a string or a comment, awk, sed and jq. Their code's backquotes are
- * its own text, as a JavaScript template's are; one inside a double-quoted
- * string, which the code may hand to a shell, is still read as a script.
- */
-const NO_BACKQUOTE = new Set(['python', 'python2', 'python3', 'awk', 'gawk', 'mawk', 'nawk', 'sed', 'gsed', 'jq', 'yq'])
-
-/** Languages in which any backquote runs a shell command. */
-const BACKQUOTE_RUNS = new Set(['perl', 'ruby', 'php', 'julia'])
-
-/** Languages whose code runs a program by naming it, as a shell's does (PowerShell's `& name`, Tcl's `exec name`): their code is read as shell text. */
-const NAMES_RUN = new Set(['pwsh', 'powershell', 'tclsh'])
-
-/** JavaScript with its regular expression literals and comments blanked: a backquote in one, as in a pattern for a fenced code block, opens nothing. */
-function withoutPatterns(code: string): string {
-  const kind = spanKinds(code, 'js')
-  let out = ''
-  for (let at = 0; at < code.length; at += 1) {
-    const span = kind(at)
-    out += span === 'regex' || span === 'comment' || span === 'trailing-comment' ? (code[at] === '\n' ? '\n' : ' ') : code[at]
-  }
-  return out
-}
-
-/**
- * JavaScript that may start a process or run text as code: a template it
- * hands to one may run as a command (`` execSync(`${cmd}`) ``, `` Bun.$`…` ``,
- * `` eval(`${code}`) ``), so its backquotes are read as scripts.
- */
-/**
- * What hands a template to something that only prints it: whatever else it is
- * handed to may run it, through a function of the code's own as well. Only the
- * global `console` and `process` count, never a property of something else
- * (`foo.console.log(`).
- */
-const PRINTS_TEMPLATE = /(?<![\w$.])(?:console\.(?:log|error|warn|info|debug)|process\.std(?:out|err)\.write)\s*\(\s*$/
-
-/** The calls `PRINTS_TEMPLATE` trusts, as code writes them. */
-const PRINT_CALLS = /(?<![\w$.])(?:console\.(?:log|error|warn|info|debug)|process\.std(?:out|err)\.write)\s*\(/g
-
-/**
- * Code that names what those calls use in any other way (`console["log"] =`,
- * `globalThis.console`, `Reflect.set(console, …)`): it may have changed what
- * they do, so none of them only prints.
- */
-const REDEFINES_PRINT = /\b(?:console|globalThis|global|Reflect|Proxy)\b|\bprocess\s*(?:\.\s*std(?:out|err)\b|\[)/
-
-/**
- * A text `collectInstalls` gathers: `backquotes` is set for code in a language
- * where a backquote runs a shell command, `language` for code the scanner's
- * tokenizer reads, Python or JavaScript, `names` for code that runs a program
- * by naming it (`NAMES_RUN`), `data` for what a program other than a shell
- * or an interpreter is fed, and `printed` for data a program that only
- * prints or reads is fed (`cat > file <<'EOF'`), which it never runs.
- */
-type CollectedText = { text: string; code: boolean; backquotes?: boolean; language?: 'python' | 'js'; names?: boolean; data?: boolean; printed?: boolean }
-
-/**
- * Whether code or data may start a program, so an install's words in it may
- * run. In Python or JavaScript only the code itself counts, not its strings
- * and comments: a script that edits a file which names `exec(` starts nothing.
- */
-function startsProgram(item: CollectedText): boolean {
-  // PowerShell and Tcl run a program by naming it: their code counts when it names the claude command outside
-  // its strings, or runs one some other way (`& 'claude'`, `Invoke-Expression`, Tcl's `exec`).
-  if (item.names === true) return NAMES_RUN_CALL.test(item.text) || namesClaude(outsideStrings(item.text))
-  const text = item.language === undefined ? item.text : codeOnly(item.text, item.language)
-  // In code, a process function named at all may be called under another name (`from os import system as go`)
-  // or by its name in a string (`call_user_func("system", …)`, where no tokenizer reads the code); and
-  // JavaScript names the module that starts processes in a string. Data fed to another program is not code.
-  const named = item.data !== true && (PROCESS_NAMES.test(text) || (item.language === 'js' && PROCESS_MODULES.test(withoutPatterns(item.text))))
-  // What a program only prints or writes runs a shell's `$(claude …)` only when a shell runs the file it made,
-  // which counts every text: as code another program runs later, that is no call.
-  const shellCall = item.printed !== true && SHELL_RUNS_CLAUDE.test(text)
-  return named || shellCall || MAY_RUN_TEXT.test(text) || STARTS_PROGRAM.test(text) || (item.backquotes === true && outsideStrings(item.text).includes('`'))
-}
-
-/**
- * Perl-like, PowerShell or Tcl code without its strings: a single-quoted one
- * holds only text in each, and a double-quoted one too, unless it interpolates
- * code (Ruby's `#{…}`, Perl's `@{[…]}` or `${\…}`, `$(…)`), where a backquote
- * or a command still runs.
- */
-function outsideStrings(code: string): string {
-  return code.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, string => (string.startsWith('"') && /#\{|@\{\[|\$\{\\|\$\(/.test(string) ? string : ' '))
-}
-
-/** PowerShell's and Tcl's ways to run a program besides naming it: the call operator, Invoke-Expression and the like, Tcl's exec and eval. */
-const NAMES_RUN_CALL = /(?:^|[\s;{(|])&\s*['"$\w]|\bInvoke-(?:Expression|Command|Item)\b|\biex\b|\bStart-Process\b|\.Invoke\s*\(|\[scriptblock\]|\b(?:exec|eval|uplevel|subst)\b|\bopen\s+["|]/i
-
-/** The names of functions that start a process, which code may import or take under another name. */
-const PROCESS_NAMES = /\b(?:system|popen|Popen|exec[lv]\w*|spawn\w*|posix_spawn\w*|fork|execSync|execFile\w*|check_output|check_call|getoutput|getstatusoutput|startfile)\b|create_subprocess/
-
-/** A JavaScript module that starts processes or runs code, required or imported by name. */
-const PROCESS_MODULES = /\b(?:require|import)\s*\(?\s*['"`](?:node:)?(?:child_process|worker_threads|vm|cluster)['"`]|\bfrom\s+['"](?:node:)?(?:child_process|worker_threads|vm|cluster)['"]/
-
-/** Python or JavaScript with its strings and comments blanked. */
-function codeOnly(code: string, language: 'python' | 'js'): string {
-  const kind = spanKinds(code, language)
-  let out = ''
-  for (let at = 0; at < code.length; at += 1) out += kind(at) === 'code' || code[at] === '\n' ? code[at] : ' '
-  return out
-}
-
-/** The tokenizer's name for an interpreter's language, when it reads it. */
-function tokenized(language: string): 'python' | 'js' | undefined {
-  return /^python[23]?$/.test(language) ? 'python' : JAVASCRIPT.has(language) ? 'js' : undefined
-}
-
-/**
- * Code beside JavaScript's (`MAY_RUN_TEXT`) that may start a program: Python's
- * subprocess and os calls, a `system`, `exec`, `popen` or `eval` call in any
- * language, Ruby's, Perl's and PHP's ways, PowerShell's and AppleScript's,
- * Node's other ways to load a module (`_load`, `createRequire`, `mainModule`),
- * Lua's, Swift's and Groovy's,
- * and the ways code reaches a call by a name it builds as it runs (Python's
- * `getattr` and the like, a JavaScript `require` of a name that is no
- * literal, a call through a computed property `x[…](…)`, PHP's
- * `call_user_func` and variable functions `$f(…)`, Ruby's `send` and
- * `method`, Perl's `&{…}` and `&$f`).
- */
-const STARTS_PROGRAM = /\(\s*\$\w+\s*\)\s*\(|\$\{[^}]*\}\s*\(|\bcall_user_func\w*|\bforward_static_call\w*|\bReflectionFunction\b|\bcreate_function\b|\bassert\s*\(|\b(?:public_)?send\s*\(|__send__|\bmethod\s*\(|\b(?:instance|class|module)_(?:eval|exec)\b|\$\w+\s*\(|&\s*[{$]|\b_load\b|\bcreateRequire\b|\bmainModule\b|\bmodule\.constructor\b|\bos\.execute\b|\bio\.popen\b|\bProcess\s*\(|\.execute\s*\(|\b(?:getattr|setattr|globals|vars)\s*\(|__dict__|__builtins__|\bctypes\b|\bpickle\b|\bmarshal\b|\brequire\s*\(\s*[^'"`\s)]|\][\s)]*\(|\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)|\bpty\.spawn|\b(?:system|exec\w*|spawn\w*|popen|Popen|fork|check_output|check_call|getoutput|getstatusoutput|eval|compile|__import__)\s*\(|\b(?:system|exec)\s+['"]|\bimportlib\b|\bOpen3\b|\bIO\.popen\b|\bProcessBuilder\b|\bgetRuntime\b|\bshell_exec\b|\bpassthru\b|\bproc_open\b|%x[({[<|!]|\bqx\b|\bopen\s*\(?[^)\n]*\|\s*['"]|do shell script|\bStart-Process\b|\bInvoke-Expression\b|\biex\b/
-
-/** A backquote or `$(…)` around the claude command, which a shell or Perl runs. */
-const SHELL_RUNS_CLAUDE = /`[^`\n]*\bclaude(?:-code)?\b[^`\n]*`|\$\([^)\n]*\bclaude(?:-code)?\b/
-
-const MAY_RUN_TEXT = /child_process|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\b|\b(?:Bun|Deno)\b|binding|getBuiltinModule|\$\s*`|\b(?:eval|Function|vm|Worker)\b|_compile|runIn\w*Context|compileFunction|\bimport\s*\(|\brequire\s*\(\s*`/
-
-/**
- * Programs that only print, read or wait: an install's words among their
- * arguments are text, and running one beside an install adds nothing to it.
+ * Programs that only print, read or wait: running one beside an install adds
+ * nothing to it, and an install's words among their arguments are text.
  * `command` is one only as `command -v` or `-V`, which says what a name would
  * run; `programAt` goes past any other `command` to the program it runs.
  */
@@ -305,13 +116,12 @@ function writesAnyway(program: string, args: readonly string[]): boolean {
 /**
  * Programs that run the command that follows their own options: the options
  * that take a value, how many plain words come before the command, whether
- * `NAME=value` words may come first, whether the command's words come in
- * part from input (xargs), and an option with which they run nothing at all
- * (`lookup`).
+ * `NAME=value` words may come first, and an option with which they run
+ * nothing at all (`lookup`).
  */
-type Wrapper = { values?: readonly string[]; positionals?: number; assignments?: boolean; fromInput?: boolean; script?: readonly string[]; lookup?: RegExp }
+type Wrapper = { values?: readonly string[]; positionals?: number; assignments?: boolean; lookup?: RegExp }
 const WRAPPERS: Record<string, Wrapper> = {
-  env: { values: ['-u', '--unset', '-C', '--chdir'], assignments: true, script: ['-S', '--split-string'] },
+  env: { values: ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'], assignments: true },
   sudo: { values: ['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from', '-D', '--chdir', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-U', '--other-user'], assignments: true },
   doas: { values: ['-u', '-C'] },
   // `command -v`, `-V` and `-pv` only say what a name would run.
@@ -330,144 +140,19 @@ const WRAPPERS: Record<string, Wrapper> = {
   // Multi-call programs: the next word names the program they act as.
   busybox: {},
   toybox: {},
-  xargs: { values: ['-I', '-i', '-n', '-P', '-L', '-l', '-s', '-d', '-E', '-e', '-a', '--max-args', '--max-procs', '--max-lines', '--max-chars', '--delimiter', '--eof', '--arg-file', '--replace'], fromInput: true },
 }
-
-/** Programs whose text arguments are messages and names, never commands: a commit message or a pull request may quote an install. */
-const TEXT_ARGUMENTS = new Set(['git', 'gh'])
-
-/**
- * Configuration keys whose value git runs as a command (a `!` alias, a pager,
- * an editor, a helper or driver), or that point it at hooks to run.
- */
-const GIT_RUNS = /^(?:alias\.[^=]+|core\.(?:pager|editor|sshcommand|fsmonitor|hookspath|askpass)|sequence\.editor|diff\.external|gpg\.(?:[^.]+\.)?program|credential\.(?:[^=]+\.)?helper|(?:diff|filter|merge|difftool|mergetool|pager|uploadpack|receivepack|remote\.[^.]+)\.[^=]+)=/i
-
-/** Git's options that take a value before its subcommand. */
-const GIT_VALUES = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env'])
-
-/**
- * The shell text git itself runs, from its arguments: a configuration value
- * it runs (`-c alias.x='!…'`, `-c core.pager=…`), `rebase --exec`,
- * `bisect run` and `submodule foreach`. Everything else git takes, messages
- * and names included, is text. `hooks` is set when a configuration points it
- * at hooks the guard cannot read.
- */
-function gitScripts(args: readonly string[]): { scripts: string[]; hooks: boolean } {
-  const scripts: string[] = []
-  let hooks = false
-  let index = 0
-  // Global options, before the subcommand.
-  for (; index < args.length; index += 1) {
-    const arg = args[index] as string
-    if (!arg.startsWith('-')) break
-    const config = arg === '-c' ? args[index + 1] : arg.startsWith('-c') ? arg.slice(2) : undefined
-    if (config !== undefined && GIT_RUNS.test(config)) {
-      if (/^core\.hookspath=/i.test(config)) hooks = true
-      else scripts.push(config.slice(config.indexOf('=') + 1).replace(/^!/, ''))
-    }
-    if (GIT_VALUES.has(arg)) index += 1
-  }
-  const sub = args[index]
-  const rest = args.slice(index + 1)
-  if (sub === 'rebase') {
-    rest.forEach((arg, at) => {
-      if (arg === '-x' || arg === '--exec') scripts.push(rest[at + 1] ?? '')
-      else if (arg.startsWith('--exec=')) scripts.push(arg.slice('--exec='.length))
-    })
-  }
-  if (sub === 'bisect' && rest[0] === 'run') scripts.push(rest.slice(1).join(' '))
-  if (sub === 'submodule') {
-    const at = rest.indexOf('foreach')
-    if (at !== -1) scripts.push(rest.slice(at + 1).filter(arg => arg !== '--recursive' && arg !== '-q' && arg !== '--quiet').join(' '))
-  }
-  return { scripts, hooks }
-}
-
-/** How deep `sh -c "sh -c '…'"` is followed before the guard gives up reading it. */
-const MAX_DEPTH = 4
-
-type Collected = {
-  /** Part of what runs is only known as it runs, or comes from input or a file the guard does not read. */
-  unseen: boolean
-  /** Simple commands that run something other than an install, a quiet program or a shell the guard read into. */
-  others: number
-  /**
-   * The text of each simple command and of its input, but for a `claude`
-   * command read whole and found to install nothing: where an install's words
-   * would show when part of the command is unseen. `code` marks text a shell
-   * does not run as commands: an interpreter's code, or what a program other
-   * than a shell is fed, which counts only when it may start a program.
-   */
-  texts: CollectedText[]
-  /** A shell runs text the guard does not read (a file, or its input), which may be any data the command holds. */
-  shellRuns: boolean
-  /** Perl, Ruby or PHP runs, so a backquote in any data the command holds may be one of theirs, which runs a shell command. */
-  backquoteRuns: boolean
-}
-
-/**
- * A word whose text is only known as the command runs: an expansion, a
- * substitution, a pathname pattern (`claud[e]`, `cl*`) or a brace list
- * (`cl{aude,}`). `[` on its own is the test command.
- */
-function isDynamic(word: string): boolean {
-  return word !== '[' && (/[$`*?[]/.test(word) || BRACES.test(word))
-}
-
-/** A brace list (`{a,b}`) or range (`{a..c}`, `{1..3}`), which the shell turns into several words. */
-const BRACES = /\{[^}]*(?:,|\.\.)[^}]*\}/
-
-/** The names of the functions shell text defines (`name() {`, `function name`). */
-function definedFunctions(text: string): Set<string> {
-  return new Set([...text.matchAll(/(?:^|[\s;&|(){}])(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\s*\)|\bfunction\s+([A-Za-z_][\w-]*)/g)].map(found => found[1] ?? found[2] ?? ''))
-}
-
-/**
- * `text` with each substitution the shell runs as it reads the command
- * (`scripts`, already read as commands) in its place as a word only known as
- * it runs, so reading the text again does not read them twice.
- */
-function asOutput(text: string, scripts: readonly string[] | undefined): string {
-  let out = text
-  for (const script of scripts ?? []) out = out.split(`$(${script})`).join('$_').split(`\`${script}\``).join('$_')
-  return out
-}
-
-/** The files a command writes by redirection, and those it names by a path, each by its file name. */
-type ShellFiles = { written: Set<string>; named: Set<string> }
-
-/** A word or a part of one that is a path: it holds a `/`. */
-const PATH_TOKEN = /[\w.~$-]*\/[\w./~-]+/g
-
-/** The last part of a path, its file's own name. */
-function fileName(path: string): string {
-  return path.replace(/\/+$/, '').split('/').pop() ?? path
-}
-
-/** `NAME=value`, or `NAME+=value`, at the start of a word. */
-const ASSIGNMENT = /^([A-Za-z_]\w*)(\+?)=/
-/** Words that may come before a command within a compound one. */
-const COMPOUND_PREFIX = new Set(['then', 'do', 'else', 'elif', '!', 'time', 'if', 'while', 'until', '{'])
-/** Words that open a compound command, and those that close one. */
-const COMPOUND_OPENS = new Set(['if', 'while', 'until', 'for', 'select', 'case', '{'])
-const COMPOUND_CLOSES = new Set(['fi', 'done', 'esac', '}'])
 
 /**
  * Where the program of a simple command is: after `NAME=value` words and
  * any wrappers with their options. A wrapper given an option with which it
- * runs nothing (`command -v`) is the program itself. `scripts` are strings a
- * wrapper runs as shell text (`env -S`); `fromInput` is set when its words
- * come in part from input (`xargs`).
+ * runs nothing (`command -v`) is the program itself.
  */
-function programAt(words: readonly string[]): { index: number; scripts: string[]; fromInput: boolean } {
-  const scripts: string[] = []
-  let fromInput = false
+function programAt(words: readonly string[]): number {
   let index = 0
   while (index < words.length && /^[A-Za-z_]\w*=/.test(words[index] as string)) index += 1
   for (let guard = 0; guard < 8 && index < words.length; guard += 1) {
     const wrapper = WRAPPERS[programName(words[index])]
     if (wrapper === undefined) break
-    fromInput ||= wrapper.fromInput === true
     const own = index
     index += 1
     let plain = wrapper.positionals ?? 0
@@ -482,11 +167,9 @@ function programAt(words: readonly string[]): { index: number; scripts: string[]
         continue
       }
       if (word.startsWith('-') && word !== '-') {
-        if (wrapper.lookup?.test(word) === true) return { index: own, scripts, fromInput }
+        if (wrapper.lookup?.test(word) === true) return own
         const name = word.includes('=') ? word.slice(0, word.indexOf('=')) : word
-        const takesValue = !word.includes('=') && ((wrapper.values ?? []).includes(name) || (wrapper.script ?? []).includes(name))
-        if ((wrapper.script ?? []).includes(name)) scripts.push(word.includes('=') ? word.slice(word.indexOf('=') + 1) : (words[index + 1] ?? ''))
-        index += takesValue ? 2 : 1
+        index += !word.includes('=') && (wrapper.values ?? []).includes(name) ? 2 : 1
         continue
       }
       if (plain > 0) {
@@ -497,7 +180,7 @@ function programAt(words: readonly string[]): { index: number; scripts: string[]
       break
     }
   }
-  return { index, scripts, fromInput }
+  return index
 }
 
 /** Whether `claude plugin …` or `claude mcp …` starts at `index`. */
@@ -505,11 +188,14 @@ function isClaudePlugin(words: readonly string[], index: number): boolean {
   return CLAUDE.has(programName(words[index])) && /^(?:plugins?|mcp)$/i.test(words[index + 1] ?? '')
 }
 
+/** A word whose only expansion is the home folder it starts with (`~/market`): it is known before the command runs. */
+const HOME_ONLY = /^~[^$`*?[{]*$/
+
 /**
  * The install a `claude plugin` or `claude mcp` command at `index` asks for,
  * if it is one. `expands` says which of `words` the shell expands as it runs.
  */
-function claudePlugin(words: readonly string[], index: number, expands: ReadonlySet<number> = new Set(), splits: ReadonlySet<number> = new Set()): Reading | undefined {
+function claudePlugin(words: readonly string[], index: number, expands: ReadonlySet<number>, splits: ReadonlySet<number>): Reading | undefined {
   if (/^mcp$/i.test(words[index + 1] ?? '')) {
     const base = index + 2
     return claudeMcp(words.slice(base), { expands: at => expands.has(at + base), splits: at => splits.has(at + base) })
@@ -519,167 +205,95 @@ function claudePlugin(words: readonly string[], index: number, expands: Readonly
   // Asked for its help (before `--`), the command shows it and does nothing else.
   const options = rest.indexOf('--') === -1 ? rest : rest.slice(0, rest.indexOf('--'))
   if (options.includes('--help') || options.includes('-h')) return PASS
-  if (sub === 'install' || sub === 'i') return readInstall(rest.slice(1), 'install', 'claude plugin install')
-  if (sub === 'update') return readInstall(rest.slice(1), 'update', 'claude plugin update')
-  if (sub === 'marketplace' && rest[1]?.toLowerCase() === 'add') return readMarketplaceAdd(rest.slice(2), 'claude plugin marketplace add')
-  return undefined
+  const reading =
+    sub === 'install' || sub === 'i'
+      ? readInstall(rest.slice(1), 'install', 'claude plugin install')
+      : sub === 'update'
+        ? readInstall(rest.slice(1), 'update', 'claude plugin update')
+        : sub === 'marketplace' && rest[1]?.toLowerCase() === 'add'
+          ? readMarketplaceAdd(rest.slice(2), 'claude plugin marketplace add')
+          : undefined
+  // A plugin or a source only known as the command runs could be any: what is scanned must be what is installed.
+  if (reading !== undefined && reading.kind !== 'pass' && rest.some((word, at) => expands.has(index + 2 + at) && !HOME_ONLY.test(word))) {
+    return { kind: 'unreadable', label: reading.label, reason: 'part of it is only known as the command runs, so the guard cannot tell what it installs; write it out in full' }
+  }
+  return reading
 }
 
+/** How deep `sh -c "sh -c '…'"` is followed before the guard gives up reading it. */
+const MAX_DEPTH = 4
+
+/** The installs a command asks for, and how many other commands run beside them. */
+type Found = { installs: Reading[]; others: number }
+
 /**
- * Adds every install `command` asks for to `found`, and says whether part of
- * what runs is unseen and how many other commands run beside it. `asScript`
- * is set for text a shell runs as commands, not an argument of another
- * program, read only for installs it may run. `inCode` is
- * set for JavaScript that starts no process and runs no text as code, where
- * a backquote outside a string opens a template, the code's own text, so what
- * it holds, like every word read from the code, is read as code too. One
- * inside a string is still read as a script, and so is a shell or eval named
- * in the code. `runners` is set for JavaScript that may run text: a template
- * there is a script unless it is only printed (`` console.log(`…`) ``), since
- * anything else may hand it to what runs it. `files` holds, across every
- * script the command holds, the files its redirections write and the files
- * it names by a path, by file name: one run as a program later is a script
- * the guard did not read.
+ * Adds to `found` every install the commands in `text` ask for, and counts
+ * the commands that run beside them: any but a quiet program, a shell or
+ * `eval` running a script the guard read into, and a `claude plugin` or
+ * `claude mcp` install.
  */
-function collectInstalls(command: string, found: Reading[], depth: number, asScript: boolean, inCode = false, runners = false, files: ShellFiles = { written: new Set(), named: new Set() }): Collected {
-  const out: Collected = { unseen: false, others: 0, texts: [], shellRuns: false, backquoteRuns: false }
-  if (depth > MAX_DEPTH) return { unseen: true, others: 0, texts: [{ text: command, code: false }], shellRuns: asScript, backquoteRuns: false }
-  const merge = (inner: Collected, counts: boolean): void => {
-    out.unseen ||= inner.unseen
-    out.shellRuns ||= inner.shellRuns
-    out.backquoteRuns ||= inner.backquoteRuns
-    if (counts) out.others += inner.others
-    out.texts.push(...inner.texts)
+function collect(text: string, found: Found, depth: number): void {
+  if (depth > MAX_DEPTH) {
+    // Nested deeper than the guard reads: an install's words in it still count.
+    if (MAY_INSTALL.test(text)) found.installs.push({ kind: 'unreadable', label: 'a claude command', reason: 'it is nested too deep for the guard to read; run claude plugin install or claude mcp add as a plain command' })
+    else found.others += 1
+    return
   }
-  const nested = (script: string): void => merge(collectInstalls(script, found, depth + 1, true, false, false, files), true)
-  const functions = definedFunctions(command)
-  for (const { words, input, scripts: substitutions, quotedScripts, scriptLeads, writes, targets, expands, splits } of splitShell(command).commands) {
-    const { index, scripts, fromInput } = programAt(words)
-    // What a substitution prints for git or gh (`--body "$(cat <<'EOF' … EOF)"`) is a message it keeps, never run.
-    const keepsText = TEXT_ARGUMENTS.has(programName(words[index])) && !isDynamic(words[index] ?? '')
-    // What its substitutions run comes first, and is read as commands too, but
-    // for a JavaScript template, which is the code's own text.
-    substitutions?.forEach((script, at) => {
-      const template = (inCode || (runners && PRINTS_TEMPLATE.test(scriptLeads?.[at] ?? ''))) && quotedScripts?.includes(at) !== true
-      const inner = collectInstalls(script, found, depth + 1, !template, template, false, files)
-      merge(keepsText ? { ...inner, texts: inner.texts.filter(item => item.printed !== true) } : inner, true)
-    })
-    const word = words[index]
-    const program = programName(word)
-    const language = program.replace(/\.exe$/, '').replace(/^(python[23]?)\.\d+$/, '$1')
-    // An interpreter's words hold its code, and what a program other than a shell is fed is data or code.
-    const read = tokenized(language)
-    const kind = { ...(BACKQUOTE_RUNS.has(language) ? { backquotes: true } : {}), ...(read === undefined ? {} : { language: read }), ...(NAMES_RUN.has(language) ? { names: true } : {}) }
-    // Git's words are text but for what it runs (`gitScripts`, read below), and gh's but for an alias or extension it may define.
-    const message = keepsText && !(program === 'gh' && words.some(item => /^(?:alias|extension|ext)$/.test(item)))
-    const own = out.texts.push({ text: (message ? words.slice(0, index + 1) : words).join(' '), code: INTERPRETERS.has(language), ...kind }) - 1
-    // What git or gh is fed is text it keeps (a commit message, a pull request's body), and what a program only
-    // prints it never runs: its shell's words count only when a shell runs the file it made.
-    if (input !== undefined && !TEXT_ARGUMENTS.has(program)) out.texts.push({ text: input, code: !SHELLS.has(program), ...(INTERPRETERS.has(language) ? kind : SHELLS.has(program) ? {} : { data: true, ...(QUIET.has(program) ? { printed: true } : {}) }) })
+  const nested = (script: string): void => collect(script, found, depth + 1)
+  for (const { words, input, scripts, writes, expands, splits } of splitShell(text)) {
+    // What its substitutions run comes first, and is read as commands too.
+    scripts?.forEach(nested)
     // A write to a file is more than an install, whatever program makes it.
-    if (writes === true) out.others += 1
-    // A script the command wrote, or named before by a path (`tee /tmp/x`, a path in code) and runs by one now, is shell
-    // text the guard did not read. By file name: the same file may be named another way (`dir//s`, `./dir/s`, after a `cd`).
-    // Only in text a shell runs: an argument read in case it is a script holds paths that are no programs.
-    const ranScript = asScript && word !== undefined && (files.written.has(fileName(word)) || (word.includes('/') && files.named.has(fileName(word))))
-    for (const target of targets ?? []) files.written.add(fileName(target.path))
-    for (const item of [...words, input ?? '']) for (const named of item.match(PATH_TOKEN) ?? []) files.named.add(fileName(named))
-    scripts.forEach(nested)
+    if (writes === true) found.others += 1
+    const index = programAt(words)
+    const word = words[index]
     // Only NAME=value words: nothing runs.
     if (word === undefined) continue
-    // So is one `source` or `.` runs.
-    if (ranScript || program === 'source' || program === '.') {
-      out.unseen = true
-      out.shellRuns = true
-    }
-    // xargs fills in words from its input, which the guard does not see; for a quiet program that is only text.
-    if (fromInput && !(QUIET.has(program) && !writesAnyway(program, words.slice(index + 1)))) out.unseen = true
-    if (CLAUDE.has(program)) {
+    const program = programName(word)
+    const expanded = new Set(expands ?? [])
+    const split = new Set(splits ?? [])
+    // A program only known as it runs (`$X`, or `env "$OPTS"` taken for one) is none the guard knows: what it does is
+    // for Claude Code's own permission prompts, but an install written out among its words still counts, as for any other.
+    const known = !expanded.has(index) || HOME_ONLY.test(word)
+    if (known && CLAUDE.has(program)) {
       // Every `plugin` or `mcp` word is a possible subcommand: one may be a global
       // option's value (`claude --settings mcp mcp add …`), so each is tried.
       const places = words.flatMap((item, place) => (place > index && /^(?:plugins?|mcp)$/i.test(item) ? [place] : []))
-      const after = (at: number, offset: number): string => words[at + offset] ?? ''
-      // `claude` asked to do something only known as it runs could be installing.
-      if (isDynamic(words[index + 1] ?? '') || places.some(at => isDynamic(after(at, 1)) || (/^marketplace$/i.test(after(at, 1)) && isDynamic(after(at, 2))))) {
-        found.push({ kind: 'unreadable', label: 'a claude command', reason: 'what it asks claude to do is only known as it runs; run claude plugin install or claude mcp add as a plain command' })
+      // `claude plugin` or `claude mcp` asked to do something only known as it runs could be installing.
+      if (expanded.has(index + 1) || places.some(at => expanded.has(at + 1) || (/^marketplace$/i.test(words[at + 1] ?? '') && expanded.has(at + 2)))) {
+        found.installs.push({ kind: 'unreadable', label: 'a claude command', reason: 'what it asks claude to do is only known as it runs; run claude plugin install or claude mcp add as a plain command' })
         continue
       }
       // `claude plugin …` or `claude mcp …`, also after global options (`claude --debug plugin install …`).
-      const expanded = new Set(expands ?? [])
-      const split = new Set(splits ?? [])
       const reading = places.map(at => claudePlugin(words, at - 1, expanded, split)).find(item => item !== undefined)
-      if (reading !== undefined) found.push(reading)
-      else {
-        out.others += 1
-        // Read whole and found to install nothing (`claude plugin test .`): its words are no sign of an install elsewhere.
-        out.texts[own] = { text: '', code: false }
-      }
+      if (reading === undefined) found.others += 1
+      else found.installs.push(reading)
       continue
     }
-    // A program only known as it runs.
-    if (isDynamic(word)) {
-      out.unseen = true
-      out.others += 1
-      continue
-    }
-    if (SHELLS.has(program)) {
-      // `sh -c '…'`, `bash -lc '…'`, `bash <<EOF`: the script is read as commands too.
+    if (known && SHELLS.has(program)) {
+      // `sh -c '…'`, `bash -lc '…'`, `bash <<'EOF'`: the script, written out, is read as commands too.
       const flag = words.findIndex((item, at) => at > index && /^-[A-Za-z]*c[A-Za-z]*$/.test(item))
-      const script = flag === -1 ? undefined : words[flag + 1]
+      const script = flag === -1 ? input : words[flag + 1]
       if (script !== undefined) nested(script)
-      else if (input !== undefined) nested(input)
-      // A shell given no script reads one from its input, often a pipe; one given a file runs that file.
-      else {
-        out.unseen = true
-        out.shellRuns = true
-        out.others += 1
-      }
+      // One given a file, or its input from a pipe, runs what the guard does not read.
+      else found.others += 1
       continue
     }
-    if (program === 'eval') {
+    if (known && program === 'eval') {
       nested(words.slice(index + 1).join(' '))
       continue
     }
-    // Code in another language, inline, from input or from a file, is not read.
-    if (INTERPRETERS.has(language)) out.unseen = true
-    if (BACKQUOTE_RUNS.has(language)) out.backquoteRuns = true
-    if (QUIET.has(program) && !writesAnyway(program, words.slice(index + 1))) continue
-    // Any other program may run an install among its arguments (`watch`,
-    // `flock`), and may run it again and again: the program around it counts
-    // as more than the install, so it is held.
+    if (known && QUIET.has(program) && !writesAnyway(program, words.slice(index + 1))) continue
+    // Any other program may run an install among its arguments (`watch`, `flock`, `then` in an `if`), and may run it
+    // again and again: the install is found, and the program around it counts as more than it.
     const inside = words.findIndex((item, at) => at > index && isClaudePlugin(words, at))
-    const reading = inside === -1 ? undefined : claudePlugin(words, inside, new Set(expands ?? []), new Set(splits ?? []))
-    if (reading !== undefined) {
-      found.push(reading)
-      out.others += 1
-      continue
-    }
-    // Or run an argument as a script (`su -c '…'`, `watch '…'`, git's own
-    // `-c alias.x='!…'`): an install there is found, and the program around
-    // it counts as more than it.
-    if (program === 'git') {
-      const ran = gitScripts(words.slice(index + 1))
-      if (ran.hooks) out.unseen = true
-      for (const script of ran.scripts) merge(collectInstalls(script, found, depth + 1, true, false, false, files), false)
-    } else if (!TEXT_ARGUMENTS.has(program)) {
-      for (const text of words.slice(index + 1).filter(argument => /\s/.test(argument))) {
-        // The shell ran its own substitutions before the program starts, read above: here they are only what they print.
-        const given = asOutput(text, substitutions)
-        const code = JAVASCRIPT.has(language) ? withoutPatterns(given) : given
-        // An interpreter's code that can start no program runs no install it names.
-        if (INTERPRETERS.has(language) && !startsProgram({ text, code: true, ...kind })) continue
-        const runs = JAVASCRIPT.has(language) && MAY_RUN_TEXT.test(code)
-        // Code that redefines what only prints has every template read as a script.
-        const prints = runs && !REDEFINES_PRINT.test(code.replace(PRINT_CALLS, ' '))
-        // A function the command defines runs its body, read with the rest, so a backquote in its arguments is what the body makes of it.
-        const inner = collectInstalls(code, found, depth + 1, false, inCode || functions.has(program) || NO_BACKQUOTE.has(language) || (JAVASCRIPT.has(language) && !runs), prints && !inCode, files)
-        // An interpreter's code is in its own words, read whole for whether it may start a program.
-        merge(INTERPRETERS.has(language) ? { ...inner, texts: [] } : inner, false)
-      }
-    }
-    out.others += 1
+    const reading = inside === -1 ? undefined : claudePlugin(words, inside, expanded, split)
+    // An install that names no plugin is no menu here: the program around it may hand it one (`xargs`).
+    if (reading?.kind === 'pass' && reading.browse) {
+      found.installs.push({ kind: 'unreadable', label: 'claude plugin install', reason: `it names no plugin, so ${safeLine(program)} may hand it one the guard does not see; run claude plugin install <plugin> as a command of its own` })
+    } else if (reading !== undefined) found.installs.push(reading)
+    found.others += 1
   }
-  return out
 }
 
 /** The last part of a program's path, lower-cased: `/usr/bin/Claude` is `claude`. */
@@ -982,22 +596,15 @@ type ShellCommand = {
   words: string[]
   input?: string
   scripts?: string[]
-  /** Which of `scripts` were found inside double quotes. */
-  quotedScripts?: number[]
-  /** For each of `scripts`, the text just before it opens, which tells what code hands it to. */
-  scriptLeads?: string[]
   writes?: boolean
   /** Which words the shell expands as the command runs: a variable, a substitution, a tilde, or an unquoted pattern or brace list. */
   expands?: number[]
-  /** Which of those it may also split into several words: an unquoted variable or substitution. */
+  /** Which of those it may also split into several words: an unquoted variable or substitution, a pattern or a brace list. */
   splits?: number[]
-  /** The files its redirections write: whether each appends, and whether the shell expands its name as it runs. */
-  targets?: { path: string; append: boolean; expands: boolean }[]
-  /** The exact text a here-document or here-string feeds it, each ending in a new line, when the shell expands none of it. */
-  feeds?: string
-  /** Its input comes from a here-document or here-string the shell expands as it runs, so the text is only known then. */
-  feedsExpand?: boolean
 }
+
+/** A brace list (`{a,b}`) or range (`{a..c}`, `{1..3}`), which the shell turns into several words. */
+const BRACES = /\{[^}]*(?:,|\.\.)[^}]*\}/
 
 /**
  * Splits shell text into simple commands of words, as a POSIX shell would
@@ -1007,10 +614,9 @@ type ShellCommand = {
  * a file other than /dev/null marks its command `writes`. A here-document's
  * body or a here-string becomes the command's `input`, and the body of each
  * `$(…)`, backquoted or `<(…)` substitution one of its `scripts`, never
- * commands of its own. `dynamic` is set when part of the text is only known
- * once it runs: `$` expansions, substitutions and unclosed quotes.
+ * commands of their own.
  */
-export function splitShell(text: string): { commands: ShellCommand[]; dynamic: boolean } {
+export function splitShell(text: string): ShellCommand[] {
   const commands: ShellCommand[] = []
   let current: ShellCommand = { words: [] }
   let word = ''
@@ -1022,138 +628,36 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
   /** Part of what it expands is unquoted, so the result may be split into several words. */
   let splits = false
   let bare = ''
-  let dynamic = false
-  /** Variables the text sets earlier to a value written out, which `$NAME` and `${NAME}` then read as that value (see `settle`). */
-  const known = new Map<string, string>()
-  /** The functions the text defines: calling one may set any variable. */
-  const functions = definedFunctions(text)
-  /** Part of this word is only known as it runs: an expansion `known` does not hold, or a substitution. */
-  let unresolved = false
-  /** For each word of the command at hand, whether it is only known as it runs. */
-  let wordsUnresolved: boolean[] = []
-  /** What ended the command before this one; how deep the text is in compound commands and in parentheses. */
-  let before = ';'
-  let depth = 0
-  let parens = 0
-  /**
-   * The value of the variable named at `at` (its `$`) and how many characters
-   * name it, when the text set it earlier to a value written out. Unquoted, a
-   * value the shell would split or match as a pattern, or an empty one, is
-   * only known as it runs.
-   */
-  const resolve = (at: number, inQuotes: boolean): { value: string; length: number } | undefined => {
-    const found = /^(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})/.exec(text.slice(at + 1, at + 130))
-    const name = found?.[1] ?? found?.[2]
-    // An assignment earlier in this same command sets it first (`A=x B="$A"`), or not at all for its words (`A=x cmd "$A"`).
-    let assignedHere = false
-    let lead = 0
-    while (lead < current.words.length && COMPOUND_PREFIX.has(current.words[lead] as string)) lead += 1
-    for (let found = ASSIGNMENT.exec(current.words[lead] ?? ''); found !== null; found = ASSIGNMENT.exec(current.words[lead] ?? '')) {
-      if (found[1] === name) assignedHere = true
-      lead += 1
-    }
-    const value = name === undefined || assignedHere ? undefined : known.get(name)
-    if (found === null || value === undefined || (!inQuotes && (value === '' || /[\s*?[\]{}]/.test(value)))) return undefined
-    return { value, length: found[0].length }
-  }
   /** What the next word is: a word, a redirection's target, a here-document's end marker, or a here-string. */
   let next: 'word' | 'target' | 'marker' | 'herestring' = 'word'
-  /** For a redirection's target: whether the redirection writes, appends, and whether it duplicates a descriptor (`>&2`). */
+  /** For a redirection's target: whether the redirection writes, and whether it duplicates a descriptor (`>&2`). */
   let writing = false
-  let appending = false
   let duplicating = false
   let stripTabs = false
   const heredocs: { marker: string; stripTabs: boolean; quoted: boolean; command: ShellCommand }[] = []
   const endWord = (): void => {
     if (!inWord) return
     if (next === 'marker') heredocs.push({ marker: word, stripTabs, quoted, command: current })
-    else if (next === 'herestring') {
-      current.input = word
-      // A here-string is fed with a new line after it.
-      if (expands) current.feedsExpand = true
-      else current.feeds = `${word}\n`
-    } else if (next === 'word') {
+    else if (next === 'herestring') current.input = word
+    else if (next === 'word') {
       // An unquoted pattern (`cl*`, `x?`, `[ab]`) or brace list (`{a,b}`) is expanded; `[` alone is the test command.
       // A pattern or a brace list or range also becomes several words.
       const multiplies = word !== '[' && (/[*?[]/.test(bare) || BRACES.test(bare))
       if (expands || multiplies) (current.expands ??= []).push(current.words.length)
       if (splits || multiplies) (current.splits ??= []).push(current.words.length)
-      wordsUnresolved.push(unresolved)
       current.words.push(word)
-    }
-    else if (writing && word !== '/dev/null' && !(duplicating && /^(?:\d+|-)$/.test(word))) {
-      current.writes = true
-      const multiplies = /[*?[]/.test(bare) || BRACES.test(bare)
-      ;(current.targets ??= []).push({ path: word, append: appending, expands: expands || multiplies })
-    }
+    } else if (writing && word !== '/dev/null' && !(duplicating && /^(?:\d+|-)$/.test(word))) current.writes = true
     next = 'word'
     word = ''
     inWord = false
     quoted = false
     expands = false
     splits = false
-    unresolved = false
     bare = ''
   }
-  /**
-   * What the command at hand does to the variables `known` holds, given what
-   * ended it and the one before. `NAME=value` alone, at the top level, after
-   * `;` or a new line and before one or `&&`, sets it to a value written out;
-   * an assignment anywhere else (inside `if`, `for`, `{ }` or parentheses,
-   * after `&&` or `||`, in a pipeline or in the background), or to a value
-   * only known as it runs, leaves it unknown, as does any command that may
-   * set it (`read`, `for NAME in`, `unset`, `local`, `let`, `printf -v`).
-   * `eval`, `source` and a function the text defines may set any.
-   */
-  const settle = (ending: string): void => {
-    const words = current.words
-    let at = 0
-    while (at < words.length && COMPOUND_PREFIX.has(words[at] as string)) at += 1
-    let program = at
-    const assigns: { name: string; value: string; fixed: boolean }[] = []
-    for (let found = ASSIGNMENT.exec(words[program] ?? ''); found !== null; found = ASSIGNMENT.exec(words[program] ?? '')) {
-      assigns.push({ name: found[1] as string, value: (words[program] as string).slice(found[0].length), fixed: found[2] === '' && wordsUnresolved[program] !== true })
-      program += 1
-    }
-    const top = depth + parens === 0 && at === 0 && (before === ';' || before === '\n') && (ending === ';' || ending === '\n' || ending === 'end' || ending === '&&')
-    const set = (name: string, value: string, fixed: boolean): void => {
-      if (fixed && top && !/[$`]/.test(value)) known.set(name, value)
-      else known.delete(name)
-    }
-    // `command` and `builtin` run the builtin after them in this same shell.
-    while (words[program] === 'command' || words[program] === 'builtin') {
-      program += 1
-      while (words[program]?.startsWith('-') === true) program += 1
-    }
-    const name = words[program]
-    const args = words.slice(program + 1)
-    if (name === undefined) for (const item of assigns) set(item.name, item.value, item.fixed)
-    else if (name === 'eval' || name === 'source' || name === '.' || functions.has(name)) known.clear()
-    else if (name === 'printf' || name === 'for' || name === 'select') {
-      // `printf` sets a variable only with `-v NAME` (or `-vNAME`); `for` and `select` only their loop variable.
-      const flag = name === 'printf' ? args.findIndex(arg => arg.startsWith('-v')) : -1
-      const at = name !== 'printf' ? 0 : flag !== -1 && args[flag] === '-v' ? flag + 1 : flag
-      const variable = at === -1 ? undefined : at === flag ? args[at]?.slice(2) : args[at]
-      if (at !== -1 && wordsUnresolved[program + 1 + at] === true) known.clear()
-      else if (variable !== undefined) known.delete(variable)
-    } else if (name === 'export' || name === 'readonly' || name === 'declare' || name === 'typeset' || name === 'local' || name === 'unset' || name === 'read' || name === 'mapfile' || name === 'readarray' || name === 'getopts' || name === 'let') {
-      // Given a name only known as it runs (`read "$X"`), it may change any variable.
-      if (args.some((_, index) => wordsUnresolved[program + 1 + index] === true)) known.clear()
-      args.forEach((arg, index) => {
-        const found = ASSIGNMENT.exec(arg)
-        if (found !== null) set(found[1] as string, arg.slice(found[0].length), name === 'export' && found[2] === '' && wordsUnresolved[program + 1 + index] !== true)
-        else if (/^[A-Za-z_]\w*$/.test(arg) && !((name === 'export' || name === 'readonly') && known.has(arg))) known.delete(arg)
-      })
-    }
-    for (const word of words.slice(0, program + 1)) if (COMPOUND_OPENS.has(word)) depth += 1
-    if (COMPOUND_CLOSES.has(words[0] as string)) depth = Math.max(0, depth - 1)
-  }
-  const endCommand = (ending = 'end'): void => {
+  const endCommand = (): void => {
     endWord()
     next = 'word'
-    settle(ending)
-    before = ending
-    wordsUnresolved = []
     if (current.words.length > 0 || current.input !== undefined || current.scripts !== undefined || current.writes === true) commands.push(current)
     current = { words: [] }
   }
@@ -1164,19 +668,11 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     const end = close === -1 ? text.length : close
     // `$((…))` is arithmetic, not a command, but a substitution inside it still runs.
     const body = text.slice(open + 1, end)
-    const first = current.scripts?.length ?? 0
     if (text[open] === '(' && text[open + 1] === '(') {
       const inner = substitutionsIn(body)
       if (inner.length > 0) (current.scripts ??= []).push(...inner)
     } else (current.scripts ??= []).push(body)
-    const start = open - (isBackquote ? 0 : 1)
-    for (let at = first; at < (current.scripts?.length ?? 0); at += 1) {
-      ;(current.scriptLeads ??= [])[at] = text.slice(Math.max(0, start - 40), start)
-      if (inQuotes) (current.quotedScripts ??= []).push(at)
-    }
-    dynamic = true
     expands = true
-    unresolved = true
     if (!inQuotes) splits = true
     word += text.slice(open - (isBackquote ? 0 : 1), Math.min(end + 1, text.length))
     inWord = true
@@ -1186,7 +682,6 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     const char = text[index] as string
     if (char === "'") {
       const end = text.indexOf("'", index + 1)
-      if (end === -1) dynamic = true
       word += text.slice(index + 1, end === -1 ? text.length : end)
       index = end === -1 ? text.length : end
       inWord = true
@@ -1213,15 +708,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
           continue
         }
         if (inner === '$') {
-          const value = resolve(index, true)
-          if (value !== undefined) {
-            word += value.value
-            index += 1 + value.length
-            continue
-          }
-          dynamic = true
           expands = true
-          unresolved = true
           // Even quoted, "$@" and "${list[@]}" give one word per item.
           const rest = text.slice(index + 1, index + 200)
           if (rest.startsWith('@') || /^\{[^}]*@/.test(rest)) splits = true
@@ -1229,7 +716,6 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
         word += inner
         index += 1
       }
-      if (index >= text.length) dynamic = true
       continue
     }
     if (char === '\\') {
@@ -1250,18 +736,8 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       continue
     }
     if (char === '$') {
-      const value = resolve(index, false)
-      if (value !== undefined) {
-        word += value.value
-        bare += value.value
-        index += value.length
-        inWord = true
-        continue
-      }
-      dynamic = true
       expands = true
       splits = true
-      unresolved = true
       word += char
       inWord = true
       continue
@@ -1274,7 +750,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     if (char === '\n') {
       endWord()
       const pending = heredocs.splice(0)
-      endCommand('\n')
+      endCommand()
       // Each here-document's body follows, up to the line that ends it.
       for (const heredoc of pending) {
         const lines: string[] = []
@@ -1296,11 +772,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
         if (!heredoc.quoted) {
           const bodies = substitutionsIn(heredoc.command.input)
           if (bodies.length > 0) (heredoc.command.scripts ??= []).push(...bodies)
-          if (/[$`]/.test(heredoc.command.input)) dynamic = true
         }
-        // Each line is fed with its new line; an unquoted body's `$`, backquotes and backslashes are the shell's to read.
-        if (!heredoc.quoted && /[$`\\]/.test(heredoc.command.input)) heredoc.command.feedsExpand = true
-        else heredoc.command.feeds = lines.map(line => `${line}\n`).join('')
         index = end
       }
       continue
@@ -1324,7 +796,6 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
         // `<(…)` and `>(…)`: a command whose output or input stands in for a file.
         const end = closingParen(text, index + 1)
         ;(current.scripts ??= []).push(text.slice(index + 2, end === -1 ? text.length : end))
-        dynamic = true
         index = end === -1 ? text.length : end
         continue
       }
@@ -1341,7 +812,6 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
         continue
       }
       writing = operator === '>' || char === '&'
-      appending = operator === '>' && text[index + 1] === '>'
       duplicating = false
       while (text[index + 1] === '>' || text[index + 1] === '&' || text[index + 1] === '|') {
         if (text[index + 1] === '&') duplicating = true
@@ -1353,11 +823,8 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
       continue
     }
     if (char === ';' || char === '&' || char === '|' || char === '(' || char === ')') {
-      const doubled = (char === '&' || char === '|') && text[index + 1] === char
-      if (doubled) index += 1
-      endCommand(doubled ? `${char}${char}` : char)
-      if (char === '(') parens += 1
-      else if (char === ')' && parens > 0) parens -= 1
+      if ((char === '&' || char === '|') && text[index + 1] === char) index += 1
+      endCommand()
       continue
     }
     // An unquoted `~` at the start of a word, or after `=` or `:` in it, is a home folder.
@@ -1367,7 +834,7 @@ export function splitShell(text: string): { commands: ShellCommand[]; dynamic: b
     inWord = true
   }
   endCommand()
-  return { commands, dynamic }
+  return commands
 }
 
 /** The bodies of the `$(…)` and backquoted substitutions in text a shell expands, such as an unquoted here-document. */
