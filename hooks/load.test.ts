@@ -1,7 +1,7 @@
 import type { EngineInterface, On, PluginRegisterInput } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Plugin } from 'claude-code/testing'
 
-import { failedLoad, heldReport, heldToast, judgeLoad, release, remember, toReview, type HeldMod } from './gate/load'
+import { failedLoad, heldReport, heldToast, judgeLoad, release, remember, toReview, type HeldMod, type Registering } from './gate/load'
 import { takeInventory } from './scan/inventory'
 import { FIXTURES } from './test-support/fixtures.gen'
 import { memoryHost, serveFixture, typed, type FixtureFiles } from './test-support/memfs'
@@ -46,8 +46,13 @@ function decision(treeHash: string, decision: 'approved' | 'rejected', target = 
   return { target, root: ROOT, treeHash, verdict: 'No red flags', verdictKind: 'safe', decision, overridden: false, decidedAt: Date.UTC(2026, 9, 20) }
 }
 
-/** What the engine hands the load gate for the mod at ROOT. */
-const LOADING: PluginRegisterInput = { name: 'notes', tier: 'user', root: ROOT, provenance: LABEL, uses: { events: ['prompt.submit'], calls: [] } }
+/**
+ * What the engine hands the load gate for the mod at ROOT, as an older engine
+ * raises it: only for a module, and with no parts listed. Widened, since
+ * newer engines' types require the parts.
+ */
+const OLDER_ENGINE: Pick<PluginRegisterInput, 'name' | 'tier' | 'root' | 'provenance' | 'uses'> = { name: 'notes', tier: 'user', root: ROOT, provenance: LABEL, uses: { events: ['prompt.submit'], calls: [] } }
+const LOADING = OLDER_ENGINE as PluginRegisterInput
 
 /**
  * The little of `$` the load gate reads, for calling it directly: the test
@@ -105,7 +110,8 @@ describe('the mod load gate', () => {
     const reason: string[] = []
 
     expect(await loaded($, reason)).toBe(false)
-    expect(reason).toEqual([`AI Install Guard kept ${LABEL} from loading: you have not approved these files. Review it in the guard's pane (/guard held), approve it, then run /reload-plugins.`])
+    // Newer test engines add a note of their own after it when the mod loaded in an earlier test.
+    expect(reason[0]).toStartWith(`AI Install Guard kept ${LABEL} from loading: you have not approved these files. Review it in the guard's pane (/guard held), approve it, then run /reload-plugins.`)
   })
 
   test('a mod whose files changed since you approved it is kept out, and says so', { plugins: [NOTES] }, async ($, on) => {
@@ -123,7 +129,7 @@ describe('the mod load gate', () => {
     const reason: string[] = []
 
     expect(await loaded($, reason)).toBe(false)
-    expect(reason).toEqual([`AI Install Guard kept ${LABEL} from loading: you rejected these files on 2026-10-20. /guard forget ${LABEL} judges them again.`])
+    expect(reason[0]).toStartWith(`AI Install Guard kept ${LABEL} from loading: you rejected these files on 2026-10-20. /guard forget ${LABEL} judges them again.`)
   })
 
   test('the newest decision about the same files is the one that holds', { plugins: [NOTES] }, async ($, on) => {
@@ -165,6 +171,33 @@ describe('the mod load gate', () => {
     mock.store(on)
 
     expect(await loaded($)).toBe(true)
+  })
+})
+
+// Newer engines raise plugin.register for every plugin, with what it ships.
+// The test engine's plugins all have a module, so these call the gate itself.
+describe('plugins with no hooks module', () => {
+  const ships = (modules: { path: string }[]) => ({ modules, hooks: [], mcpServers: [], lspServers: [], monitors: [], skills: ['notes:write'], commands: [], agents: [], outputStyles: [], themes: [], workflows: [], bin: [] })
+  const plain = { ...LOADING, uses: { events: [], calls: [] }, provides: ships([]), unread: [] } as Registering
+
+  test('load as they are, never approved: the session-start check judges them', async () => {
+    expect(await judgeLoad(fakeGuard(MOD, []), plain)).toEqual({ kind: 'allow' })
+  })
+
+  test('a plugin that lists a module is still held', async () => {
+    const judged = await judgeLoad(fakeGuard(MOD, []), { ...plain, provides: ships([{ path: 'hooks/register.tsx' }]) })
+
+    expect(judged.kind).toBe('refuse')
+  })
+
+  test('one whose modules could not be read is held', async () => {
+    const judged = await judgeLoad(fakeGuard(MOD, []), { ...plain, unread: ['modules'] })
+
+    expect(judged.kind).toBe('refuse')
+  })
+
+  test('an engine that passes no parts raises the event only for a module, which is held', async () => {
+    expect((await judgeLoad(fakeGuard(MOD, []), LOADING)).kind).toBe('refuse')
   })
 })
 
