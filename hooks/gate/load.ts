@@ -28,13 +28,34 @@ export type HeldMod = {
 export type LoadJudgement = { kind: 'allow' } | { kind: 'refuse'; reason: string; held?: HeldMod }
 
 /**
- * Whether the mod `e` names may load. Only what a person installs is judged:
- * an administrator's managed plugins and the ones bundled in Claude Code
- * load as they are. The folder is hashed and compared with every decision
- * kept, newest first: the same files approved anywhere load without a scan.
+ * `plugin.register` as newer engines raise it: for every plugin, with what it
+ * ships in `provides` and the kinds that could not be read in `unread`. Older
+ * ones raise it only for a hooks module and pass neither.
  */
-export async function judgeLoad($: EngineInterface, e: PluginRegisterInput): Promise<LoadJudgement> {
-  if (e.tier !== 'user') return { kind: 'allow' }
+export type Registering = PluginRegisterInput & { provides?: { modules: readonly unknown[] }; unread?: readonly string[] }
+
+/**
+ * Whether `e` brings a hooks module, the code that runs as Claude Code loads
+ * it. A plugin with none (skills, commands, agents, settings hooks, MCP
+ * servers) is the session-start check's to judge, as it was before engines
+ * raised `plugin.register` for it: holding it here asked again about every
+ * skill plugin at each update. One whose modules could not be read counts as
+ * bringing one.
+ */
+function bringsModule(e: Registering): boolean {
+  if (e.provides === undefined) return true
+  return e.provides.modules.length > 0 || (e.unread ?? []).includes('modules')
+}
+
+/**
+ * Whether the mod `e` names may load. Only a hooks module a person installs is
+ * judged: an administrator's managed plugins, the ones bundled in Claude Code
+ * and plugins with no module load as they are. The folder is hashed and
+ * compared with every decision kept, newest first: the same files approved
+ * anywhere load without a scan.
+ */
+export async function judgeLoad($: EngineInterface, e: Registering): Promise<LoadJudgement> {
+  if (e.tier !== 'user' || !bringsModule(e)) return { kind: 'allow' }
   const label = safeLine(e.provenance)
   const tree = await takeInventory(modHost($), e.root).then(
     scanned => ({ treeHash: scanned.inventory.treeHash }),

@@ -4,6 +4,12 @@ All notable changes to ai-install-guard. Ordered newest to oldest.
 
 ---
 
+## v0.9.2 &nbsp;·&nbsp; 2026-11-23
+
+**Loading mods** - Only a plugin with a hooks module is held as it loads. Newer versions of Claude Code ask the guard about every plugin as it loads, not only mods, so a plugin of skills alone was kept out until approved, and asked about again at each update or skill sync. A plugin with no module loads as it is, and the check at the start of a session judges it as before: no red flags goes on with a note, and a red flag waits in the pane.
+
+---
+
 ## v0.9.1 &nbsp;·&nbsp; 2026-11-05
 
 **Claude's own commands** - The guard reads a shell command Claude runs as written: each command the shell runs from its text, the script of `sh -c` or `eval`, a here-document fed to a shell, and what runs inside a substitution. It no longer searches code for another language, piped data, script files, variables set earlier or the scripts git runs for an install's words. That search grew with every new way to hide a command and kept holding ordinary work, such as a `sed` edit whose text named an install, while hiding what runs is for Claude Code's own permission prompts. An install that stands alone is held as before, and one beside other commands, or whose plugin, source or subcommand is only known as it runs, is still Could not verify
